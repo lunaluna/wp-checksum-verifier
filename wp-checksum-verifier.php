@@ -73,6 +73,12 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-error-cod
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-target-resolver.php';
 
 /**
+ * Public API(§10). WPMAR 連携用に後方互換を維持する契約.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-api.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/functions-api.php';
+
+/**
  * GitHub Releases ベースの自己更新機構の読み込み(l2d-wp-github-update-lib).
  */
 $wpcv_updater_register = require plugin_dir_path( __FILE__ ) . 'lib/l2d-updater/loader.php';
