@@ -18,6 +18,13 @@
 
 	<rule ref="WordPress-Extra">
 		<exclude name="WordPress.Files.FileName"/>
+		<!--
+			例外メッセージはブラウザへの出力ではなく開発者・ログ向けのため、
+			HTMLエスケープの対象ではない。検証エンジン(WPCV_Verifier等)は
+			動的な内容を含む例外メッセージを多数投げる設計のため、行ごとの
+			phpcs:ignoreを積み上げるよりここで除外する.
+		-->
+		<exclude name="WordPress.Security.EscapeOutput.ExceptionNotEscaped"/>
 	</rule>
 
 	<rule ref="WordPress-Docs"/>

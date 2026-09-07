@@ -67,6 +67,12 @@ register_activation_hook( __FILE__, array( 'WPCV_Activator', 'activate' ) );
 add_action( 'plugins_loaded', array( 'WPCV_Migrator', 'maybe_upgrade' ) );
 
 /**
+ * エラーコードの列挙(§5.4)と target モデル(§5.3: target_id の生成・分解).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-error-code.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-target-resolver.php';
+
+/**
  * GitHub Releases ベースの自己更新機構の読み込み(l2d-wp-github-update-lib).
  */
 $wpcv_updater_register = require plugin_dir_path( __FILE__ ) . 'lib/l2d-updater/loader.php';
