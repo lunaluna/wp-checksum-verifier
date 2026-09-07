@@ -1,0 +1,38 @@
+name: Release
+
+# 同梱ライブラリ(lib/l2d-updater)が提供する reusable workflow を呼び、
+# タグから配布用 ZIP を組み立てて GitHub Release を作成する。
+#
+# 参照タグ(@X.Y.Z)は lib/l2d-updater/ のベンダーコピーと必ず揃えること。
+# 片方だけ更新すると、ライブラリ本体と利用側で版が食い違う。
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+      - '[0-9]*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. 0.1.0). Leave blank when triggered by tag push.'
+        required: false
+
+# 呼び出し先の GITHUB_TOKEN 権限は呼び出し元を超えられないため、
+# Release 作成に必要な contents: write はここで与える必要がある.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: lunaluna/l2d-wp-github-update-lib/.github/workflows/plugin-release.yml@1.2.0
+    with:
+      slug: wp-checksum-verifier
+      # "path:pattern" 形式。参照タグ(@1.2.0)は lib/l2d-updater/ のベンダーコピーと
+      # 必ず揃えること。片方だけ更新すると版が食い違う.
+      version_files: |
+        wp-checksum-verifier.php:^[[:space:]]*\*[[:space:]]*Version:
+        readme.txt:^Stable tag:
+        composer.json:"version":
+      notes_source: CHANGELOG.md
+      php_version: '8.2'
+      draft: true

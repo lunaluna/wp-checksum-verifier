@@ -1,0 +1,4 @@
+/vendor/
+.DS_Store
+/wp-checksum-verifier.*.zip
+/.phpunit.result.cache
