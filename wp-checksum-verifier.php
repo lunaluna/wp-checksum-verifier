@@ -55,6 +55,18 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/functions-activation.php';
 register_activation_hook( __FILE__, 'wpcv_check_environment' );
 
 /**
+ * DB スキーマの作成・更新.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-migrator.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-activator.php';
+register_activation_hook( __FILE__, array( 'WPCV_Activator', 'activate' ) );
+
+/**
+ * 自動更新など有効化フックを経由せずに WPCV_DB_VERSION が上がった場合の追従.
+ */
+add_action( 'plugins_loaded', array( 'WPCV_Migrator', 'maybe_upgrade' ) );
+
+/**
  * GitHub Releases ベースの自己更新機構の読み込み(l2d-wp-github-update-lib).
  */
 $wpcv_updater_register = require plugin_dir_path( __FILE__ ) . 'lib/l2d-updater/loader.php';
