@@ -56,7 +56,7 @@ class WPCV_Target_Resolver {
 	 */
 	public static function build_id( $dimension, $identifier = '' ) {
 		if ( ! in_array( $dimension, self::DIMENSIONS, true ) ) {
-			throw new InvalidArgumentException( "Unknown dimension: {$dimension}" );
+			throw new InvalidArgumentException( esc_html( "Unknown dimension: {$dimension}" ) );
 		}
 
 		if ( self::DIMENSION_CORE === $dimension ) {
@@ -64,7 +64,7 @@ class WPCV_Target_Resolver {
 		}
 
 		if ( '' === $identifier ) {
-			throw new InvalidArgumentException( "identifier is required for dimension: {$dimension}" );
+			throw new InvalidArgumentException( esc_html( "identifier is required for dimension: {$dimension}" ) );
 		}
 
 		return "{$dimension}:{$identifier}";
@@ -90,7 +90,7 @@ class WPCV_Target_Resolver {
 		$parts = explode( ':', $target_id, 2 );
 
 		if ( 2 !== count( $parts ) || ! in_array( $parts[0], self::DIMENSIONS, true ) ) {
-			throw new InvalidArgumentException( "Malformed target_id: {$target_id}" );
+			throw new InvalidArgumentException( esc_html( "Malformed target_id: {$target_id}" ) );
 		}
 
 		return array(

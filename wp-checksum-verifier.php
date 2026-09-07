@@ -5,7 +5,7 @@
  * Description:       WordPress コア・プラグイン・テーマ・MU プラグインの checksum を日次で検証し、改ざんを検出するプラグイン.
  * Version:           0.1.0
  * Requires at least: 6.8
- * Tested up to:      6.8
+ * Tested up to:      7.1
  * Requires PHP:      7.4
  * Author:            lunaluna_dev
  * Author URI:        https://profiles.wordpress.org/lunaluna_dev/
