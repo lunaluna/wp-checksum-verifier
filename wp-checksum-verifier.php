@@ -79,6 +79,15 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-api.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/functions-api.php';
 
 /**
+ * 管理画面(§11). フロントエンドの読み込みを避けるため管理画面でのみ読み込む.
+ */
+if ( is_admin() ) {
+	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-page-settings.php';
+	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-admin-menu.php';
+	WPCV_Admin_Menu::register();
+}
+
+/**
  * GitHub Releases ベースの自己更新機構の読み込み(l2d-wp-github-update-lib).
  */
 $wpcv_updater_register = require plugin_dir_path( __FILE__ ) . 'lib/l2d-updater/loader.php';
