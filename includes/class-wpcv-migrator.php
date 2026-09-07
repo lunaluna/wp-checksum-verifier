@@ -71,12 +71,16 @@ class WPCV_Migrator {
 
 		// §5.2: run 全体の集計値. status = partial は「1 つ以上の target が
 		// unverifiable / failed だが run 自体は完走した」を意味する.
+		// プラン§5.2は列名を trigger としているが、MySQL/MariaDB の予約語のため
+		// バッククォート無しでは CREATE TABLE が構文エラーになる(実際に CI の
+		// Plugin Check が実環境の dbDelta 実行で検出した)。DB スキーマは
+		// Public API contract に含まれない(§5.1)ため run_trigger に変更した.
 		$sql_runs = "CREATE TABLE {$runs_table} (
 	id bigint unsigned NOT NULL auto_increment,
 	started_at datetime NULL,
 	finished_at datetime NULL,
 	status varchar(16) NOT NULL default 'running',
-	trigger varchar(16) NOT NULL default 'cron',
+	run_trigger varchar(16) NOT NULL default 'cron',
 	runner varchar(16) NOT NULL default 'sync',
 	targets_total int unsigned NOT NULL default 0,
 	targets_verified int unsigned NOT NULL default 0,
