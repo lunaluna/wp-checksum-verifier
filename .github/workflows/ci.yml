@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  php-syntax:
+    name: PHP ${{ matrix.php }} syntax check
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: [ '7.4', '8.0', '8.2', '8.3' ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          tools: none
+          coverage: none
+
+      - name: Lint PHP files
+        run: |
+          find . -name '*.php' -not -path './vendor/*' -not -path './lib/*' -print0 \
+            | xargs -0 -n1 php -l
+
+  phpcs:
+    name: PHPCS (WordPress-Extra / WordPress-Docs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          coverage: none
+
+      - name: Install Composer dependencies
+        uses: ramsey/composer-install@v3
+
+      - name: Run PHPCS
+        run: vendor/bin/phpcs --standard=phpcs.xml.dist
+
+  phpstan:
+    name: PHPStan (level 5)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          coverage: none
+
+      - name: Install Composer dependencies
+        uses: ramsey/composer-install@v3
+
+      - name: Run PHPStan
+        run: vendor/bin/phpstan analyse --no-progress
+
+  phpunit:
+    name: PHPUnit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          coverage: none
+
+      - name: Install Composer dependencies
+        uses: ramsey/composer-install@v3
+
+      - name: Run PHPUnit
+        run: vendor/bin/phpunit
+
+  composer-audit:
+    name: composer audit (runtime dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          tools: composer:v2
+          coverage: none
+
+      - name: Install Composer dependencies (no-dev)
+        run: composer install --no-dev --prefer-dist --no-progress
+
+      - name: Audit production dependencies for known vulnerabilities
+        run: composer audit --no-dev
+
+  plugin-check:
+    name: Plugin Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Plugin Check
+        uses: wordpress/plugin-check-action@v1
+        with:
+          build-dir: '.'
+          # 開発用ファイル(配布物には含まれない)は検査対象から除外する.
+          exclude-directories: '.github,vendor,tests,bin,lib'
+          exclude-files: '.editorconfig,.gitignore,.distignore,composer.json,composer.lock,phpcs.xml.dist,phpstan.neon.dist,phpunit.xml.dist'
+          # Update URI: false を維持したまま GitHub Releases から自己更新する
+          # 意図的な実装(wp.org 非公開 + GitHub 自己更新方針)であり、
+          # wp.org 未登録スラッグの乗っ取り防止は引き続き有効。既知の
+          # false positive として無視する.
+          ignore-codes: 'plugin_updater_detected'

@@ -1,0 +1,30 @@
+{
+    "name": "lunaluna/wp-checksum-verifier",
+    "description": "WordPress コア・プラグイン・テーマ・MU プラグインの checksum を日次で検証し、改ざんを検出するプラグイン.",
+    "type": "wordpress-plugin",
+    "version": "0.1.0",
+    "license": "GPL-2.0-or-later",
+    "require": {
+        "php": ">=7.4",
+        "woocommerce/action-scheduler": "4.1.0"
+    },
+    "require-dev": {
+        "dealerdirect/phpcodesniffer-composer-installer": "^1.0",
+        "wp-coding-standards/wpcs": "^3.0",
+        "phpcompatibility/phpcompatibility-wp": "^2.1",
+        "phpstan/phpstan": "^2.0",
+        "szepeviktor/phpstan-wordpress": "^2.0",
+        "phpunit/phpunit": "^9.6"
+    },
+    "config": {
+        "allow-plugins": {
+            "dealerdirect/phpcodesniffer-composer-installer": true
+        }
+    },
+    "scripts": {
+        "lint": "phpcs",
+        "lint:fix": "phpcbf",
+        "analyse": "phpstan analyse",
+        "test": "phpunit"
+    }
+}

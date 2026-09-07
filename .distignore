@@ -1,0 +1,25 @@
+# Single source of truth for paths excluded from the distributed plugin zip.
+# Read by both bin/build-zip.sh (local) and .github/workflows/release.yml (CI)
+# so the two never drift out of sync again.
+#
+# vendor/ is excluded on purpose: Action Scheduler is copied into
+# lib/action-scheduler/ by a separate, explicit step in bin/build-zip.pre.sh,
+# not through this generic exclude list (WPMAR の同パターンをそのまま踏襲).
+
+.git
+.github
+.gitignore
+.gitattributes
+.editorconfig
+.distignore
+.claude
+.DS_Store
+.phpunit.result.cache
+bin
+tests
+composer.json
+composer.lock
+phpunit.xml.dist
+phpcs.xml.dist
+phpstan.neon.dist
+vendor
