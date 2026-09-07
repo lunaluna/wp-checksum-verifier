@@ -2,3 +2,6 @@
 .DS_Store
 /wp-checksum-verifier.*.zip
 /.phpunit.result.cache
+
+# Action Scheduler bundled into lib/ by bin/build-zip.pre.sh ahead of staging
+/lib/action-scheduler/

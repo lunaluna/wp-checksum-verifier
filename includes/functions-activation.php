@@ -17,7 +17,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 function wpcv_check_environment() {
 	$required_php_version = '7.4';
-	$required_wp_version   = '6.8';
+	$required_wp_version  = '6.8';
 
 	$current_php_version = PHP_VERSION;
 	$current_wp_version  = get_bloginfo( 'version' );
