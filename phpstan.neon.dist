@@ -9,5 +9,8 @@ parameters:
 		- languages/*
 		- lib/*
 
+	scanFiles:
+		- .phpstan/stubs/wp-cli.php
+
 includes:
 	- vendor/szepeviktor/phpstan-wordpress/extension.neon

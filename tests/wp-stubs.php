@@ -188,3 +188,56 @@ if ( ! defined( 'WP_PLUGIN_DIR' ) ) {
 if ( ! defined( 'WPMU_PLUGIN_DIR' ) ) {
 	define( 'WPMU_PLUGIN_DIR', ABSPATH . 'wp-content/mu-plugins' );
 }
+
+if ( ! class_exists( 'WP_CLI' ) ) {
+	/**
+	 * Minimal stub of WP_CLI — records each call's arguments in
+	 * $GLOBALS['_wpcv_test_wp_cli_calls'][$method][] for assertions. Unlike the
+	 * real WP_CLI::error(), this stub does not exit the process, so tests can
+	 * assert on the recorded message instead of catching a process exit.
+	 */
+	class WP_CLI {
+
+		/**
+		 * Stub WP_CLI::add_command().
+		 *
+		 * @param string          $name     Command name.
+		 * @param callable|string $callable Command implementation.
+		 * @param array           $args     Extra options.
+		 * @return void
+		 */
+		public static function add_command( $name, $callable, $args = array() ) {
+			$GLOBALS['_wpcv_test_wp_cli_calls']['add_command'][] = array( $name, $callable, $args );
+		}
+
+		/**
+		 * Stub WP_CLI::success().
+		 *
+		 * @param string $message Message.
+		 * @return void
+		 */
+		public static function success( $message ) {
+			$GLOBALS['_wpcv_test_wp_cli_calls']['success'][] = $message;
+		}
+
+		/**
+		 * Stub WP_CLI::error() — records the message instead of exiting.
+		 *
+		 * @param string $message Message.
+		 * @return void
+		 */
+		public static function error( $message ) {
+			$GLOBALS['_wpcv_test_wp_cli_calls']['error'][] = $message;
+		}
+
+		/**
+		 * Stub WP_CLI::line().
+		 *
+		 * @param string $message Message.
+		 * @return void
+		 */
+		public static function line( $message = '' ) {
+			$GLOBALS['_wpcv_test_wp_cli_calls']['line'][] = $message;
+		}
+	}
+}
