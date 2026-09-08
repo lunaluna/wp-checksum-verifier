@@ -103,6 +103,31 @@ if ( ! function_exists( 'wp_remote_retrieve_response_code' ) ) {
 	}
 }
 
+if ( ! function_exists( 'apply_filters' ) ) {
+	/**
+	 * Stub apply_filters() — returns $value unchanged unless a callback is
+	 * registered for $tag in $GLOBALS['_wpcv_test_filters'][$tag] (array of callables,
+	 * applied in registration order, WordPress-style).
+	 *
+	 * @param string $tag   Filter tag.
+	 * @param mixed  $value Value to filter.
+	 * @return mixed
+	 */
+	function apply_filters( $tag, $value ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		if ( empty( $GLOBALS['_wpcv_test_filters'][ $tag ] ) ) {
+			return $value;
+		}
+
+		$args = array_slice( func_get_args(), 1 );
+
+		foreach ( $GLOBALS['_wpcv_test_filters'][ $tag ] as $callback ) {
+			$args[0] = call_user_func_array( $callback, $args );
+		}
+
+		return $args[0];
+	}
+}
+
 if ( ! function_exists( 'wp_remote_retrieve_body' ) ) {
 	/**
 	 * Stub wp_remote_retrieve_body().
