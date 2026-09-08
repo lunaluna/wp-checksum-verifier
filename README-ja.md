@@ -29,4 +29,10 @@ composer run analyse  # PHPStan
 composer run test     # PHPUnit
 ```
 
+`composer install` するだけで、非同期実行(v0.3以降)の基盤である Action
+Scheduler もローカルで使えるようになる(`lib/` への手動コピーは不要)。
+開発環境では `vendor/woocommerce/action-scheduler` から自動的に読み込む
+(`WPCV_Action_Scheduler_Loader` 参照)。`lib/` へのコピーはリリースビルド時
+(`bin/build-zip.pre.sh`)にのみ生成される、配布zip専用のものである.
+
 English version: [README.md](README.md)

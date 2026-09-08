@@ -30,4 +30,10 @@ composer run analyse  # PHPStan
 composer run test     # PHPUnit
 ```
 
+`composer install` alone is enough to make Action Scheduler (async execution,
+v0.3+) available locally — no manual copy into `lib/` needed. The plugin picks
+it up from `vendor/woocommerce/action-scheduler` automatically in a dev
+checkout (see `WPCV_Action_Scheduler_Loader`). The `lib/` copy only exists in
+release zips, produced by `bin/build-zip.pre.sh` during the release build.
+
 日本語版は [README-ja.md](README-ja.md) を参照してください。
