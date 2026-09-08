@@ -73,6 +73,18 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-error-cod
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-target-resolver.php';
 
 /**
+ * ファイルハッシュ算出とパス正規化(検証エンジンの土台).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-file-hasher.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-path-normalizer.php';
+
+/**
+ * 照合ソース(§3). まずコア照合(§3.2)から.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/sources/interface-wpcv-manifest-source.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-core.php';
+
+/**
  * Public API(§10). WPMAR 連携用に後方互換を維持する契約.
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-api.php';
