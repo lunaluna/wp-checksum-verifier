@@ -213,4 +213,83 @@ class RepositoryTest extends TestCase {
 		$this->assertSame( 'running', $wpdb->rows['wp_wpcv_runs'][ $first_run_id ]['status'] );
 		$this->assertSame( 'success', $wpdb->rows['wp_wpcv_runs'][ $second_run_id ]['status'] );
 	}
+
+	/**
+	 * 閾値(30分)より古い `started_at` を持つ `running` 行が `failed` に
+	 * 更新されることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_sweep_stale_running_marks_old_running_row_as_failed() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-08 11:00:00',
+				'status'      => 'running',
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$swept = $repository->sweep_stale_running( 30 );
+
+		$this->assertSame( 1, $swept );
+		$row = $wpdb->rows['wp_wpcv_runs'][1];
+		$this->assertSame( 'failed', $row['status'] );
+		$this->assertSame( '2026-09-08 12:00:00', $row['finished_at'] );
+		$this->assertNotEmpty( $row['notes'] );
+	}
+
+	/**
+	 * 閾値内(30分以内)の `started_at` を持つ `running` 行は対象外であることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_sweep_stale_running_ignores_recent_running_row() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-08 11:45:00',
+				'status'      => 'running',
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$swept = $repository->sweep_stale_running( 30 );
+
+		$this->assertSame( 0, $swept );
+		$this->assertSame( 'running', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
+	}
+
+	/**
+	 * `running` 以外の状態の行は(古くても)対象外であることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_sweep_stale_running_ignores_non_running_rows() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-08 09:00:00',
+				'status'      => 'success',
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$swept = $repository->sweep_stale_running( 30 );
+
+		$this->assertSame( 0, $swept );
+		$this->assertSame( 'success', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
+	}
 }
