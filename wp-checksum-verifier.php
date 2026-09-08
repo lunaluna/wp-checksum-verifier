@@ -33,6 +33,18 @@ define( 'WPCV_DB_VERSION', 1 );
 define( 'WPCV_API_VERSION', 1 );
 
 /**
+ * Action Scheduler(非同期実行の基盤. v0.3 §6 Step4以降で使用)を可能なら読み込む.
+ *
+ * `plugins_loaded`(優先度0)より前、プラグインファイルの読み込み時点で呼び出す
+ * 必要がある(Action Scheduler 自身の `plugins_loaded` 優先度0のブートストラップに
+ * 間に合わせるため。`WPCV_Action_Scheduler_Loader` の docblock 参照)。
+ * ライブラリが同梱されていない環境でもプラグイン自体は動作し続ける(同期実行の
+ * WP-CLI/WP-Cron/REST パスは Action Scheduler に依存しない設計。§6).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-action-scheduler-loader.php';
+WPCV_Action_Scheduler_Loader::maybe_load( plugin_dir_path( __FILE__ ) );
+
+/**
  * 翻訳ファイル (.mo) を読み込む.
  *
  * GitHub 配布で wp.org 未登録のため、翻訳の自動読み込みに頼らず明示的に読み込む.
