@@ -233,6 +233,151 @@ if ( ! function_exists( 'as_enqueue_async_action' ) ) {
 	}
 }
 
+if ( ! defined( 'DAY_IN_SECONDS' ) ) {
+	define( 'DAY_IN_SECONDS', 86400 );
+}
+
+if ( ! function_exists( 'is_multisite' ) ) {
+	/**
+	 * Stub is_multisite() — returns $GLOBALS['_wpcv_test_is_multisite'](既定 false).
+	 *
+	 * @return bool
+	 */
+	function is_multisite() { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return ! empty( $GLOBALS['_wpcv_test_is_multisite'] );
+	}
+}
+
+if ( ! function_exists( 'wp_parse_args' ) ) {
+	/**
+	 * Stub wp_parse_args() — 実際の wp_parse_args() と同じマージ順序
+	 * (`array_merge( $defaults, $parsed_args )`。後勝ちだが $args に無いキーは
+	 * $defaults から補われる)を再現する簡易実装. 本プラグインは常に配列同士の
+	 * マージにしか使わないため、文字列(クエリ文字列)入力の parse_str() 分岐は
+	 * 実装しない.
+	 *
+	 * @param array|object $args     マージ元.
+	 * @param array        $defaults 既定値.
+	 * @return array
+	 */
+	function wp_parse_args( $args, $defaults = array() ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$parsed_args = is_object( $args ) ? get_object_vars( $args ) : (array) $args;
+
+		return array_merge( $defaults, $parsed_args );
+	}
+}
+
+if ( ! function_exists( 'get_option' ) ) {
+	/**
+	 * Stub get_option() — $GLOBALS['_wpcv_test_options'][$name] を返す(無ければ $default).
+	 *
+	 * @param string $name    オプション名.
+	 * @param mixed  $default 既定値.
+	 * @return mixed
+	 */
+	function get_option( $name, $default = false ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return isset( $GLOBALS['_wpcv_test_options'][ $name ] ) ? $GLOBALS['_wpcv_test_options'][ $name ] : $default;
+	}
+}
+
+if ( ! function_exists( 'update_option' ) ) {
+	/**
+	 * Stub update_option() — $GLOBALS['_wpcv_test_options'][$name] に保存する. 呼び出し
+	 * 引数は $GLOBALS['_wpcv_test_update_option_calls'][] に記録する.
+	 *
+	 * @param string $name  オプション名.
+	 * @param mixed  $value 保存する値.
+	 * @return true
+	 */
+	function update_option( $name, $value ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_options'][ $name ]      = $value;
+		$GLOBALS['_wpcv_test_update_option_calls'][] = array( $name, $value );
+
+		return true;
+	}
+}
+
+if ( ! function_exists( 'get_site_option' ) ) {
+	/**
+	 * Stub get_site_option() — $GLOBALS['_wpcv_test_site_options'][$name] を返す
+	 * (無ければ $default).
+	 *
+	 * @param string $name    オプション名.
+	 * @param mixed  $default 既定値.
+	 * @return mixed
+	 */
+	function get_site_option( $name, $default = false ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return isset( $GLOBALS['_wpcv_test_site_options'][ $name ] ) ? $GLOBALS['_wpcv_test_site_options'][ $name ] : $default;
+	}
+}
+
+if ( ! function_exists( 'update_site_option' ) ) {
+	/**
+	 * Stub update_site_option() — $GLOBALS['_wpcv_test_site_options'][$name] に保存する.
+	 * 呼び出し引数は $GLOBALS['_wpcv_test_update_site_option_calls'][] に記録する.
+	 *
+	 * @param string $name  オプション名.
+	 * @param mixed  $value 保存する値.
+	 * @return true
+	 */
+	function update_site_option( $name, $value ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_site_options'][ $name ]      = $value;
+		$GLOBALS['_wpcv_test_update_site_option_calls'][] = array( $name, $value );
+
+		return true;
+	}
+}
+
+if ( ! function_exists( 'wp_next_scheduled' ) ) {
+	/**
+	 * Stub wp_next_scheduled() — $GLOBALS['_wpcv_test_scheduled_hooks'][$hook] を
+	 * 返す(無ければ false. 本番の「予約が無ければ false」と同じ意味).
+	 *
+	 * @param string $hook Hook name.
+	 * @return int|false
+	 */
+	function wp_next_scheduled( $hook ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return isset( $GLOBALS['_wpcv_test_scheduled_hooks'][ $hook ] ) ? $GLOBALS['_wpcv_test_scheduled_hooks'][ $hook ] : false;
+	}
+}
+
+if ( ! function_exists( 'wp_schedule_single_event' ) ) {
+	/**
+	 * Stub wp_schedule_single_event() — $GLOBALS['_wpcv_test_scheduled_hooks'][$hook] に
+	 * $timestamp を記録する(以降の wp_next_scheduled() 呼び出しに反映させるため).
+	 * 呼び出し引数は $GLOBALS['_wpcv_test_schedule_single_event_calls'][] にも記録する.
+	 *
+	 * @param int    $timestamp Unix timestamp.
+	 * @param string $hook      Hook name.
+	 * @param array  $args      Args.
+	 * @return true
+	 */
+	function wp_schedule_single_event( $timestamp, $hook, $args = array() ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_scheduled_hooks'][ $hook ]      = $timestamp;
+		$GLOBALS['_wpcv_test_schedule_single_event_calls'][] = array( $timestamp, $hook, $args );
+
+		return true;
+	}
+}
+
+if ( ! function_exists( 'wp_clear_scheduled_hook' ) ) {
+	/**
+	 * Stub wp_clear_scheduled_hook() — $GLOBALS['_wpcv_test_scheduled_hooks'][$hook] を
+	 * 削除する. 呼び出し回数は $GLOBALS['_wpcv_test_clear_scheduled_hook_calls'][] に
+	 * 記録する.
+	 *
+	 * @param string $hook Hook name.
+	 * @param array  $args Args.
+	 * @return int
+	 */
+	function wp_clear_scheduled_hook( $hook, $args = array() ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		unset( $GLOBALS['_wpcv_test_scheduled_hooks'][ $hook ] );
+		$GLOBALS['_wpcv_test_clear_scheduled_hook_calls'][] = array( $hook, $args );
+
+		return 1;
+	}
+}
+
 if ( ! class_exists( 'WP_CLI' ) ) {
 	/**
 	 * Minimal stub of WP_CLI — records each call's arguments in

@@ -124,6 +124,16 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-plugin.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-runner-async.php';
 
 /**
+ * 設定値の保存機構(実行時刻)と、既定の自動実行経路である WP-Cron の
+ * 自己連鎖(v0.3 §Step6).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-settings.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-scheduler.php';
+WPCV_Scheduler::init();
+register_activation_hook( __FILE__, array( 'WPCV_Scheduler', 'activate' ) );
+register_deactivation_hook( __FILE__, array( 'WPCV_Scheduler', 'deactivate' ) );
+
+/**
  * Public API(§10). WPMAR 連携用に後方互換を維持する契約.
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-api.php';

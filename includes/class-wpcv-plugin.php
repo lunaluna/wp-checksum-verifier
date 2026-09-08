@@ -30,6 +30,14 @@ class WPCV_Plugin {
 	private static $run_coordinator = null;
 
 	/**
+	 * 組み立て済みの `WPCV_Repository`(1リクエスト内で使い回す。`run_coordinator()`
+	 * と共有する同一インスタンス).
+	 *
+	 * @var WPCV_Repository|null
+	 */
+	private static $repository = null;
+
+	/**
 	 * 本番用に配線された `WPCV_Run_Coordinator` を返す.
 	 *
 	 * @return WPCV_Run_Coordinator
@@ -43,21 +51,45 @@ class WPCV_Plugin {
 	}
 
 	/**
+	 * 本番用に配線された `WPCV_Repository` を返す.
+	 *
+	 * `WPCV_Run_Coordinator::run()` を経由しない単発の DB 操作(v0.3 §Step5の
+	 * `sweep_stale_running()` を WP-Cron/REST ハンドラの冒頭で呼ぶ場合など)向けに、
+	 * `run_coordinator()` が内部で使うのと同じインスタンスを公開する.
+	 *
+	 * @return WPCV_Repository
+	 */
+	public static function repository() {
+		if ( null === self::$repository ) {
+			self::$repository = self::build_repository();
+		}
+
+		return self::$repository;
+	}
+
+	/**
 	 * `WPCV_Run_Coordinator` を実際の依存で組み立てる.
 	 *
 	 * @return WPCV_Run_Coordinator
 	 */
 	private static function build_run_coordinator() {
-		global $wpdb;
-
 		$verifier = new WPCV_Verifier(
 			new WPCV_Source_Core(),
 			new WPCV_Source_Wporg_Plugin(),
 			new WPCV_Unknown_File_Scanner()
 		);
 
-		$repository = new WPCV_Repository( $wpdb );
+		return new WPCV_Run_Coordinator( $verifier, self::repository() );
+	}
 
-		return new WPCV_Run_Coordinator( $verifier, $repository );
+	/**
+	 * `WPCV_Repository` を実際の `global $wpdb` で組み立てる.
+	 *
+	 * @return WPCV_Repository
+	 */
+	private static function build_repository() {
+		global $wpdb;
+
+		return new WPCV_Repository( $wpdb );
 	}
 }

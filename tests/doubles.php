@@ -222,6 +222,22 @@ function wpcv_test_inject_run_coordinator( $coordinator = null ) {
 }
 
 /**
+ * `WPCV_Plugin::repository()` が返すインスタンスを差し替える
+ * (private static プロパティへのリフレクション。`wpcv_test_inject_run_coordinator()`
+ * と同じ手法. v0.3 §Step6の `WPCV_Scheduler::handle_event()` が
+ * `WPCV_Plugin::repository()->sweep_stale_running()` を呼ぶため、実 `global $wpdb`
+ * 無しでテストするのに必要).
+ *
+ * @param WPCV_Repository|null $repository 差し替え先. 省略時はキャッシュを空に戻す.
+ * @return void
+ */
+function wpcv_test_inject_repository( $repository = null ) {
+	$property = new ReflectionProperty( WPCV_Plugin::class, 'repository' );
+	$property->setAccessible( true );
+	$property->setValue( null, $repository );
+}
+
+/**
  * `WPCV_Verifier` の各 `verify_*()` が返す target_run の最小形を作る.
  *
  * @param array $overrides 上書きするフィールド.
