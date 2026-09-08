@@ -45,13 +45,26 @@ class WPCV_Action_Scheduler_Loader {
 	 * 呼び出すこと(Action Scheduler 自身の `plugins_loaded` 優先度0の
 	 * ブートストラップに間に合わせるため。呼び出し側の docblock 参照).
 	 *
-	 * @param string $plugin_dir プラグインのルートディレクトリの絶対パス.
+	 * 可用性チェックを `function_exists( 'as_enqueue_async_action' )` 固定にせず
+	 * 注入可能な callable にしているのは、`WPCV_Runner_Async::enqueue_run()` と
+	 * 同じ理由(PHP は一度定義した関数を未定義に戻せないため、固定チェックだと
+	 * PHPUnit プロセス内で他のテストが定義したスタブの状態がここに漏れる。
+	 * `WPCV_Runner_Async` の docblock 参照).
+	 *
+	 * @param string        $plugin_dir           プラグインのルートディレクトリの絶対パス.
+	 * @param callable|null $availability_checker 省略時は `function_exists( 'as_enqueue_async_action' )`.
 	 * @return void
 	 */
-	public static function maybe_load( $plugin_dir ) {
+	public static function maybe_load( $plugin_dir, ?callable $availability_checker = null ) {
+		if ( null === $availability_checker ) {
+			$availability_checker = static function () {
+				return function_exists( 'as_enqueue_async_action' );
+			};
+		}
+
 		// 他プラグインが既に同梱の Action Scheduler を読み込み済みの場合、
 		// 二重 require によるクラス再定義の致命的エラーを避ける.
-		if ( function_exists( 'as_enqueue_async_action' ) ) {
+		if ( call_user_func( $availability_checker ) ) {
 			return;
 		}
 

@@ -189,6 +189,46 @@ if ( ! defined( 'WPMU_PLUGIN_DIR' ) ) {
 	define( 'WPMU_PLUGIN_DIR', ABSPATH . 'wp-content/mu-plugins' );
 }
 
+if ( ! function_exists( 'add_action' ) ) {
+	/**
+	 * Stub add_action() — records the call in
+	 * $GLOBALS['_wpcv_test_added_actions'][$hook][] instead of actually wiring a
+	 * dispatcher (production code under test calls the registered handler
+	 * directly rather than via do_action(), so no dispatch stub is needed here).
+	 *
+	 * @param string   $hook          Hook name.
+	 * @param callable $callback      Callback.
+	 * @param int      $priority      Priority.
+	 * @param int      $accepted_args Accepted args count.
+	 * @return true
+	 */
+	function add_action( $hook, $callback, $priority = 10, $accepted_args = 1 ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_added_actions'][ $hook ][] = array( $callback, $priority, $accepted_args );
+
+		return true;
+	}
+}
+
+if ( ! function_exists( 'as_enqueue_async_action' ) ) {
+	/**
+	 * Stub as_enqueue_async_action() — records the call in
+	 * $GLOBALS['_wpcv_test_as_enqueue_calls'][] and returns a fake incrementing
+	 * action id (mirrors the real function's `int` return on success).
+	 *
+	 * @param string $hook     Hook name.
+	 * @param array  $args     Args passed to the hook.
+	 * @param string $group    Group.
+	 * @param bool   $unique   Unique.
+	 * @param int    $priority Priority.
+	 * @return int
+	 */
+	function as_enqueue_async_action( $hook, $args = array(), $group = '', $unique = false, $priority = 10 ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_as_enqueue_calls'][] = array( $hook, $args, $group, $unique, $priority );
+
+		return count( $GLOBALS['_wpcv_test_as_enqueue_calls'] );
+	}
+}
+
 if ( ! class_exists( 'WP_CLI' ) ) {
 	/**
 	 * Minimal stub of WP_CLI — records each call's arguments in

@@ -16,23 +16,36 @@ if ( ! defined( 'ABSPATH' ) ) {
  * `WP_CLI_Command` は継承しない(単一のリーフコマンドのみで、サブコマンドを
  * 束ねるための umbrella クラスが不要なため。`__invoke()` を持つプレーンな
  * クラスとして `WP_CLI::add_command()` に渡す WP-CLI の一般的な最小構成).
- * `--async` フラグは v0.3 Step 4 で追加する.
  */
 class WPCV_CLI_Command {
 
 	/**
-	 * コア・公式プラグイン・MU プラグイン領域を検証し、同期的に1回の run を実行する.
+	 * コア・公式プラグイン・MU プラグイン領域を検証し、run を実行する.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--async]
+	 * : `WPCV_Runner_Async::enqueue_run()` 経由で Action Scheduler のキューに
+	 *   enqueue する(既定の同期実行はこの関数を経由しない。§6の「CLIは同期が
+	 *   最も確実」という方針をそのまま尊重するため)。Action Scheduler が利用
+	 *   できない環境では自動的に同期実行へフォールバックする.
 	 *
 	 * ## EXAMPLES
 	 *
 	 *     wp wpcv run
+	 *     wp wpcv run --async
 	 *
 	 * @param array $args        位置引数(未使用).
-	 * @param array $assoc_args  連想引数(未使用. `--async` は Step 4 で追加).
+	 * @param array $assoc_args  連想引数(`--async`).
 	 * @return void
 	 */
 	public function __invoke( $args, $assoc_args ) {
-		unset( $args, $assoc_args );
+		unset( $args );
+
+		if ( ! empty( $assoc_args['async'] ) ) {
+			$this->run_async();
+			return;
+		}
 
 		$context = WPCV_Context_Builder::build( 'cli' );
 
@@ -46,6 +59,39 @@ class WPCV_CLI_Command {
 			return;
 		}
 
+		self::report_result( $result );
+	}
+
+	/**
+	 * `--async` 指定時の処理. `WPCV_Runner_Async::enqueue_run()` を呼び、
+	 * enqueue できたか同期フォールバックしたかに応じて出力を切り替える.
+	 *
+	 * @return void
+	 */
+	private function run_async() {
+		$enqueue_result = WPCV_Runner_Async::enqueue_run( 'cli' );
+
+		if ( $enqueue_result['enqueued'] ) {
+			WP_CLI::success(
+				sprintf(
+					'run をキューに追加しました(action_id: %d)。`wp action-scheduler run` または次回の cron 実行で処理されます.',
+					$enqueue_result['action_id']
+				)
+			);
+			return;
+		}
+
+		WP_CLI::line( 'Action Scheduler が利用できないため、同期実行にフォールバックしました.' );
+		self::report_result( $enqueue_result['result'] );
+	}
+
+	/**
+	 * `run()` の結果を出力する(`__invoke()` から分離してテスト可能にする).
+	 *
+	 * @param array $result `WPCV_Run_Coordinator::run()` の戻り値.
+	 * @return void
+	 */
+	private static function report_result( array $result ) {
 		WP_CLI::line( self::format_result( $result ) );
 		WP_CLI::success(
 			sprintf(
@@ -57,7 +103,7 @@ class WPCV_CLI_Command {
 	}
 
 	/**
-	 * `run()` の戻り値を1行の要約文字列に整形する(`__invoke()` から分離してテスト可能にする).
+	 * `run()` の戻り値を1行の要約文字列に整形する(`report_result()` から分離してテスト可能にする).
 	 *
 	 * @param array $result `WPCV_Run_Coordinator::run()` の戻り値.
 	 * @return string

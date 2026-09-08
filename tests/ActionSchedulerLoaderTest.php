@@ -112,7 +112,7 @@ class ActionSchedulerLoaderTest extends TestCase {
 	public function test_maybe_load_does_nothing_when_neither_path_exists() {
 		$plugin_dir = $this->make_plugin_dir();
 
-		WPCV_Action_Scheduler_Loader::maybe_load( $plugin_dir );
+		WPCV_Action_Scheduler_Loader::maybe_load( $plugin_dir, $this->unavailable_checker() );
 
 		$this->assertArrayNotHasKey( '_wpcv_test_as_loaded_from', $GLOBALS );
 	}
@@ -126,7 +126,7 @@ class ActionSchedulerLoaderTest extends TestCase {
 		$plugin_dir = $this->make_plugin_dir();
 		$this->put_fixture( $plugin_dir, 'vendor/woocommerce/action-scheduler/action-scheduler.php', 'vendor' );
 
-		WPCV_Action_Scheduler_Loader::maybe_load( $plugin_dir );
+		WPCV_Action_Scheduler_Loader::maybe_load( $plugin_dir, $this->unavailable_checker() );
 
 		$this->assertSame( 'vendor', $GLOBALS['_wpcv_test_as_loaded_from'] );
 	}
@@ -141,8 +141,24 @@ class ActionSchedulerLoaderTest extends TestCase {
 		$this->put_fixture( $plugin_dir, 'lib/action-scheduler/action-scheduler.php', 'lib' );
 		$this->put_fixture( $plugin_dir, 'vendor/woocommerce/action-scheduler/action-scheduler.php', 'vendor' );
 
-		WPCV_Action_Scheduler_Loader::maybe_load( $plugin_dir );
+		WPCV_Action_Scheduler_Loader::maybe_load( $plugin_dir, $this->unavailable_checker() );
 
 		$this->assertSame( 'lib', $GLOBALS['_wpcv_test_as_loaded_from'] );
+	}
+
+	/**
+	 * 「Action Scheduler は未読み込み」を常に返す可用性チェッカー.
+	 *
+	 * `as_enqueue_async_action()` は `wp-stubs.php` に「呼ばれたことを記録する」
+	 * 常設スタブとして定義済み(`RunnerAsyncTest` 用)であり、`function_exists()` が
+	 * 常に真を返してしまう。読み込みロジック自体を検証するこのテストクラスでは
+	 * 明示的に「未読み込み」を注入する(`maybe_load()` の docblock 参照).
+	 *
+	 * @return callable
+	 */
+	private function unavailable_checker() {
+		return static function () {
+			return false;
+		};
 	}
 }
