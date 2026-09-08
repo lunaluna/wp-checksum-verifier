@@ -79,10 +79,30 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-file-hash
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-path-normalizer.php';
 
 /**
- * 照合ソース(§3). まずコア照合(§3.2)から.
+ * 照合ソース(§3). コア照合(§3.2)と wp.org 公式プラグイン照合(§3.4).
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/interface-wpcv-manifest-source.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-core.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-wporg-plugin.php';
+
+/**
+ * 未知ファイル検出(§3.6の土台)と検証エンジン本体.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-unknown-file-scanner.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-verifier.php';
+
+/**
+ * DB 永続化層(§4.2)と、1回分の run のライフサイクルを統括する Coordinator.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-repository.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-run-coordinator.php';
+
+/**
+ * 実際の WordPress 環境から $context を組み立てる builder と、本番用の依存を
+ * 配線する composition root(v0.3 §6: 実行モデルのエントリポイント共通の土台).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-context-builder.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-plugin.php';
 
 /**
  * Public API(§10). WPMAR 連携用に後方互換を維持する契約.
