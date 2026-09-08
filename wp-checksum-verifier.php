@@ -117,6 +117,13 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-context-
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-plugin.php';
 
 /**
+ * WP-Cron・「今すぐ実行」・REST・CLI `--async` が収束する非同期実行の一本化
+ * エントリポイント(v0.3 §Step4). Step5以降の呼び出し元(WP-Cron等)より前に
+ * 読み込む必要があるため、常に読み込む(WP-CLI 同様の条件分岐はしない).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-runner-async.php';
+
+/**
  * Public API(§10). WPMAR 連携用に後方互換を維持する契約.
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-api.php';

@@ -46,7 +46,7 @@ class WPCV_Repository {
 	 * @param object        $wpdb `$wpdb` 相当のオブジェクト.
 	 * @param callable|null $now  現在時刻を返す callable. 省略時は `gmdate( 'Y-m-d H:i:s' )`.
 	 */
-	public function __construct( $wpdb, callable $now = null ) {
+	public function __construct( $wpdb, ?callable $now = null ) {
 		$this->wpdb = $wpdb;
 		$this->now  = $now ?? static function () {
 			return gmdate( 'Y-m-d H:i:s' );

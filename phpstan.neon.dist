@@ -11,6 +11,7 @@ parameters:
 
 	scanFiles:
 		- .phpstan/stubs/wp-cli.php
+		- .phpstan/stubs/action-scheduler.php
 
 includes:
 	- vendor/szepeviktor/phpstan-wordpress/extension.neon

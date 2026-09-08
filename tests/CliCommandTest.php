@@ -16,6 +16,8 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-verifier.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-coordinator.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-context-builder.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-runner-async.php';
 require_once dirname( __DIR__ ) . '/includes/cli/class-wpcv-cli-command.php';
 require_once __DIR__ . '/doubles.php';
 
@@ -25,10 +27,9 @@ use PHPUnit\Framework\TestCase;
  * `wp wpcv run` の実体である `WPCV_CLI_Command::__invoke()` のテスト.
  *
  * 実際の `WPCV_Plugin::run_coordinator()`(composition root)は `global $wpdb`
- * を必要とするため、ここでは `RunCoordinatorTest` と同じ手書きテストダブルで
- * 組み立てた `WPCV_Run_Coordinator` を `WPCV_Plugin` のキャッシュに直接差し込んで
- * 使う(private static プロパティへのリフレクション。composition root 自体は
- * `PluginTest` で別途検証済み).
+ * を必要とするため、`doubles.php` の `wpcv_test_make_fake_run_coordinator()` /
+ * `wpcv_test_inject_run_coordinator()` で手書きテストダブルに差し替える
+ * (composition root 自体は `PluginTest` で別途検証済み).
  */
 class CliCommandTest extends TestCase {
 
@@ -57,8 +58,8 @@ class CliCommandTest extends TestCase {
 	 */
 	protected function setUp(): void {
 		parent::setUp();
-		unset( $GLOBALS['_wpcv_test_wp_cli_calls'], $GLOBALS['_wpcv_test_bloginfo'], $GLOBALS['_wpcv_test_plugins'], $GLOBALS['_wpcv_test_mu_plugins'] );
-		$this->reset_plugin_run_coordinator_cache();
+		unset( $GLOBALS['_wpcv_test_wp_cli_calls'], $GLOBALS['_wpcv_test_bloginfo'], $GLOBALS['_wpcv_test_plugins'], $GLOBALS['_wpcv_test_mu_plugins'], $GLOBALS['_wpcv_test_as_enqueue_calls'] );
+		wpcv_test_inject_run_coordinator();
 	}
 
 	/**
@@ -67,59 +68,8 @@ class CliCommandTest extends TestCase {
 	 * @return void
 	 */
 	protected function tearDown(): void {
-		$this->reset_plugin_run_coordinator_cache();
+		wpcv_test_inject_run_coordinator();
 		parent::tearDown();
-	}
-
-	/**
-	 * `WPCV_Plugin::$run_coordinator` を null に戻す.
-	 *
-	 * @return void
-	 */
-	private function reset_plugin_run_coordinator_cache() {
-		$property = new ReflectionProperty( WPCV_Plugin::class, 'run_coordinator' );
-		$property->setAccessible( true );
-		$property->setValue( null, null );
-	}
-
-	/**
-	 * `WPCV_Plugin::run_coordinator()` が返すインスタンスを、テストダブルで
-	 * 組み立てたものに差し替える.
-	 *
-	 * @return void
-	 */
-	private function inject_fake_run_coordinator() {
-		$core_source = new WPCV_Test_Fake_Manifest_Source(
-			array(
-				'manifest_status' => 'ok',
-				'error_code'      => null,
-				'files'           => array(),
-			)
-		);
-
-		$verifier = new WPCV_Verifier(
-			$core_source,
-			new WPCV_Test_Fake_Manifest_Source(
-				array(
-					'manifest_status' => 'missing',
-					'error_code'      => WPCV_Error_Code::MANIFEST_NOT_FOUND,
-					'files'           => array(),
-				)
-			),
-			new WPCV_Unknown_File_Scanner()
-		);
-
-		$repository  = new WPCV_Repository(
-			new WPCV_Test_Fake_WPDB(),
-			static function () {
-				return '2026-09-08 12:00:00';
-			}
-		);
-		$coordinator = new WPCV_Run_Coordinator( $verifier, $repository );
-
-		$property = new ReflectionProperty( WPCV_Plugin::class, 'run_coordinator' );
-		$property->setAccessible( true );
-		$property->setValue( null, $coordinator );
 	}
 
 	/**
@@ -129,7 +79,7 @@ class CliCommandTest extends TestCase {
 	 */
 	public function test_invoke_runs_verification_and_reports_success() {
 		$GLOBALS['_wpcv_test_bloginfo'] = array( 'version' => '6.8' );
-		$this->inject_fake_run_coordinator();
+		wpcv_test_inject_run_coordinator( wpcv_test_make_fake_run_coordinator() );
 
 		$command = new WPCV_CLI_Command();
 		$command->__invoke( array(), array() );
@@ -148,7 +98,7 @@ class CliCommandTest extends TestCase {
 	 */
 	public function test_invoke_converts_invalid_argument_exception_to_wp_cli_error() {
 		// get_bloginfo('version') のスタブを未設定のままにし、空文字を返させる.
-		$this->inject_fake_run_coordinator();
+		wpcv_test_inject_run_coordinator( wpcv_test_make_fake_run_coordinator() );
 
 		$command = new WPCV_CLI_Command();
 		$command->__invoke( array(), array() );
@@ -157,6 +107,28 @@ class CliCommandTest extends TestCase {
 		$this->assertCount( 1, $GLOBALS['_wpcv_test_wp_cli_calls']['error'] );
 		$this->assertStringContainsString( 'requires', $GLOBALS['_wpcv_test_wp_cli_calls']['error'][0] );
 		$this->assertStringContainsString( 'version', $GLOBALS['_wpcv_test_wp_cli_calls']['error'][0] );
+	}
+
+	/**
+	 * `--async` 指定時、`WPCV_Runner_Async::enqueue_run()` 経由で enqueue され、
+	 * `WP_CLI::success()` に action_id を含むメッセージが渡されることを確認する
+	 * (`as_enqueue_async_action()` は `wp-stubs.php` に常設のスタブがあり、
+	 * このテスト環境では常に「利用可能」側の分岐になる).
+	 *
+	 * @return void
+	 */
+	public function test_invoke_with_async_flag_enqueues_via_runner_async() {
+		$command = new WPCV_CLI_Command();
+		$command->__invoke( array(), array( 'async' => true ) );
+
+		$this->assertCount( 1, $GLOBALS['_wpcv_test_as_enqueue_calls'] );
+		list( $hook, $args ) = $GLOBALS['_wpcv_test_as_enqueue_calls'][0];
+		$this->assertSame( WPCV_Runner_Async::HOOK, $hook );
+		$this->assertSame( array( 'cli' ), $args );
+
+		$this->assertArrayNotHasKey( 'error', $GLOBALS['_wpcv_test_wp_cli_calls'] );
+		$this->assertCount( 1, $GLOBALS['_wpcv_test_wp_cli_calls']['success'] );
+		$this->assertStringContainsString( 'action_id', $GLOBALS['_wpcv_test_wp_cli_calls']['success'][0] );
 	}
 
 	/**

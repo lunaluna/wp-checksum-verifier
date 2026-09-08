@@ -145,6 +145,58 @@ class WPCV_Test_Fake_WPDB {
 }
 
 /**
+ * コアのみ(常に成功するマニフェスト)を持つ、手書きスタブ組み立ての
+ * `WPCV_Run_Coordinator` を作る.
+ *
+ * `CliCommandTest` と `RunnerAsyncTest` がどちらも「composition root
+ * (`WPCV_Plugin::run_coordinator()`)を丸ごと差し替えて呼び出し結果を検証する」
+ * ことを必要とするため、重複を避けてここに集約する(doubles.php の集約方針参照).
+ *
+ * @return WPCV_Run_Coordinator
+ */
+function wpcv_test_make_fake_run_coordinator() {
+	$verifier = new WPCV_Verifier(
+		new WPCV_Test_Fake_Manifest_Source(
+			array(
+				'manifest_status' => 'ok',
+				'error_code'      => null,
+				'files'           => array(),
+			)
+		),
+		new WPCV_Test_Fake_Manifest_Source(
+			array(
+				'manifest_status' => 'missing',
+				'error_code'      => WPCV_Error_Code::MANIFEST_NOT_FOUND,
+				'files'           => array(),
+			)
+		),
+		new WPCV_Unknown_File_Scanner()
+	);
+
+	$repository = new WPCV_Repository(
+		new WPCV_Test_Fake_WPDB(),
+		static function () {
+			return '2026-09-08 12:00:00';
+		}
+	);
+
+	return new WPCV_Run_Coordinator( $verifier, $repository );
+}
+
+/**
+ * `WPCV_Plugin::run_coordinator()` が返すインスタンスを差し替える
+ * (private static プロパティへのリフレクション).
+ *
+ * @param WPCV_Run_Coordinator|null $coordinator 差し替え先. 省略時はキャッシュを空に戻す.
+ * @return void
+ */
+function wpcv_test_inject_run_coordinator( $coordinator = null ) {
+	$property = new ReflectionProperty( WPCV_Plugin::class, 'run_coordinator' );
+	$property->setAccessible( true );
+	$property->setValue( null, $coordinator );
+}
+
+/**
  * `WPCV_Verifier` の各 `verify_*()` が返す target_run の最小形を作る.
  *
  * @param array $overrides 上書きするフィールド.
