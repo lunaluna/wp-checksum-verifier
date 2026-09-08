@@ -139,3 +139,52 @@ if ( ! function_exists( 'wp_remote_retrieve_body' ) ) {
 		return isset( $response['body'] ) ? (string) $response['body'] : '';
 	}
 }
+
+if ( ! function_exists( 'get_bloginfo' ) ) {
+	/**
+	 * Stub get_bloginfo() — $GLOBALS['_wpcv_test_bloginfo'][$show] を返す(無ければ空文字).
+	 * `WPCV_Context_Builder::build()` は 'version' しか読まない.
+	 *
+	 * @param string $show 取得したい項目名.
+	 * @return string
+	 */
+	function get_bloginfo( $show = '' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return isset( $GLOBALS['_wpcv_test_bloginfo'][ $show ] ) ? $GLOBALS['_wpcv_test_bloginfo'][ $show ] : '';
+	}
+}
+
+if ( ! function_exists( 'get_plugins' ) ) {
+	/**
+	 * Stub get_plugins() — $GLOBALS['_wpcv_test_plugins'] を返す(無ければ空配列).
+	 * 実際の `get_plugins()` は `wp-admin/includes/plugin.php` の require を必要と
+	 * するが、`WPCV_Context_Builder::build()` は `function_exists()` で既存関数を
+	 * 優先するため、このスタブがある限り require は発生しない.
+	 *
+	 * @return array
+	 */
+	function get_plugins() { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return isset( $GLOBALS['_wpcv_test_plugins'] ) ? $GLOBALS['_wpcv_test_plugins'] : array();
+	}
+}
+
+if ( ! function_exists( 'get_mu_plugins' ) ) {
+	/**
+	 * Stub get_mu_plugins() — $GLOBALS['_wpcv_test_mu_plugins'] を返す(無ければ空配列).
+	 *
+	 * @return array
+	 */
+	function get_mu_plugins() { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return isset( $GLOBALS['_wpcv_test_mu_plugins'] ) ? $GLOBALS['_wpcv_test_mu_plugins'] : array();
+	}
+}
+
+// WP_PLUGIN_DIR / WPMU_PLUGIN_DIR は定数のためテストごとに値を変えられない。
+// 実際の WordPress の既定値(WP_CONTENT_DIR 配下)と同じ形にしておき、
+// ContextBuilderTest はこのパス配下にフィクスチャを置いて検証する.
+if ( ! defined( 'WP_PLUGIN_DIR' ) ) {
+	define( 'WP_PLUGIN_DIR', ABSPATH . 'wp-content/plugins' );
+}
+
+if ( ! defined( 'WPMU_PLUGIN_DIR' ) ) {
+	define( 'WPMU_PLUGIN_DIR', ABSPATH . 'wp-content/mu-plugins' );
+}
