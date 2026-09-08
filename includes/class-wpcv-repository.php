@@ -203,4 +203,80 @@ class WPCV_Repository {
 			array( '%d' )
 		);
 	}
+
+	/**
+	 * 一定時間より古い `status = 'running'` の run を `failed` に更新する(v0.3 §Step5).
+	 *
+	 * 「1アクション=1run全体」の簡略化(v0.3のスコープ縮小。実装セッションへの
+	 * 申し送り参照)のトレードオフとして、途中で強制終了し `running` のまま残留
+	 * した run が次の run を永久にブロックし続ける事態を避けるための、WPMAR流の
+	 * 軽量なハートビート途絶検知(WPMARの `sweep_stale_running()` と同じ
+	 * 「アクセスのたびに掃除する」方式。専用の Cron は立てない).
+	 *
+	 * 判定基準は `started_at` のみを使う(`updated_at` 相当の列は追加しない):
+	 * このプラグインの run は実行途中で行を更新しない(target_runs・findings は
+	 * すべて `finish_run()` の直前にまとめて保存する設計。`WPCV_Run_Coordinator`
+	 * の docblock 参照)ため、`started_at` より新しい「途中経過」の時刻は
+	 * そもそも存在しない。WPMAR の `updated_at`(セグメント単位で進捗を刻む
+	 * 設計だからこそ意味を持つハートビート)とは前提が異なる.
+	 *
+	 * v0.3 では専用の `aborted` 状態は導入せず、既存の `failed` を流用する
+	 * (§14 のv0.4以降のスコープとした本格的なタイムアウト状態機械とは区別する).
+	 *
+	 * @param int $minutes この分数より古い `started_at` を stale とみなす.
+	 * @return int stale と判定し `failed` に更新した run の件数.
+	 */
+	public function sweep_stale_running( $minutes ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+
+		// 動的な値を含まない固定リテラルのみのクエリ(status/日時の絞り込みは
+		// 下の PHP 側で行う).
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static table literal, no user input.
+		$running_rows = $this->wpdb->get_results( "SELECT id, started_at, status FROM {$table} WHERE status = 'running'", ARRAY_A );
+		$running_rows = is_array( $running_rows ) ? $running_rows : array();
+
+		$threshold = $this->stale_threshold( (int) $minutes );
+		$swept     = 0;
+
+		foreach ( $running_rows as $row ) {
+			// status も改めて確認する(SQL の WHERE 句と重複するが、テストダブル
+			// (`WPCV_Test_Fake_WPDB::get_results()`)が WHERE 句を解釈せず
+			// テーブルの全行を返す簡易実装のための保険でもある).
+			if ( 'running' !== $row['status'] ) {
+				continue;
+			}
+
+			if ( empty( $row['started_at'] ) || (string) $row['started_at'] >= $threshold ) {
+				continue;
+			}
+
+			$this->wpdb->update(
+				$table,
+				array(
+					'status'      => 'failed',
+					'finished_at' => call_user_func( $this->now ),
+					'notes'       => 'sweep_stale_running() により stale な running run として検知し failed 化しました.',
+				),
+				array( 'id' => (int) $row['id'] ),
+				array( '%s', '%s', '%s' ),
+				array( '%d' )
+			);
+
+			++$swept;
+		}
+
+		return $swept;
+	}
+
+	/**
+	 * 現在時刻(`$this->now`)から `$minutes` 分前の MySQL DATETIME 文字列を求める.
+	 *
+	 * @param int $minutes 分数.
+	 * @return string
+	 */
+	private function stale_threshold( $minutes ) {
+		$now_timestamp = strtotime( call_user_func( $this->now ) );
+
+		return gmdate( 'Y-m-d H:i:s', $now_timestamp - ( $minutes * 60 ) );
+	}
 }

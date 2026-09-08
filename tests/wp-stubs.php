@@ -189,6 +189,10 @@ if ( ! defined( 'WPMU_PLUGIN_DIR' ) ) {
 	define( 'WPMU_PLUGIN_DIR', ABSPATH . 'wp-content/mu-plugins' );
 }
 
+if ( ! defined( 'ARRAY_A' ) ) {
+	define( 'ARRAY_A', 'ARRAY_A' );
+}
+
 if ( ! function_exists( 'add_action' ) ) {
 	/**
 	 * Stub add_action() — records the call in

@@ -142,6 +142,31 @@ class WPCV_Test_Fake_WPDB {
 
 		return $updated;
 	}
+
+	/**
+	 * 行を読み取る(`WPCV_Repository::sweep_stale_running()` 専用の簡易フェイク).
+	 *
+	 * 実 `$wpdb` と異なり SQL を解釈しない。クエリ文字列から `FROM {table}` の
+	 * テーブル名だけを正規表現で拾い、そのテーブルの全行をそのまま返す
+	 * (WHERE 句によるフィルタリングは呼び出し側の PHP コードが行う設計になって
+	 * いるため、フェイク側で再現する必要が無い。`WPCV_Repository::sweep_stale_running()`
+	 * の docblock 参照).
+	 *
+	 * @param string $query  SQL文字列(`FROM {table}` を含む前提).
+	 * @param string $output 無視する(本プラグインは常に `ARRAY_A` で呼ぶ).
+	 * @return array<int, array>
+	 */
+	public function get_results( $query, $output = 'ARRAY_A' ) {
+		unset( $output );
+
+		if ( 1 !== preg_match( '/FROM\s+(\S+)/i', $query, $matches ) ) {
+			return array();
+		}
+
+		$table = $matches[1];
+
+		return isset( $this->rows[ $table ] ) ? array_values( $this->rows[ $table ] ) : array();
+	}
 }
 
 /**
