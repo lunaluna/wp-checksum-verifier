@@ -111,6 +111,15 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-api.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/functions-api.php';
 
 /**
+ * WP-CLI エントリポイント(§6.2). `wp` 経由で実行されたときのみ読み込む
+ * (`WP_CLI_Command` 等 WP-CLI 自身が定義するクラスへの依存を、通常のリクエストで
+ * 読み込まないようにするため).
+ */
+if ( defined( 'WP_CLI' ) && WP_CLI ) {
+	require_once plugin_dir_path( __FILE__ ) . 'includes/cli/class-wpcv-cli-command.php';
+}
+
+/**
  * 管理画面(§11). フロントエンドの読み込みを避けるため管理画面でのみ読み込む.
  */
 if ( is_admin() ) {
