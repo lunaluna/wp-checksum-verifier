@@ -42,3 +42,75 @@ if ( ! function_exists( 'get_core_checksums' ) ) {
 		return $GLOBALS['_wpcv_test_core_checksums'][ $locale ];
 	}
 }
+
+if ( ! class_exists( 'WP_Error' ) ) {
+	/**
+	 * Minimal stub of WP_Error — used only as an is_wp_error() marker type in tests.
+	 * WPCV_Source_Wporg_Plugin never reads its properties, only checks the type.
+	 */
+	class WP_Error {
+	}
+}
+
+if ( ! function_exists( 'is_wp_error' ) ) {
+	/**
+	 * Stub is_wp_error().
+	 *
+	 * @param mixed $thing Thing to check.
+	 * @return bool
+	 */
+	function is_wp_error( $thing ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return $thing instanceof WP_Error;
+	}
+}
+
+if ( ! function_exists( 'wp_remote_get' ) ) {
+	/**
+	 * Stub wp_remote_get() — $GLOBALS['_wpcv_test_remote_error'] が真値なら WP_Error を
+	 * 返す。それ以外は $GLOBALS['_wpcv_test_remote_response'](無ければ 404 の空
+	 * レスポンス)を返す。呼び出し引数は $GLOBALS['_wpcv_test_remote_get_calls'] に
+	 * 記録する(URL 組み立てをテストで検証するため).
+	 *
+	 * @param string $url  URL.
+	 * @param array  $args Args.
+	 * @return array|WP_Error
+	 */
+	function wp_remote_get( $url, $args = array() ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_remote_get_calls'][] = array( $url, $args );
+
+		if ( ! empty( $GLOBALS['_wpcv_test_remote_error'] ) ) {
+			return new WP_Error();
+		}
+
+		return isset( $GLOBALS['_wpcv_test_remote_response'] )
+			? $GLOBALS['_wpcv_test_remote_response']
+			: array(
+				'response' => array( 'code' => 404 ),
+				'body'     => '',
+			);
+	}
+}
+
+if ( ! function_exists( 'wp_remote_retrieve_response_code' ) ) {
+	/**
+	 * Stub wp_remote_retrieve_response_code().
+	 *
+	 * @param array $response Response.
+	 * @return int|string
+	 */
+	function wp_remote_retrieve_response_code( $response ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return isset( $response['response']['code'] ) ? $response['response']['code'] : '';
+	}
+}
+
+if ( ! function_exists( 'wp_remote_retrieve_body' ) ) {
+	/**
+	 * Stub wp_remote_retrieve_body().
+	 *
+	 * @param array $response Response.
+	 * @return string
+	 */
+	function wp_remote_retrieve_body( $response ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return isset( $response['body'] ) ? (string) $response['body'] : '';
+	}
+}
