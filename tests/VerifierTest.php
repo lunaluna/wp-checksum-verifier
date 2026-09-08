@@ -13,44 +13,9 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.p
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-unknown-file-scanner.php';
 require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-source.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-verifier.php';
+require_once __DIR__ . '/doubles.php';
 
 use PHPUnit\Framework\TestCase;
-
-/**
- * テスト用の固定結果を返す WPCV_Manifest_Source 実装.
- *
- * 実際の Source_Core / Source_Wporg_Plugin(HTTP・WP 関数依存)を経由せず、
- * WPCV_Verifier 自体のオーケストレーションロジックだけを検証するために使う.
- */
-class WPCV_Test_Fake_Manifest_Source implements WPCV_Manifest_Source {
-
-	/**
-	 * get_manifest() が返す固定値.
-	 *
-	 * @var array
-	 */
-	private $result;
-
-	/**
-	 * コンストラクタ.
-	 *
-	 * @param array $result get_manifest() の戻り値としてそのまま返す配列.
-	 */
-	public function __construct( array $result ) {
-		$this->result = $result;
-	}
-
-	/**
-	 * 固定値をそのまま返す.
-	 *
-	 * @param array $context 無視する.
-	 * @return array
-	 */
-	public function get_manifest( array $context ) {
-		unset( $context );
-		return $this->result;
-	}
-}
 
 /**
  * §3.2/§3.4/§3.6 の各検証と、§5.2 の run 集計ロジックのテスト.
