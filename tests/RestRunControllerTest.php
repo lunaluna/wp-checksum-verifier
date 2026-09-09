@@ -20,6 +20,7 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-runner-async.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-scheduler.php';
+require_once dirname( __DIR__ ) . '/includes/rest/class-wpcv-rest-token.php';
 require_once dirname( __DIR__ ) . '/includes/rest/class-wpcv-rest-run-controller.php';
 require_once __DIR__ . '/doubles.php';
 
@@ -28,9 +29,9 @@ use PHPUnit\Framework\TestCase;
 /**
  * `WPCV_Rest_Run_Controller` のテスト.
  *
- * v0.3 §Step8の計画通り、冪等性判定ロジック(`WPCV_Repository`のフェイク経由)・
- * パーミッションコールバックのcapabilityチェック・時間予算のクランプ計算
- * (`clamp_time_budget()`. `ini_get()`を介さない純粋関数)を検証する。
+ * v0.3 §Step8/§Step9の計画通り、冪等性判定ロジック(`WPCV_Repository`のフェイク
+ * 経由)・パーミッションコールバックのトークン認証+レート制限・時間予算の
+ * クランプ計算(`clamp_time_budget()`. `ini_get()`を介さない純粋関数)を検証する。
  * ルーティング登録自体(`register_routes()`)・Action Schedulerの実キュー処理は
  * 実WordPress環境が必要なため対象外(実地検証側の責務).
  */
@@ -48,7 +49,8 @@ class RestRunControllerTest extends TestCase {
 			$GLOBALS['_wpcv_test_options'],
 			$GLOBALS['_wpcv_test_user_capabilities'],
 			$GLOBALS['_wpcv_test_as_enqueue_calls'],
-			$GLOBALS['_wpcv_test_bloginfo']
+			$GLOBALS['_wpcv_test_bloginfo'],
+			$GLOBALS['_wpcv_test_transients']
 		);
 		wpcv_test_inject_repository();
 	}
@@ -64,31 +66,65 @@ class RestRunControllerTest extends TestCase {
 	}
 
 	/**
-	 * 単一サイトでは `manage_options` を持つユーザーだけ許可されることを確認する.
+	 * 正しいトークンをBearerヘッダーで渡せば許可されることを確認する
+	 * (§Step9: cookie認証・capabilityとは無関係にトークンのみで判定する).
 	 *
 	 * @return void
 	 */
-	public function test_check_permission_requires_manage_options_on_single_site() {
-		$GLOBALS['_wpcv_test_is_multisite']       = false;
-		$GLOBALS['_wpcv_test_user_capabilities']  = array();
-		$this->assertFalse( WPCV_Rest_Run_Controller::check_permission() );
+	public function test_check_permission_allows_correct_bearer_token() {
+		$token   = WPCV_Rest_Token::generate();
+		$request = new WPCV_Test_Fake_Rest_Request( array( 'Authorization' => 'Bearer ' . $token ) );
 
-		$GLOBALS['_wpcv_test_user_capabilities'] = array( 'manage_options' );
-		$this->assertTrue( WPCV_Rest_Run_Controller::check_permission() );
+		$this->assertTrue( WPCV_Rest_Run_Controller::check_permission( $request ) );
 	}
 
 	/**
-	 * マルチサイトでは `manage_network_options` を持つユーザーだけ許可されることを確認する.
+	 * トークンが無効・未指定なら `WP_Error`(401)を返すことを確認する.
 	 *
 	 * @return void
 	 */
-	public function test_check_permission_requires_manage_network_options_on_multisite() {
-		$GLOBALS['_wpcv_test_is_multisite']      = true;
-		$GLOBALS['_wpcv_test_user_capabilities'] = array( 'manage_options' );
-		$this->assertFalse( WPCV_Rest_Run_Controller::check_permission() );
+	public function test_check_permission_rejects_invalid_token() {
+		WPCV_Rest_Token::generate();
+		$request = new WPCV_Test_Fake_Rest_Request( array( 'Authorization' => 'Bearer wrong-token' ) );
 
-		$GLOBALS['_wpcv_test_user_capabilities'] = array( 'manage_network_options' );
-		$this->assertTrue( WPCV_Rest_Run_Controller::check_permission() );
+		$result = WPCV_Rest_Run_Controller::check_permission( $request );
+
+		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertSame( 401, $result->get_error_data()['status'] );
+	}
+
+	/**
+	 * ヘッダーが何も無ければ `WP_Error`(401)を返すことを確認する
+	 * (`current_user_can()` によるcookie認証へのフォールバックはしない).
+	 *
+	 * @return void
+	 */
+	public function test_check_permission_rejects_missing_token() {
+		$request = new WPCV_Test_Fake_Rest_Request();
+
+		$result = WPCV_Rest_Run_Controller::check_permission( $request );
+
+		$this->assertInstanceOf( WP_Error::class, $result );
+	}
+
+	/**
+	 * 失敗回数が上限に達すると、正しいトークンでも `429` で拒否されることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_check_permission_returns_429_after_rate_limit_exceeded() {
+		$token           = WPCV_Rest_Token::generate();
+		$wrong_request   = new WPCV_Test_Fake_Rest_Request( array( 'Authorization' => 'Bearer wrong-token' ) );
+		$correct_request = new WPCV_Test_Fake_Rest_Request( array( 'Authorization' => 'Bearer ' . $token ) );
+
+		for ( $i = 0; $i < WPCV_Rest_Token::RATE_LIMIT_MAX_ATTEMPTS; $i++ ) {
+			WPCV_Rest_Run_Controller::check_permission( $wrong_request );
+		}
+
+		$result = WPCV_Rest_Run_Controller::check_permission( $correct_request );
+
+		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertSame( 429, $result->get_error_data()['status'] );
 	}
 
 	/**

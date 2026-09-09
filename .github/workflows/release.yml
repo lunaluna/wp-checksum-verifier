@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. 0.1.0). Leave blank when triggered by tag push.'
+        description: 'Release tag (e.g. 0.3.0). Leave blank when triggered by tag push.'
         required: false
 
 # 呼び出し先の GITHUB_TOKEN 権限は呼び出し元を超えられないため、
