@@ -61,10 +61,73 @@ if ( ! function_exists( 'get_core_checksums' ) ) {
 
 if ( ! class_exists( 'WP_Error' ) ) {
 	/**
-	 * Minimal stub of WP_Error — used only as an is_wp_error() marker type in tests.
-	 * WPCV_Source_Wporg_Plugin never reads its properties, only checks the type.
+	 * Minimal stub of WP_Error. `WPCV_Source_Wporg_Plugin` だけを対象にしていた
+	 * 頃は `is_wp_error()` のマーカー型としてしか使わなかったが、
+	 * `WPCV_Rest_Run_Controller::check_permission()`(v0.3 §Step9)が
+	 * `get_error_data()` でHTTPステータスを読むため、その分だけ実装を持たせる.
 	 */
 	class WP_Error {
+
+		/**
+		 * エラーコード.
+		 *
+		 * @var string
+		 */
+		private $code;
+
+		/**
+		 * エラーメッセージ.
+		 *
+		 * @var string
+		 */
+		private $message;
+
+		/**
+		 * エラーデータ(`array( 'status' => 401 )` 等).
+		 *
+		 * @var mixed
+		 */
+		private $data;
+
+		/**
+		 * コンストラクタ.
+		 *
+		 * @param string $code    エラーコード.
+		 * @param string $message エラーメッセージ.
+		 * @param mixed  $data    エラーデータ.
+		 */
+		public function __construct( $code = '', $message = '', $data = '' ) {
+			$this->code    = $code;
+			$this->message = $message;
+			$this->data    = $data;
+		}
+
+		/**
+		 * エラーコードを返す.
+		 *
+		 * @return string
+		 */
+		public function get_error_code() {
+			return $this->code;
+		}
+
+		/**
+		 * エラーメッセージを返す.
+		 *
+		 * @return string
+		 */
+		public function get_error_message() {
+			return $this->message;
+		}
+
+		/**
+		 * エラーデータを返す.
+		 *
+		 * @return mixed
+		 */
+		public function get_error_data() {
+			return $this->data;
+		}
 	}
 }
 
@@ -299,15 +362,17 @@ if ( ! function_exists( 'get_option' ) ) {
 if ( ! function_exists( 'update_option' ) ) {
 	/**
 	 * Stub update_option() — $GLOBALS['_wpcv_test_options'][$name] に保存する. 呼び出し
-	 * 引数は $GLOBALS['_wpcv_test_update_option_calls'][] に記録する.
+	 * 引数(autoload含む)は $GLOBALS['_wpcv_test_update_option_calls'][] に記録する.
 	 *
-	 * @param string $name  オプション名.
-	 * @param mixed  $value 保存する値.
+	 * @param string    $name     オプション名.
+	 * @param mixed     $value    保存する値.
+	 * @param bool|null $autoload autoload指定. 省略時は本番の既定(null相当)を
+	 *                            表す `null` を記録する.
 	 * @return true
 	 */
-	function update_option( $name, $value ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+	function update_option( $name, $value, $autoload = null ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
 		$GLOBALS['_wpcv_test_options'][ $name ]      = $value;
-		$GLOBALS['_wpcv_test_update_option_calls'][] = array( $name, $value );
+		$GLOBALS['_wpcv_test_update_option_calls'][] = array( $name, $value, $autoload );
 
 		return true;
 	}
@@ -391,6 +456,107 @@ if ( ! function_exists( 'wp_clear_scheduled_hook' ) ) {
 		$GLOBALS['_wpcv_test_clear_scheduled_hook_calls'][] = array( $hook, $args );
 
 		return 1;
+	}
+}
+
+if ( ! function_exists( 'wp_salt' ) ) {
+	/**
+	 * Stub wp_salt() — テスト全体で固定の文字列を返す(実際の salt の値そのものは
+	 * `WPCV_Rest_Token` の検証ロジックにとって意味を持たず、「同じ入力なら同じ
+	 * ハッシュになる」ことだけが重要なため).
+	 *
+	 * @param string $scheme Scheme. 無視する.
+	 * @return string
+	 */
+	function wp_salt( $scheme = 'auth' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		unset( $scheme );
+
+		return 'wpcv-test-fixed-salt';
+	}
+}
+
+if ( ! function_exists( 'get_transient' ) ) {
+	/**
+	 * Stub get_transient() — $GLOBALS['_wpcv_test_transients'][$key] を返す
+	 * (無ければ false. 本番の「未設定/期限切れ」と同じ意味).
+	 *
+	 * @param string $key Transient key.
+	 * @return mixed
+	 */
+	function get_transient( $key ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return isset( $GLOBALS['_wpcv_test_transients'][ $key ] ) ? $GLOBALS['_wpcv_test_transients'][ $key ] : false;
+	}
+}
+
+if ( ! function_exists( 'set_transient' ) ) {
+	/**
+	 * Stub set_transient() — $GLOBALS['_wpcv_test_transients'][$key] に保存する
+	 * (有効期限は本テストダブルでは再現しない. `WPCV_Rest_Token` のテストは
+	 * ウィンドウ経過による自然失効ではなく `clear_failed_attempts()` による
+	 * 明示的な削除だけを検証するため).
+	 *
+	 * @param string $key        Transient key.
+	 * @param mixed  $value      値.
+	 * @param int    $expiration 有効期限(秒). 無視する.
+	 * @return true
+	 */
+	function set_transient( $key, $value, $expiration = 0 ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		unset( $expiration );
+		$GLOBALS['_wpcv_test_transients'][ $key ] = $value;
+
+		return true;
+	}
+}
+
+if ( ! function_exists( 'delete_transient' ) ) {
+	/**
+	 * Stub delete_transient().
+	 *
+	 * @param string $key Transient key.
+	 * @return true
+	 */
+	function delete_transient( $key ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		unset( $GLOBALS['_wpcv_test_transients'][ $key ] );
+
+		return true;
+	}
+}
+
+if ( ! function_exists( 'sanitize_text_field' ) ) {
+	/**
+	 * Stub sanitize_text_field() — 改行・タグを取り除く程度の簡易実装で十分
+	 * (`WPCV_Rest_Run_Controller::client_identifier()` がIPアドレス文字列に使う
+	 * だけで、厳密な本番相当の実装は不要なため).
+	 *
+	 * @param string $value 入力値.
+	 * @return string
+	 */
+	function sanitize_text_field( $value ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return trim( wp_strip_all_tags( (string) $value ) );
+	}
+}
+
+if ( ! function_exists( 'wp_strip_all_tags' ) ) {
+	/**
+	 * Stub wp_strip_all_tags().
+	 *
+	 * @param string $value 入力値.
+	 * @return string
+	 */
+	function wp_strip_all_tags( $value ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return wp_unslash( strip_tags( (string) $value ) );
+	}
+}
+
+if ( ! function_exists( 'wp_unslash' ) ) {
+	/**
+	 * Stub wp_unslash() — テストではスラッシュ付加が起きないため、そのまま返す.
+	 *
+	 * @param mixed $value 入力値.
+	 * @return mixed
+	 */
+	function wp_unslash( $value ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return $value;
 	}
 }
 

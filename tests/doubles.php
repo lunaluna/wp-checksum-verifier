@@ -5,7 +5,8 @@
  * `VerifierTest` と `RunCoordinatorTest` がどちらも固定結果を返す
  * `WPCV_Manifest_Source` を必要とし、`RepositoryTest` と `RunCoordinatorTest`
  * がどちらも `$wpdb` ダブルを必要とするため、重複を避けてここに集約する
- * (2箇所目の利用が出た時点で共通化する、という判断).
+ * (2箇所目の利用が出た時点で共通化する、という判断)。`WPCV_Test_Fake_Rest_Request`
+ * も同じ理由で`RestTokenTest`・`RestRunControllerTest`から共用する.
  *
  * @package WPChecksumVerifier
  */
@@ -288,4 +289,54 @@ function wpcv_test_make_finding( array $overrides = array() ) {
 		),
 		$overrides
 	);
+}
+
+/**
+ * テスト用の最小 `WP_REST_Request` ダブル.
+ *
+ * `get_header()` はヘッダー名を渡すと値を返すだけの実装。`get_param()` は
+ * 呼ばれた時点で失敗させる — `WPCV_Rest_Token::extract_from_request()` が
+ * クエリパラメータを一切読まない(§12.3の要件)ことを、レスポンスの中身では
+ * なく「そもそも呼ばれない」という形で保証するため.
+ */
+class WPCV_Test_Fake_Rest_Request {
+
+	/**
+	 * ヘッダー名(小文字) => 値.
+	 *
+	 * @var array<string,string>
+	 */
+	private $headers;
+
+	/**
+	 * コンストラクタ.
+	 *
+	 * @param array<string,string> $headers ヘッダー名(任意の大文字小文字) => 値.
+	 */
+	public function __construct( array $headers = array() ) {
+		$this->headers = array_change_key_case( $headers, CASE_LOWER );
+	}
+
+	/**
+	 * ヘッダーを返す.
+	 *
+	 * @param string $name ヘッダー名(大文字小文字を問わない).
+	 * @return string|null
+	 */
+	public function get_header( $name ) {
+		$name = strtolower( $name );
+
+		return isset( $this->headers[ $name ] ) ? $this->headers[ $name ] : null;
+	}
+
+	/**
+	 * 呼ばれたら失敗させる. クエリパラメータを読んでいないことの検証用.
+	 *
+	 * @param string $name パラメータ名.
+	 * @return never
+	 * @throws RuntimeException 呼ばれた時点で必ず投げる.
+	 */
+	public function get_param( $name ) {
+		throw new RuntimeException( 'get_param() should never be called: ' . esc_html( $name ) );
+	}
 }

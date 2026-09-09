@@ -22,9 +22,9 @@ if ( ! defined( 'ABSPATH' ) ) {
  *    された時間予算(`WPCV_Settings::get_rest_time_budget_seconds()`)の範囲内で
  *    キューを処理し、時間内に処理できた分だけ進める.
  *
- * 認証は現時点では既存のcookie認証+`manage_options`/`manage_network_options`の
- * capabilityチェックのみ(WordPressログインセッションを持たない外部システムcron
- * から呼べるトークン認証はv0.3 §Step9で追加する).
+ * 認証は`WPCV_Rest_Token`によるトークン専用(v0.3 §Step9)。cookie認証との併用は
+ * しない(WordPressログインセッションを持たない外部システムcronから呼べる
+ * ようにするための設計。`check_permission()` の docblock参照).
  *
  * `GET /status`/`GET /findings`はv0.3では実装しない(観測系機能はv0.4の実行履歴
  * 画面とまとめる方針).
@@ -65,10 +65,56 @@ class WPCV_Rest_Run_Controller {
 	/**
 	 * パーミッションコールバック.
 	 *
-	 * @return bool
+	 * `current_user_can()` によるcapabilityチェックとは併用しない(§12.3。
+	 * WordPressログインセッションを持たない外部システムcronから呼べることが
+	 * 目的のため、cookie認証を前提にしたコールバックにはしない). 認証失敗を
+	 * `WPCV_Rest_Token` のレート制限に記録し、一定回数を超えたら
+	 * トークンの正誤に関わらず`429`で拒否する.
+	 *
+	 * @param WP_REST_Request $request リクエスト.
+	 * @return true|WP_Error
 	 */
-	public static function check_permission() {
-		return (bool) current_user_can( self::required_capability() );
+	public static function check_permission( $request ) {
+		$identifier = self::client_identifier();
+
+		if ( WPCV_Rest_Token::is_rate_limited( $identifier ) ) {
+			return new WP_Error(
+				'wpcv_rest_rate_limited',
+				__( 'Too many failed authentication attempts. Try again later.', 'wp-checksum-verifier' ),
+				array( 'status' => 429 )
+			);
+		}
+
+		$token = WPCV_Rest_Token::extract_from_request( $request );
+
+		if ( WPCV_Rest_Token::verify( $token ) ) {
+			WPCV_Rest_Token::clear_failed_attempts( $identifier );
+
+			return true;
+		}
+
+		WPCV_Rest_Token::record_failed_attempt( $identifier );
+
+		return new WP_Error(
+			'wpcv_rest_forbidden',
+			__( 'Invalid or missing REST token.', 'wp-checksum-verifier' ),
+			array( 'status' => 401 )
+		);
+	}
+
+	/**
+	 * レート制限の単位に使う呼び出し元の識別子(IPアドレス)を返す.
+	 *
+	 * `X-Forwarded-For` 等のクライアントが自由に指定できるヘッダーは信用しない
+	 * (プロキシ経由の実運用でIPアドレスが偏る可能性はあるが、v0.3では
+	 * 詐称されうる値をセキュリティ判定に使わないことを優先する).
+	 *
+	 * @return string
+	 */
+	private static function client_identifier() {
+		return isset( $_SERVER['REMOTE_ADDR'] )
+			? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) )
+			: '';
 	}
 
 	/**
@@ -193,14 +239,5 @@ class WPCV_Rest_Run_Controller {
 		$response->header( 'Cache-Control', 'no-store' );
 
 		return $response;
-	}
-
-	/**
-	 * このエンドポイントに必要な capability を返す.
-	 *
-	 * @return string
-	 */
-	private static function required_capability() {
-		return is_multisite() ? 'manage_network_options' : 'manage_options';
 	}
 }
