@@ -22,6 +22,22 @@ if ( ! function_exists( 'esc_html' ) ) {
 	}
 }
 
+if ( ! function_exists( '__' ) ) {
+	/**
+	 * Stub __() — 翻訳せずそのまま返す(テストは文言の内容ではなく分岐ロジックだけを
+	 * 検証するため翻訳は不要).
+	 *
+	 * @param string $text   Text.
+	 * @param string $domain Text domain. 無視する.
+	 * @return string
+	 */
+	function __( $text, $domain = 'default' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound, WordPress.WP.I18n.MissingTranslatorsComment
+		unset( $domain );
+
+		return $text;
+	}
+}
+
 if ( ! function_exists( 'get_core_checksums' ) ) {
 	/**
 	 * Stub get_core_checksums() — $GLOBALS['_wpcv_test_core_checksums'][$locale] を

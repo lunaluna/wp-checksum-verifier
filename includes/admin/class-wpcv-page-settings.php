@@ -12,8 +12,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * 設定画面.
  *
- * 実行時刻(UTC)の変更フォームをv0.3 §Step6で追加した。以降のステップで
- * 「今すぐ実行」ボタン(§Step7)・REST時間予算(§Step8)・トークン発行(§Step9)の
+ * 実行時刻(UTC)の変更フォームをv0.3 §Step6で、「今すぐ実行」ボタンを§Step7で
+ * 追加した。以降のステップでREST時間予算(§Step8)・トークン発行(§Step9)の
  * UIをここに追加していく.
  */
 class WPCV_Page_Settings {
@@ -33,6 +33,20 @@ class WPCV_Page_Settings {
 	const NONCE_NAME = 'wpcv_settings_nonce';
 
 	/**
+	 * 「今すぐ実行」フォームの nonce action.
+	 *
+	 * @var string
+	 */
+	const RUN_NOW_NONCE_ACTION = 'wpcv_run_now';
+
+	/**
+	 * 「今すぐ実行」フォームの nonce name.
+	 *
+	 * @var string
+	 */
+	const RUN_NOW_NONCE_NAME = 'wpcv_run_now_nonce';
+
+	/**
 	 * 画面を描画する.
 	 *
 	 * @return void
@@ -42,9 +56,11 @@ class WPCV_Page_Settings {
 			return;
 		}
 
-		$saved = self::maybe_handle_save();
+		$saved         = self::maybe_handle_save();
+		$run_triggered = self::maybe_handle_run_now();
 
-		$run_time = WPCV_Settings::get_run_time();
+		$run_time     = WPCV_Settings::get_run_time();
+		$button_state = self::run_now_button_state( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON );
 		?>
 		<div class="wrap">
 			<h1><?php echo esc_html__( 'WP Checksum Verifier', 'wp-checksum-verifier' ); ?></h1>
@@ -52,6 +68,12 @@ class WPCV_Page_Settings {
 			<?php if ( $saved ) : ?>
 				<div class="notice notice-success is-dismissible">
 					<p><?php echo esc_html__( 'Settings saved.', 'wp-checksum-verifier' ); ?></p>
+				</div>
+			<?php endif; ?>
+
+			<?php if ( $run_triggered ) : ?>
+				<div class="notice notice-success is-dismissible">
+					<p><?php echo esc_html__( 'A verification run has been scheduled.', 'wp-checksum-verifier' ); ?></p>
 				</div>
 			<?php endif; ?>
 
@@ -74,8 +96,53 @@ class WPCV_Page_Settings {
 				</table>
 				<?php submit_button( __( 'Save Changes', 'wp-checksum-verifier' ) ); ?>
 			</form>
+
+			<h2><?php echo esc_html__( 'Run now', 'wp-checksum-verifier' ); ?></h2>
+			<form method="post">
+				<?php wp_nonce_field( self::RUN_NOW_NONCE_ACTION, self::RUN_NOW_NONCE_NAME ); ?>
+				<p class="description">
+					<?php echo esc_html__( 'Start a verification run immediately instead of waiting for the daily schedule.', 'wp-checksum-verifier' ); ?>
+				</p>
+				<?php if ( $button_state['notice'] ) : ?>
+					<p class="description"><?php echo esc_html( $button_state['notice'] ); ?></p>
+				<?php endif; ?>
+				<?php
+				submit_button(
+					__( 'Run now', 'wp-checksum-verifier' ),
+					'secondary',
+					'wpcv_run_now_submit',
+					true,
+					$button_state['disabled'] ? array( 'disabled' => 'disabled' ) : array()
+				);
+				?>
+			</form>
 		</div>
 		<?php
+	}
+
+	/**
+	 * 「今すぐ実行」ボタンの表示状態を判定する.
+	 *
+	 * `DISABLE_WP_CRON` 定数を直接読まず引数で受け取る形にしている(レンダリングから
+	 * 分岐ロジックを分離してテストするため。定数は一度定義すると PHP の言語仕様上
+	 * 未定義に戻せず、テストごとに値を変えられない. `WPCV_Runner_Async::enqueue_run()`
+	 * の可用性チェッカー注入と同じ考え方).
+	 *
+	 * @param bool $wp_cron_disabled `DISABLE_WP_CRON` が真かどうか.
+	 * @return array{disabled: bool, notice: string|null}
+	 */
+	public static function run_now_button_state( $wp_cron_disabled ) {
+		if ( $wp_cron_disabled ) {
+			return array(
+				'disabled' => true,
+				'notice'   => __( 'WP-Cron is disabled on this site (DISABLE_WP_CRON). Use WP-CLI (`wp wpcv run`) or the REST endpoint instead.', 'wp-checksum-verifier' ),
+			);
+		}
+
+		return array(
+			'disabled' => false,
+			'notice'   => null,
+		);
 	}
 
 	/**
@@ -109,6 +176,37 @@ class WPCV_Page_Settings {
 
 		WPCV_Settings::update_run_time( $hour, $minute );
 		WPCV_Scheduler::reschedule();
+
+		return true;
+	}
+
+	/**
+	 * 「今すぐ実行」フォームが POST されていれば nonce・capability・`DISABLE_WP_CRON`を
+	 * 検証したうえで、単発イベントを即時(`time()`)で予約し `spawn_cron()` する.
+	 *
+	 * 同期実行はしない(§6.4: 管理画面のリクエストを検証の完了までブロックしない
+	 * ため。Step6の`WPCV_Scheduler::HOOK`ハンドラを再利用するため、実際の検証は
+	 * WP-Cronの通常の発火経路(`spawn_cron()`が起こす非同期HTTPリクエスト)を通る).
+	 *
+	 * @return bool 予約を実行したかどうか.
+	 */
+	private static function maybe_handle_run_now() {
+		if ( ! isset( $_POST[ self::RUN_NOW_NONCE_NAME ] ) ) {
+			return false;
+		}
+
+		check_admin_referer( self::RUN_NOW_NONCE_ACTION, self::RUN_NOW_NONCE_NAME );
+
+		if ( ! current_user_can( self::required_capability() ) ) {
+			return false;
+		}
+
+		if ( self::run_now_button_state( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON )['disabled'] ) {
+			return false;
+		}
+
+		wp_schedule_single_event( time(), WPCV_Scheduler::HOOK );
+		spawn_cron();
 
 		return true;
 	}
