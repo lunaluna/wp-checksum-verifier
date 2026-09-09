@@ -90,4 +90,53 @@ class SettingsTest extends TestCase {
 
 		$this->assertSame( array( 'hour' => 23, 'minute' => 0 ), WPCV_Settings::get_run_time() );
 	}
+
+	/**
+	 * 未保存の状態ではREST時間予算の既定値(15秒)が返ることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_get_rest_time_budget_seconds_returns_default_when_unset() {
+		$this->assertSame(
+			WPCV_Settings::DEFAULT_REST_TIME_BUDGET_SECONDS,
+			WPCV_Settings::get_rest_time_budget_seconds()
+		);
+	}
+
+	/**
+	 * REST時間予算を保存すると、以降 `get_rest_time_budget_seconds()` に反映されることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_update_rest_time_budget_seconds_persists_value() {
+		WPCV_Settings::update_rest_time_budget_seconds( 30 );
+
+		$this->assertSame( 30, WPCV_Settings::get_rest_time_budget_seconds() );
+	}
+
+	/**
+	 * REST時間予算は1〜`MAX_REST_TIME_BUDGET_SECONDS`の範囲にclampされることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_update_rest_time_budget_seconds_clamps_out_of_range_values() {
+		WPCV_Settings::update_rest_time_budget_seconds( 0 );
+		$this->assertSame( 1, WPCV_Settings::get_rest_time_budget_seconds() );
+
+		WPCV_Settings::update_rest_time_budget_seconds( 9999 );
+		$this->assertSame( WPCV_Settings::MAX_REST_TIME_BUDGET_SECONDS, WPCV_Settings::get_rest_time_budget_seconds() );
+	}
+
+	/**
+	 * 実行時刻とREST時間予算を独立して保存でき、片方の更新がもう片方に影響しないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_update_run_time_and_rest_time_budget_are_independent() {
+		WPCV_Settings::update_run_time( 5, 30 );
+		WPCV_Settings::update_rest_time_budget_seconds( 20 );
+
+		$this->assertSame( array( 'hour' => 5, 'minute' => 30 ), WPCV_Settings::get_run_time() );
+		$this->assertSame( 20, WPCV_Settings::get_rest_time_budget_seconds() );
+	}
 }

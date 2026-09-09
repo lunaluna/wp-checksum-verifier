@@ -10,7 +10,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * 設定値(v0.3時点では WP-Cron の実行時刻のみ)の読み書きを集約する.
+ * 設定値(v0.3時点では WP-Cron の実行時刻とREST時間予算)の読み書きを集約する.
  *
  * 検出結果等(§5.6)と同様 installation-level のデータであるため、マルチサイトでは
  * ネットワーク全体で1つの設定を `wp_sitemeta`(`get_site_option`/`update_site_option`)
@@ -45,21 +45,41 @@ class WPCV_Settings {
 	const DEFAULT_RUN_MINUTE = 0;
 
 	/**
+	 * REST `POST /run`(v0.3 §Step8)の既定の時間予算(秒).
+	 *
+	 * 計画時点(v0.3)でユーザーと確認済みの仮値。実際の`max_execution_time`の
+	 * 70%を上限にクランプする(`WPCV_Rest_Run_Controller::clamp_time_budget()`
+	 * 参照)ため、この既定値自体が最終的な予算になるとは限らない.
+	 *
+	 * @var int
+	 */
+	const DEFAULT_REST_TIME_BUDGET_SECONDS = 15;
+
+	/**
+	 * REST時間予算の設定値としてUIで許容する上限(秒). `max_execution_time`に
+	 * よる実行時クランプとは別の、設定フォーム側の入力値の妥当性チェック.
+	 *
+	 * @var int
+	 */
+	const MAX_REST_TIME_BUDGET_SECONDS = 120;
+
+	/**
 	 * 既定値.
 	 *
-	 * @return array{run_hour:int,run_minute:int}
+	 * @return array{run_hour:int,run_minute:int,rest_time_budget_seconds:int}
 	 */
 	public static function defaults() {
 		return array(
-			'run_hour'   => self::DEFAULT_RUN_HOUR,
-			'run_minute' => self::DEFAULT_RUN_MINUTE,
+			'run_hour'                 => self::DEFAULT_RUN_HOUR,
+			'run_minute'               => self::DEFAULT_RUN_MINUTE,
+			'rest_time_budget_seconds' => self::DEFAULT_REST_TIME_BUDGET_SECONDS,
 		);
 	}
 
 	/**
 	 * 保存済みの設定値を既定値とマージして返す.
 	 *
-	 * @return array{run_hour:int,run_minute:int}
+	 * @return array{run_hour:int,run_minute:int,rest_time_budget_seconds:int}
 	 */
 	public static function get_all() {
 		$stored = self::read_option();
@@ -93,6 +113,31 @@ class WPCV_Settings {
 
 		$settings['run_hour']   = self::clamp_int( $hour, 0, 23 );
 		$settings['run_minute'] = self::clamp_int( $minute, 0, 59 );
+
+		return self::write_option( $settings );
+	}
+
+	/**
+	 * REST時間予算(秒)を返す.
+	 *
+	 * @return int
+	 */
+	public static function get_rest_time_budget_seconds() {
+		$settings = self::get_all();
+
+		return (int) $settings['rest_time_budget_seconds'];
+	}
+
+	/**
+	 * REST時間予算(秒)を保存する.
+	 *
+	 * @param int $seconds 秒数. 範囲外(1-`self::MAX_REST_TIME_BUDGET_SECONDS`外)は clamp する.
+	 * @return bool `update_option()`/`update_site_option()` の戻り値.
+	 */
+	public static function update_rest_time_budget_seconds( $seconds ) {
+		$settings = self::get_all();
+
+		$settings['rest_time_budget_seconds'] = self::clamp_int( $seconds, 1, self::MAX_REST_TIME_BUDGET_SECONDS );
 
 		return self::write_option( $settings );
 	}
