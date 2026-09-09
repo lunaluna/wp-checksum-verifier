@@ -4,7 +4,7 @@ Tags: security, checksum, integrity, malware, audit
 Requires at least: 6.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.1.0
+Stable tag: 0.3.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -12,9 +12,16 @@ WordPress core, plugin, theme, and must-use plugin checksum verifier. Detects ta
 
 == Description ==
 
-WP Checksum Verifier compares the files on disk against official checksum manifests for WordPress core, official plugins, official themes, and (via a manual mapping) unofficial plugins/themes hosted on GitHub Releases. It is not published on the WordPress.org Plugin Directory; see README.md for distribution details.
+WP Checksum Verifier compares the files on disk against official checksum manifests for WordPress core, official plugins, and must-use plugins, and reports unknown files not present in any manifest. It is not published on the WordPress.org Plugin Directory; see README.md for distribution details.
 
-This plugin is under active development (v0.1). Features described here will expand as milestones in CHANGELOG.md are completed.
+Official theme and GitHub-hosted plugin/theme verification are not implemented yet; see CHANGELOG.md for progress.
+
+= Running a verification =
+
+* **WP-CLI**: `wp wpcv run` runs synchronously (the default). `wp wpcv run --async` enqueues the run via Action Scheduler when available.
+* **WP-Cron**: a daily run at a configurable UTC time (Settings screen), enabled automatically once the plugin is active.
+* **Admin button**: a "Run now" button on the settings screen schedules an immediate run.
+* **REST API**: `POST /wp-json/wpcv/v1/run`, authenticated with a bearer token issued from the settings screen — for external schedulers (e.g. managed hosting without WP-Cron).
 
 == Installation ==
 

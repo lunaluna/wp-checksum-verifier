@@ -1,12 +1,63 @@
 # WP Checksum Verifier
 
-WordPress core, plugin, theme, and must-use plugin checksum verifier. Detects
+WordPress core, plugin, and must-use plugin checksum verifier. Detects
 tampering by comparing installed files against official checksum manifests
-(wp.org core/plugin checksums, self-extracted theme archives, and GitHub
-Releases for unofficial plugins/themes).
+(wp.org core/plugin checksums) and reports unknown files not present in any
+manifest.
 
-> **Status**: under active development (v0.1, not yet released). See
-> `CHANGELOG.md` for progress.
+> **Status**: v0.3.0. The verification engine and all planned execution
+> model entry points (WP-CLI, WP-Cron, admin "Run now" button, REST API)
+> are implemented. Official theme verification and GitHub-hosted
+> plugin/theme verification are not implemented yet. See `CHANGELOG.md` for
+> details.
+
+## Verification targets
+
+- **WordPress core**: compared against the official checksums for the
+  installed version/locale.
+- **Official (wp.org) plugins**: compared against each plugin's official
+  checksums for its installed version.
+- **Must-use plugins**: scanned for unknown files (no official checksum
+  source exists for MU plugins).
+- **Unknown files**: files present on disk but absent from the relevant
+  manifest are reported as findings, for every target above.
+- Not yet implemented: official theme verification, and checksum
+  verification for unofficial plugins/themes hosted on GitHub Releases.
+
+## Running a verification
+
+| Mode | How | Notes |
+| --- | --- | --- |
+| WP-CLI (sync) | `wp wpcv run` | The default; blocks until the run completes. |
+| WP-CLI (async) | `wp wpcv run --async` | Enqueues via Action Scheduler when available, otherwise falls back to sync. |
+| WP-Cron | automatic | Runs once a day at a configurable UTC time (Settings screen); self-reschedules after each run. |
+| Admin button | Settings screen → "Run now" | Schedules an immediate run without blocking the request; disabled when `DISABLE_WP_CRON` is set. |
+| REST API | `POST /wp-json/wpcv/v1/run` | For external schedulers (e.g. managed hosting without WP-Cron). See below. |
+
+Every run sweeps and fails any previous run stuck in `running` state
+(e.g. after a fatal error mid-run) before starting.
+
+### REST API
+
+`POST /wp-json/wpcv/v1/run` requires a bearer token, issued from the
+Settings screen (shown once at generation time; only a salted hash is
+stored). Send it as `Authorization: Bearer <token>` (preferred) or
+`X-WPCV-Token: <token>`. Query-string tokens are intentionally not
+supported. A `WPCV_REST_TOKEN` constant (e.g. in `wp-config.php`) overrides
+the token issued from the Settings screen. Repeated authentication failures
+from the same IP are rate-limited.
+
+The endpoint is idempotent: while a run is already in progress it returns
+that run's id instead of starting a new one. When Action Scheduler is
+available, it also opportunistically drains the queue within a configurable
+time budget (Settings screen; always clamped to 70% of the server's
+`max_execution_time`).
+
+## Settings
+
+The plugin's settings screen (network admin menu on multisite) lets you
+configure: the daily WP-Cron run time (UTC), the REST time budget, and REST
+token issuance.
 
 ## Distribution
 
