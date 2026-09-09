@@ -134,6 +134,12 @@ register_activation_hook( __FILE__, array( 'WPCV_Scheduler', 'activate' ) );
 register_deactivation_hook( __FILE__, array( 'WPCV_Scheduler', 'deactivate' ) );
 
 /**
+ * REST `POST /wp-json/wpcv/v1/run`(v0.3 §Step8. モードC・簡略版).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/rest/class-wpcv-rest-run-controller.php';
+add_action( 'rest_api_init', array( 'WPCV_Rest_Run_Controller', 'register_routes' ) );
+
+/**
  * Public API(§10). WPMAR 連携用に後方互換を維持する契約.
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-api.php';

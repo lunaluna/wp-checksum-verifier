@@ -394,6 +394,111 @@ if ( ! function_exists( 'wp_clear_scheduled_hook' ) ) {
 	}
 }
 
+if ( ! function_exists( 'current_user_can' ) ) {
+	/**
+	 * Stub current_user_can() — $GLOBALS['_wpcv_test_user_capabilities'](文字列の
+	 * 配列)に `$capability` が含まれているかどうかを返す(既定は空配列 = 常に false).
+	 *
+	 * @param string $capability Capability.
+	 * @return bool
+	 */
+	function current_user_can( $capability ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$allowed = isset( $GLOBALS['_wpcv_test_user_capabilities'] ) ? $GLOBALS['_wpcv_test_user_capabilities'] : array();
+
+		return in_array( $capability, $allowed, true );
+	}
+}
+
+if ( ! function_exists( 'register_rest_route' ) ) {
+	/**
+	 * Stub register_rest_route() — records the call in
+	 * $GLOBALS['_wpcv_test_registered_rest_routes'][] instead of wiring real routing.
+	 *
+	 * @param string $rest_namespace Namespace.
+	 * @param string $route          Route.
+	 * @param array  $args           Args.
+	 * @param bool   $override       Override.
+	 * @return true
+	 */
+	function register_rest_route( $rest_namespace, $route, $args = array(), $override = false ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_registered_rest_routes'][] = array( $rest_namespace, $route, $args, $override );
+
+		return true;
+	}
+}
+
+if ( ! class_exists( 'WP_REST_Server' ) ) {
+	/**
+	 * Minimal stub of WP_REST_Server — only the constant our controller reads.
+	 */
+	class WP_REST_Server {
+		const CREATABLE = 'POST';
+	}
+}
+
+if ( ! class_exists( 'WP_REST_Request' ) ) {
+	/**
+	 * Minimal stub of WP_REST_Request. v0.3 §Step8のハンドラはリクエストパラメータを
+	 * 読まないため空のマーカー型として置くだけで十分.
+	 */
+	class WP_REST_Request {
+	}
+}
+
+if ( ! class_exists( 'WP_REST_Response' ) ) {
+	/**
+	 * Minimal stub of WP_REST_Response — records the body and headers so tests can
+	 * assert on them without a real REST server.
+	 */
+	class WP_REST_Response {
+
+		/**
+		 * レスポンスボディ.
+		 *
+		 * @var mixed
+		 */
+		public $data;
+
+		/**
+		 * ヘッダー(ヘッダー名 => 値).
+		 *
+		 * @var array<string,string>
+		 */
+		private $headers = array();
+
+		/**
+		 * コンストラクタ.
+		 *
+		 * @param mixed $data   レスポンスボディ.
+		 * @param int   $status HTTPステータスコード. 本テストダブルでは未使用.
+		 */
+		public function __construct( $data = null, $status = 200 ) {
+			$this->data = $data;
+			unset( $status );
+		}
+
+		/**
+		 * ヘッダーを設定する.
+		 *
+		 * @param string $key   ヘッダー名.
+		 * @param string $value 値.
+		 * @return void
+		 */
+		public function header( $key, $value ) {
+			$this->headers[ $key ] = $value;
+		}
+
+		/**
+		 * 設定済みのヘッダーを返す(テスト用アクセサ).
+		 *
+		 * @return array<string,string>
+		 */
+		public function get_headers() {
+			return $this->headers;
+		}
+	}
+}
+
 if ( ! class_exists( 'WP_CLI' ) ) {
 	/**
 	 * Minimal stub of WP_CLI — records each call's arguments in

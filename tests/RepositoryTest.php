@@ -292,4 +292,49 @@ class RepositoryTest extends TestCase {
 		$this->assertSame( 0, $swept );
 		$this->assertSame( 'success', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
 	}
+
+	/**
+	 * `running` 状態の run が無ければ `null` を返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_find_active_run_id_returns_null_when_none_running() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-09 11:00:00',
+				'status'      => 'success',
+				'run_trigger' => 'rest',
+				'runner'      => 'async',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$this->assertNull( $repository->find_active_run_id() );
+	}
+
+	/**
+	 * `running` 状態の run があれば、その id を返すことを確認する(v0.3 §Step8の
+	 * REST冪等性判定).
+	 *
+	 * @return void
+	 */
+	public function test_find_active_run_id_returns_id_when_running() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-09 11:55:00',
+				'status'      => 'running',
+				'run_trigger' => 'rest',
+				'runner'      => 'async',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$this->assertSame( 1, $repository->find_active_run_id() );
+	}
 }

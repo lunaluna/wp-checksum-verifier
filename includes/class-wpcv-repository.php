@@ -269,6 +269,38 @@ class WPCV_Repository {
 	}
 
 	/**
+	 * 現在 `status = 'running'` の run が無いかを調べる(v0.3 §Step8: RESTハンドラの
+	 * 冪等性判定に使う).
+	 *
+	 * 呼び出し側は先に `sweep_stale_running()` を呼んでおくこと(このメソッドは
+	 * stale 判定を行わない。ここで見つかる `running` 行は「stale ではない
+	 * = 現在進行中とみなせる」run である前提を呼び出し元が保証する設計).
+	 * 複数件見つかった場合(通常は起こらないが、同時リクエストによる競合等)は
+	 * 最初に見つかった1件の id を返す(v0.3では厳密な排他制御までは行わない
+	 * 簡略化スコープのため).
+	 *
+	 * @return int|null 進行中の run が無ければ `null`.
+	 */
+	public function find_active_run_id() {
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+
+		// sweep_stale_running() と同じ方針で、動的な値を含まない固定リテラルのみのクエリ.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static table literal, no user input.
+		$running_rows = $this->wpdb->get_results( "SELECT id, status FROM {$table} WHERE status = 'running'", ARRAY_A );
+		$running_rows = is_array( $running_rows ) ? $running_rows : array();
+
+		foreach ( $running_rows as $row ) {
+			// `sweep_stale_running()` と同じ理由(テストダブルの WHERE 句非対応)で
+			// status を改めて確認する.
+			if ( 'running' === $row['status'] ) {
+				return (int) $row['id'];
+			}
+		}
+
+		return null;
+	}
+
+	/**
 	 * 現在時刻(`$this->now`)から `$minutes` 分前の MySQL DATETIME 文字列を求める.
 	 *
 	 * @param int $minutes 分数.
