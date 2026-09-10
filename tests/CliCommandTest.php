@@ -27,9 +27,14 @@ use PHPUnit\Framework\TestCase;
  * `wp wpcv run` の実体である `WPCV_CLI_Command::__invoke()` のテスト.
  *
  * 実際の `WPCV_Plugin::run_coordinator()`(composition root)は `global $wpdb`
- * を必要とするため、`doubles.php` の `wpcv_test_make_fake_run_coordinator()` /
- * `wpcv_test_inject_run_coordinator()` で手書きテストダブルに差し替える
- * (composition root 自体は `PluginTest` で別途検証済み).
+ * を必要とするため、`doubles.php` の `wpcv_test_make_fake_environment()` /
+ * `wpcv_test_inject_run_coordinator()` / `wpcv_test_inject_repository()` で
+ * 手書きテストダブルに差し替える(composition root 自体は `PluginTest` で別途検証済み)。
+ * v0.3.1 §Step1で `__invoke()` が `WPCV_Plugin::repository()->reserve_run()` を
+ * 直接呼ぶようになったため、`run_coordinator()` と `repository()` の両方を
+ * (本番の composition root が同じインスタンスを共有するのと同様に)同じ
+ * `WPCV_Repository` インスタンスで差し替える必要がある(`wpcv_test_make_fake_environment()`
+ * の docblock 参照).
  */
 class CliCommandTest extends TestCase {
 
@@ -60,6 +65,7 @@ class CliCommandTest extends TestCase {
 		parent::setUp();
 		unset( $GLOBALS['_wpcv_test_wp_cli_calls'], $GLOBALS['_wpcv_test_bloginfo'], $GLOBALS['_wpcv_test_plugins'], $GLOBALS['_wpcv_test_mu_plugins'], $GLOBALS['_wpcv_test_as_enqueue_calls'] );
 		wpcv_test_inject_run_coordinator();
+		wpcv_test_inject_repository();
 	}
 
 	/**
@@ -69,6 +75,7 @@ class CliCommandTest extends TestCase {
 	 */
 	protected function tearDown(): void {
 		wpcv_test_inject_run_coordinator();
+		wpcv_test_inject_repository();
 		parent::tearDown();
 	}
 
@@ -79,7 +86,9 @@ class CliCommandTest extends TestCase {
 	 */
 	public function test_invoke_runs_verification_and_reports_success() {
 		$GLOBALS['_wpcv_test_bloginfo'] = array( 'version' => '6.8' );
-		wpcv_test_inject_run_coordinator( wpcv_test_make_fake_run_coordinator() );
+		$made                           = wpcv_test_make_fake_environment();
+		wpcv_test_inject_run_coordinator( $made['coordinator'] );
+		wpcv_test_inject_repository( $made['repository'] );
 
 		$command = new WPCV_CLI_Command();
 		$command->__invoke( array(), array() );
@@ -98,7 +107,9 @@ class CliCommandTest extends TestCase {
 	 */
 	public function test_invoke_converts_invalid_argument_exception_to_wp_cli_error() {
 		// get_bloginfo('version') のスタブを未設定のままにし、空文字を返させる.
-		wpcv_test_inject_run_coordinator( wpcv_test_make_fake_run_coordinator() );
+		$made = wpcv_test_make_fake_environment();
+		wpcv_test_inject_run_coordinator( $made['coordinator'] );
+		wpcv_test_inject_repository( $made['repository'] );
 
 		$command = new WPCV_CLI_Command();
 		$command->__invoke( array(), array() );
@@ -107,6 +118,27 @@ class CliCommandTest extends TestCase {
 		$this->assertCount( 1, $GLOBALS['_wpcv_test_wp_cli_calls']['error'] );
 		$this->assertStringContainsString( 'requires', $GLOBALS['_wpcv_test_wp_cli_calls']['error'][0] );
 		$this->assertStringContainsString( 'version', $GLOBALS['_wpcv_test_wp_cli_calls']['error'][0] );
+	}
+
+	/**
+	 * 既に active(running)な run がある場合、検証を実行せず `WP_CLI::error()` を
+	 * 呼ぶことを確認する(v0.3.1 §Step1: 同期 CLI も `reserve_run()` を通す
+	 * ようになったことで、同時実行の防止が効くようになったことの確認).
+	 *
+	 * @return void
+	 */
+	public function test_invoke_reports_error_when_run_already_active() {
+		$made = wpcv_test_make_fake_environment();
+		$made['repository']->reserve_run();
+		wpcv_test_inject_run_coordinator( $made['coordinator'] );
+		wpcv_test_inject_repository( $made['repository'] );
+
+		$command = new WPCV_CLI_Command();
+		$command->__invoke( array(), array() );
+
+		$this->assertArrayNotHasKey( 'success', $GLOBALS['_wpcv_test_wp_cli_calls'] );
+		$this->assertCount( 1, $GLOBALS['_wpcv_test_wp_cli_calls']['error'] );
+		$this->assertStringContainsString( 'run #1', $GLOBALS['_wpcv_test_wp_cli_calls']['error'][0] );
 	}
 
 	/**

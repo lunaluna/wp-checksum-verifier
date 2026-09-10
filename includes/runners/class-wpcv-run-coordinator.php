@@ -64,6 +64,17 @@ class WPCV_Run_Coordinator {
 	/**
 	 * コア・公式プラグイン・MU プラグイン領域を検証し、1回の run として保存する.
 	 *
+	 * `$run_id` は呼び出し元が `WPCV_Repository::reserve_run()`(必要なら
+	 * `mark_queued_running()` で `queued` から引き継いで)で事前に予約した、
+	 * 既に `running` である run の id を渡すこと(v0.3.1 §Step1: run 行の作成を
+	 * 検証完了後ではなく受付時点に移した。プランP0「run行が検証完了後まで
+	 * 作られない」への対策。このクラス自身はもう run 行を作成しない).
+	 *
+	 * バリデーション・検証・保存のいずれかで例外が発生した場合、`$run_id` の
+	 * run を `mark_run_failed()` で failed 化してから例外を再送出する(検証途中の
+	 * 例外・タイムアウトでも失敗記録が残らない、というプランP0の不具合への対策).
+	 *
+	 * @param int   $run_id  呼び出し元が予約済みの(`running` 状態の)run の id.
 	 * @param array $context {
 	 *     コンテキスト.
 	 *
@@ -76,86 +87,85 @@ class WPCV_Run_Coordinator {
 	 *                                 MU プラグイン領域の検証をスキップする.
 	 *     @type array  $mu_plugins    `get_mu_plugins()` と同じ形式(ファイル名 =>
 	 *                                 ヘッダー配列。キーのみ使う). 既定は空配列.
-	 *     @type string $run_trigger   `WPCV_Repository::start_run()` に渡す. 既定 'manual'.
-	 *     @type string $runner        `WPCV_Repository::start_run()` に渡す. 既定 'sync'.
 	 * }
 	 * @return array {
-	 *     @type int   $run_id  作成した run の id.
+	 *     @type int   $run_id  引数の `$run_id` をそのまま返す(呼び出し元の利便性のため).
 	 *     @type array $summary `WPCV_Verifier::summarize()` の戻り値.
 	 * }
 	 *
 	 * @throws InvalidArgumentException 必須の version が指定されていない場合、または
 	 *                                   plugins が空でないのに plugin_dir が指定されていない場合.
+	 * @throws Throwable 検証・保存処理中に発生した例外(failed 記録後に再送出).
 	 */
-	public function run( array $context ) {
-		if ( empty( $context['version'] ) ) {
-			throw new InvalidArgumentException( esc_html( 'WPCV_Run_Coordinator::run() requires $context[\'version\'].' ) );
-		}
-
-		$plugins    = isset( $context['plugins'] ) ? (array) $context['plugins'] : array();
-		$plugin_dir = isset( $context['plugin_dir'] ) ? (string) $context['plugin_dir'] : '';
-
-		if ( ! empty( $plugins ) && '' === $plugin_dir ) {
-			throw new InvalidArgumentException( esc_html( 'WPCV_Run_Coordinator::run() requires $context[\'plugin_dir\'] when $context[\'plugins\'] is not empty.' ) );
-		}
-
-		$target_runs = array();
-		$findings    = array();
-
-		$core_result   = $this->verifier->verify_core( array( 'version' => (string) $context['version'] ) );
-		$target_runs[] = $core_result['target_run'];
-		$findings      = array_merge( $findings, $core_result['findings'] );
-
-		foreach ( $plugins as $plugin_file => $plugin_data ) {
-			if ( in_array( (string) $plugin_file, self::CORE_BUNDLED_PLUGIN_FILES, true ) ) {
-				continue;
+	public function run( $run_id, array $context ) {
+		try {
+			if ( empty( $context['version'] ) ) {
+				throw new InvalidArgumentException( esc_html( 'WPCV_Run_Coordinator::run() requires $context[\'version\'].' ) );
 			}
 
-			$resolved       = self::resolve_plugin_slug_and_root( (string) $plugin_file, $plugin_dir );
-			$plugin_version = isset( $plugin_data['Version'] ) ? (string) $plugin_data['Version'] : '';
+			$plugins    = isset( $context['plugins'] ) ? (array) $context['plugins'] : array();
+			$plugin_dir = isset( $context['plugin_dir'] ) ? (string) $context['plugin_dir'] : '';
 
-			$plugin_result = $this->verifier->verify_plugin(
-				array(
-					'slug'            => $resolved['slug'],
-					'version'         => $plugin_version,
-					'plugin_root_dir' => $resolved['plugin_root_dir'],
-				)
+			if ( ! empty( $plugins ) && '' === $plugin_dir ) {
+				throw new InvalidArgumentException( esc_html( 'WPCV_Run_Coordinator::run() requires $context[\'plugin_dir\'] when $context[\'plugins\'] is not empty.' ) );
+			}
+
+			$target_runs = array();
+			$findings    = array();
+
+			$core_result   = $this->verifier->verify_core( array( 'version' => (string) $context['version'] ) );
+			$target_runs[] = $core_result['target_run'];
+			$findings      = array_merge( $findings, $core_result['findings'] );
+
+			foreach ( $plugins as $plugin_file => $plugin_data ) {
+				if ( in_array( (string) $plugin_file, self::CORE_BUNDLED_PLUGIN_FILES, true ) ) {
+					continue;
+				}
+
+				$resolved       = self::resolve_plugin_slug_and_root( (string) $plugin_file, $plugin_dir );
+				$plugin_version = isset( $plugin_data['Version'] ) ? (string) $plugin_data['Version'] : '';
+
+				$plugin_result = $this->verifier->verify_plugin(
+					array(
+						'slug'            => $resolved['slug'],
+						'version'         => $plugin_version,
+						'plugin_root_dir' => $resolved['plugin_root_dir'],
+					)
+				);
+
+				$target_runs[] = $plugin_result['target_run'];
+				$findings      = array_merge( $findings, $plugin_result['findings'] );
+			}
+
+			if ( ! empty( $context['mu_plugin_dir'] ) ) {
+				$mu_plugins       = isset( $context['mu_plugins'] ) ? (array) $context['mu_plugins'] : array();
+				$mu_plugin_result = $this->verifier->verify_muplugin_area(
+					array(
+						'mu_plugin_dir' => (string) $context['mu_plugin_dir'],
+						'loaders'       => array_keys( $mu_plugins ),
+					)
+				);
+
+				$target_runs = array_merge( $target_runs, $mu_plugin_result['target_runs'] );
+				$findings    = array_merge( $findings, $mu_plugin_result['findings'] );
+			}
+
+			$summary = WPCV_Verifier::summarize( $target_runs );
+
+			$target_run_ids = $this->repository->save_target_runs( $run_id, $target_runs );
+
+			$this->repository->save_findings( $run_id, $target_run_ids, $findings );
+			$this->repository->finish_run( $run_id, $summary );
+
+			return array(
+				'run_id'  => $run_id,
+				'summary' => $summary,
 			);
+		} catch ( Throwable $e ) {
+			$this->repository->mark_run_failed( $run_id, get_class( $e ) . ': ' . $e->getMessage() );
 
-			$target_runs[] = $plugin_result['target_run'];
-			$findings      = array_merge( $findings, $plugin_result['findings'] );
+			throw $e;
 		}
-
-		if ( ! empty( $context['mu_plugin_dir'] ) ) {
-			$mu_plugins       = isset( $context['mu_plugins'] ) ? (array) $context['mu_plugins'] : array();
-			$mu_plugin_result = $this->verifier->verify_muplugin_area(
-				array(
-					'mu_plugin_dir' => (string) $context['mu_plugin_dir'],
-					'loaders'       => array_keys( $mu_plugins ),
-				)
-			);
-
-			$target_runs = array_merge( $target_runs, $mu_plugin_result['target_runs'] );
-			$findings    = array_merge( $findings, $mu_plugin_result['findings'] );
-		}
-
-		$summary = WPCV_Verifier::summarize( $target_runs );
-
-		$run_id         = $this->repository->start_run(
-			array(
-				'run_trigger' => isset( $context['run_trigger'] ) ? (string) $context['run_trigger'] : 'manual',
-				'runner'      => isset( $context['runner'] ) ? (string) $context['runner'] : 'sync',
-			)
-		);
-		$target_run_ids = $this->repository->save_target_runs( $run_id, $target_runs );
-
-		$this->repository->save_findings( $run_id, $target_run_ids, $findings );
-		$this->repository->finish_run( $run_id, $summary );
-
-		return array(
-			'run_id'  => $run_id,
-			'summary' => $summary,
-		);
 	}
 
 	/**

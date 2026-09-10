@@ -56,8 +56,11 @@ class WPCV_Runner_Async {
 	 *     enqueued: bool,
 	 *     action_id: int|null,
 	 *     result: array|null,
+	 *     busy: bool,
 	 * } enqueue できたときは `action_id` のみ、同期フォールバックしたときは
-	 *   `WPCV_Run_Coordinator::run()` の戻り値をそのまま `result` に入れる.
+	 *   `WPCV_Run_Coordinator::run()` の戻り値をそのまま `result` に入れる。
+	 *   `busy` は同期フォールバック時に、実行権の予約が失敗した(lock取得失敗、
+	 *   または既に active な run がある)ことを表す(v0.3.1 §Step1).
 	 */
 	public static function enqueue_run( $run_trigger, ?callable $availability_checker = null ) {
 		if ( null === $availability_checker ) {
@@ -73,16 +76,38 @@ class WPCV_Runner_Async {
 				'enqueued'  => true,
 				'action_id' => (int) $action_id,
 				'result'    => null,
+				'busy'      => false,
 			);
 		}
 
-		$context           = WPCV_Context_Builder::build( $run_trigger );
-		$context['runner'] = 'sync';
+		// 検証開始前に実行権(run 行)を予約する(v0.3.1 §Step1: CLI 同期パスと同じ理由。
+		// `WPCV_CLI_Command::__invoke()` 参照。ここでの `queued` 経由の enqueue-time
+		// 予約(プランの Step2 設計)はまだ実装しない — Action Scheduler 自体が
+		// 使えない状況でのこの同期フォールバック自体には queued 状態は意味を
+		// 持たないため、常に `running` で直接予約する).
+		$reservation = WPCV_Plugin::repository()->reserve_run(
+			array(
+				'run_trigger' => $run_trigger,
+				'runner'      => 'sync',
+			)
+		);
+
+		if ( $reservation['lock_failed'] || $reservation['active'] ) {
+			return array(
+				'enqueued'  => false,
+				'action_id' => null,
+				'result'    => null,
+				'busy'      => true,
+			);
+		}
+
+		$context = WPCV_Context_Builder::build( $run_trigger );
 
 		return array(
 			'enqueued'  => false,
 			'action_id' => null,
-			'result'    => WPCV_Plugin::run_coordinator()->run( $context ),
+			'result'    => WPCV_Plugin::run_coordinator()->run( $reservation['run_id'], $context ),
+			'busy'      => false,
 		);
 	}
 
@@ -90,16 +115,32 @@ class WPCV_Runner_Async {
 	 * `self::HOOK` のフックハンドラ. Action Scheduler のワーカーから呼ばれる.
 	 *
 	 * `$run_trigger` から `WPCV_Context_Builder::build()` で `$context` を都度
-	 * 組み立て直す(クラス docblock 参照。enqueue 時点の `$context` は保持しない).
+	 * 組み立て直す(クラス docblock 参照。enqueue 時点の `$context` は保持しない)。
+	 *
+	 * 検証開始前に実行権(run 行)を予約する(v0.3.1 §Step1)。enqueue 時点で
+	 * `queued` run を作って `run_id` を Action Scheduler の args として渡す設計
+	 * (プランの Step2)はまだ実装していないため、ここではワーカー起動時点で
+	 * `running` を直接予約する(v0.3.1 Step2 で `mark_queued_running()` を使う
+	 * 形に置き換える想定。それまでの暫定実装であることに注意).
 	 *
 	 * @param string $run_trigger `enqueue_run()` に渡されたもの.
 	 * @return void
 	 */
 	public static function run_async_action( $run_trigger ) {
-		$context           = WPCV_Context_Builder::build( (string) $run_trigger );
-		$context['runner'] = 'async';
+		$reservation = WPCV_Plugin::repository()->reserve_run(
+			array(
+				'run_trigger' => (string) $run_trigger,
+				'runner'      => 'async',
+			)
+		);
 
-		WPCV_Plugin::run_coordinator()->run( $context );
+		if ( $reservation['lock_failed'] || $reservation['active'] ) {
+			return;
+		}
+
+		$context = WPCV_Context_Builder::build( (string) $run_trigger );
+
+		WPCV_Plugin::run_coordinator()->run( $reservation['run_id'], $context );
 	}
 }
 

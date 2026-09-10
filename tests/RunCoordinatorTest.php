@@ -110,7 +110,7 @@ class RunCoordinatorTest extends TestCase {
 	 * 未知ファイル走査に拾われないようにするため。UnknownFileScannerTest 等と同じ対策).
 	 *
 	 * @param WPCV_Manifest_Source|null $plugin_source 省略時は空マニフェストの fake.
-	 * @return array{coordinator: WPCV_Run_Coordinator, wpdb: WPCV_Test_Fake_WPDB}
+	 * @return array{coordinator: WPCV_Run_Coordinator, repository: WPCV_Repository, wpdb: WPCV_Test_Fake_WPDB}
 	 */
 	private function make_coordinator( $plugin_source = null ) {
 		$core_source = new WPCV_Test_Fake_Manifest_Source(
@@ -143,8 +143,23 @@ class RunCoordinatorTest extends TestCase {
 
 		return array(
 			'coordinator' => new WPCV_Run_Coordinator( $verifier, $repository ),
+			'repository'  => $repository,
 			'wpdb'        => $wpdb,
 		);
+	}
+
+	/**
+	 * `make_coordinator()` が組み立てた repository で run を予約し、その run_id を返す.
+	 *
+	 * v0.3.1 §Step1で `WPCV_Run_Coordinator::run()` は呼び出し元が事前に予約した
+	 * run_id を要求するようになった(クラスの docblock 参照)ため、各テストは
+	 * `run()` を呼ぶ前にこのヘルパーで run_id を用意する.
+	 *
+	 * @param array $made `make_coordinator()` の戻り値.
+	 * @return int
+	 */
+	private function reserve( array $made ) {
+		return $made['repository']->reserve_run()['run_id'];
 	}
 
 	/**
@@ -155,7 +170,7 @@ class RunCoordinatorTest extends TestCase {
 	 */
 	public function test_run_persists_core_only_run() {
 		$made   = $this->make_coordinator();
-		$result = $made['coordinator']->run( array( 'version' => '6.8' ) );
+		$result = $made['coordinator']->run( $this->reserve( $made ), array( 'version' => '6.8' ) );
 
 		$this->assertSame( 1, $result['run_id'] );
 		$this->assertSame( 'success', $result['summary']['status'] );
@@ -189,6 +204,7 @@ class RunCoordinatorTest extends TestCase {
 
 		$made   = $this->make_coordinator( $plugin_source );
 		$result = $made['coordinator']->run(
+			$this->reserve( $made ),
 			array(
 				'version'    => '6.8',
 				'plugins'    => array(
@@ -230,6 +246,7 @@ class RunCoordinatorTest extends TestCase {
 
 		$made   = $this->make_coordinator( $plugin_source );
 		$result = $made['coordinator']->run(
+			$this->reserve( $made ),
 			array(
 				'version'    => '6.8',
 				'plugins'    => array(
@@ -261,6 +278,7 @@ class RunCoordinatorTest extends TestCase {
 	public function test_run_skips_hello_php_as_plugin_target() {
 		$made   = $this->make_coordinator();
 		$result = $made['coordinator']->run(
+			$this->reserve( $made ),
 			array(
 				'version'    => '6.8',
 				'plugins'    => array(
@@ -284,6 +302,7 @@ class RunCoordinatorTest extends TestCase {
 
 		$made = $this->make_coordinator();
 		$made['coordinator']->run(
+			$this->reserve( $made ),
 			array(
 				'version' => '6.8',
 				'plugins' => array( 'akismet/akismet.php' => array() ),
@@ -303,6 +322,7 @@ class RunCoordinatorTest extends TestCase {
 
 		$made   = $this->make_coordinator();
 		$result = $made['coordinator']->run(
+			$this->reserve( $made ),
 			array(
 				'version'       => '6.8',
 				'mu_plugin_dir' => ABSPATH . 'wp-content/mu-plugins',
@@ -328,7 +348,7 @@ class RunCoordinatorTest extends TestCase {
 	 */
 	public function test_run_skips_muplugin_area_when_dir_absent() {
 		$made   = $this->make_coordinator();
-		$result = $made['coordinator']->run( array( 'version' => '6.8' ) );
+		$result = $made['coordinator']->run( $this->reserve( $made ), array( 'version' => '6.8' ) );
 
 		$this->assertSame( 1, $result['summary']['targets_total'] );
 		$this->assertArrayNotHasKey( 'wp_wpcv_findings', $made['wpdb']->rows );
@@ -343,6 +363,90 @@ class RunCoordinatorTest extends TestCase {
 		$this->expectException( InvalidArgumentException::class );
 
 		$made = $this->make_coordinator();
-		$made['coordinator']->run( array() );
+		$made['coordinator']->run( $this->reserve( $made ), array() );
+	}
+
+	/**
+	 * バリデーション例外(version 未指定)発生時も、予約済み run が `mark_run_failed()`
+	 * により failed 化されることを確認する(v0.3.1 §Step1: 検証途中の例外・タイムアウト
+	 * で失敗記録が残らない、というプランP0の不具合への対策. バリデーションも
+	 * `run()` の try/catch の対象内であることの確認).
+	 *
+	 * @return void
+	 */
+	public function test_run_marks_run_failed_when_version_missing() {
+		$made   = $this->make_coordinator();
+		$run_id = $this->reserve( $made );
+
+		try {
+			$made['coordinator']->run( $run_id, array() );
+			$this->fail( 'InvalidArgumentException を期待していたが投げられなかった.' );
+		} catch ( InvalidArgumentException $e ) {
+			unset( $e );
+		}
+
+		$row = $made['wpdb']->rows['wp_wpcv_runs'][ $run_id ];
+		$this->assertSame( 'failed', $row['status'] );
+		$this->assertStringContainsString( 'InvalidArgumentException', $row['notes'] );
+	}
+
+	/**
+	 * 検証処理中(verify_core())の例外が、予約済み run を `mark_run_failed()` で
+	 * failed 化してから再送出されることを確認する(プランP0「run行が検証完了後まで
+	 * 作られない」ため途中の例外で失敗記録が残らない、への対策の中核テスト).
+	 *
+	 * @return void
+	 */
+	public function test_run_marks_run_failed_and_rethrows_when_verifier_throws() {
+		$throwing_source = new class() implements WPCV_Manifest_Source {
+			/**
+			 * 呼ばれたら必ず例外を投げる(検証中の想定外エラーを模す).
+			 *
+			 * @param array $context 無視する.
+			 * @return never
+			 * @throws RuntimeException 常に投げる.
+			 */
+			public function get_manifest( array $context ) {
+				unset( $context );
+				throw new RuntimeException( 'checksums API unreachable' );
+			}
+		};
+
+		// `make_coordinator()` は core_source を常に成功させる fake で固定している
+		// (クラス docblock 参照)ため、このテストだけは throw する core_source を
+		// 使う verifier を直接組み立てる.
+		$verifier = new WPCV_Verifier(
+			$throwing_source,
+			new WPCV_Test_Fake_Manifest_Source(
+				array(
+					'manifest_status' => 'missing',
+					'error_code'      => WPCV_Error_Code::MANIFEST_NOT_FOUND,
+					'files'           => array(),
+				)
+			),
+			new WPCV_Unknown_File_Scanner()
+		);
+
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Repository(
+			$wpdb,
+			static function () {
+				return '2026-09-08 12:00:00';
+			}
+		);
+
+		$coordinator = new WPCV_Run_Coordinator( $verifier, $repository );
+		$run_id      = $repository->reserve_run()['run_id'];
+
+		$this->expectException( RuntimeException::class );
+		$this->expectExceptionMessage( 'checksums API unreachable' );
+
+		try {
+			$coordinator->run( $run_id, array( 'version' => '6.8' ) );
+		} finally {
+			$row = $wpdb->rows['wp_wpcv_runs'][ $run_id ];
+			$this->assertSame( 'failed', $row['status'] );
+			$this->assertStringContainsString( 'checksums API unreachable', $row['notes'] );
+		}
 	}
 }
