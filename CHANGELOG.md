@@ -4,6 +4,66 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-10
+
+Patch release: fixes run-lifecycle bugs found while reviewing v0.3.0
+(duplicate runs under concurrent requests, lost failure records, a
+stalled daily schedule, and a REST endpoint that could execute other
+plugins' Action Scheduler actions), plus a couple of multisite/security
+follow-ups. No new features. The "1 action = 1 run" execution model is
+unchanged; file-level chunking, resume, and a strict per-request HTTP time
+budget remain planned for a future release.
+
+### Fixed
+
+- **Run creation moved to acceptance time.** `WPCV_Repository::reserve_run()`
+  now creates the `queued`/`running` row (guarded by a MySQL advisory lock)
+  before verification starts, instead of after it completes. Previously a
+  crash or timeout mid-run left no record of the run at all.
+- **Concurrent requests no longer create duplicate runs.** All synchronous
+  and Action-Scheduler-enqueuing entry points (CLI, REST, WP-Cron, the "Run
+  now" button) now serialize through `reserve_run()`'s advisory lock and
+  return the existing run instead of starting a second one.
+- **Action Scheduler enqueue failures are no longer reported as success.**
+  `as_enqueue_async_action()` returning a non-positive id now marks the run
+  `failed` instead of silently returning success. The default availability
+  check also verifies `ActionScheduler::is_initialized()`, not just that
+  the function exists.
+- **A stale-swept run can no longer be overwritten by success later.**
+  `finish_run()` and the failure-marking methods now require the run to
+  still be in the expected state, so a worker that resumes after being
+  marked `failed` by the stale sweep can no longer overwrite it.
+- **The daily WP-Cron schedule can no longer be lost permanently.** The next
+  occurrence is now (re)scheduled before the run is accepted, so a crash
+  mid-run no longer skips it, and every request self-heals a missing
+  schedule (previously only plugin activation did).
+- **"Run now" no longer collides with the daily schedule.** It now uses its
+  own hook (`wpcv_manual_verify`) instead of reusing the daily one, is
+  recorded with the `manual` trigger instead of `cron`, and surfaces a
+  scheduling failure as an error notice instead of a false "scheduled"
+  message.
+- **REST no longer executes other plugins' Action Scheduler actions.**
+  `POST /wp-json/wpcv/v1/run` no longer calls the site-wide
+  `ActionScheduler::runner()->run()`; it now always runs the verification
+  synchronously within the request, like the other synchronous entry
+  points. A busy state (advisory lock contention) or an internal failure
+  now returns an error response instead of a `200`.
+- **Rate limiting no longer shares one bucket for every caller without a
+  detectable IP.** `WPCV_Rest_Token` now skips rate limiting entirely for
+  an empty identifier instead of bucketing unrelated callers together.
+- Multisite: the DB schema version is now read from/written to the network
+  site option instead of a per-site option, so loading a second site no
+  longer re-runs the table migration; the value is migrated from the old
+  per-site option on first read. The daily schedule is now registered only
+  on the network's main site.
+
+### Removed
+
+- The REST run time budget setting (`Settings` screen and the underlying
+  option) is gone, since REST no longer does opportunistic queue draining.
+  Sites relying on `POST /wp-json/wpcv/v1/run` must now be small enough to
+  complete a full run within a single HTTP request.
+
 ## [0.3.0] - 2026-09-09
 
 First tagged release. Covers the initial development milestones (v0.1–v0.3):

@@ -51,7 +51,8 @@ class RestRunControllerTest extends TestCase {
 			$GLOBALS['_wpcv_test_bloginfo'],
 			$GLOBALS['_wpcv_test_transients'],
 			$GLOBALS['_wpcv_test_plugins'],
-			$GLOBALS['_wpcv_test_mu_plugins']
+			$GLOBALS['_wpcv_test_mu_plugins'],
+			$_SERVER['REMOTE_ADDR']
 		);
 		wpcv_test_inject_repository();
 		wpcv_test_inject_run_coordinator();
@@ -65,6 +66,7 @@ class RestRunControllerTest extends TestCase {
 	protected function tearDown(): void {
 		wpcv_test_inject_repository();
 		wpcv_test_inject_run_coordinator();
+		unset( $_SERVER['REMOTE_ADDR'] );
 		parent::tearDown();
 	}
 
@@ -111,11 +113,17 @@ class RestRunControllerTest extends TestCase {
 	}
 
 	/**
-	 * 失敗回数が上限に達すると、正しいトークンでも `429` で拒否されることを確認する.
+	 * 失敗回数が上限に達すると、正しいトークンでも `429` で拒否されることを確認する
+	 * (`REMOTE_ADDR` が設定されている前提。v0.3.1 §Step5で `REMOTE_ADDR` が空の
+	 * 場合はレート制限自体を適用しないよう変更したため、このテストでは明示的に
+	 * 設定する。`test_check_permission_does_not_rate_limit_when_remote_addr_missing()`
+	 * が空の場合の挙動を別途検証する).
 	 *
 	 * @return void
 	 */
 	public function test_check_permission_returns_429_after_rate_limit_exceeded() {
+		$_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+
 		$token           = WPCV_Rest_Token::generate();
 		$wrong_request   = new WPCV_Test_Fake_Rest_Request( array( 'Authorization' => 'Bearer wrong-token' ) );
 		$correct_request = new WPCV_Test_Fake_Rest_Request( array( 'Authorization' => 'Bearer ' . $token ) );
@@ -128,6 +136,28 @@ class RestRunControllerTest extends TestCase {
 
 		$this->assertInstanceOf( WP_Error::class, $result );
 		$this->assertSame( 429, $result->get_error_data()['status'] );
+	}
+
+	/**
+	 * `REMOTE_ADDR` が取得できない場合、何度失敗してもレート制限が発動しないことを
+	 * 確認する(v0.3.1 §Step5。プラン§P1「`REMOTE_ADDR` が空の場合に全呼び出し元が
+	 * 同じrate-limit bucketへ入らない」への対策. `WPCV_Rest_Token::is_rate_limited()`
+	 * の空文字ガードが、REST層の実際の呼び出し経路〔`client_identifier()`〕からも
+	 * 機能することの確認).
+	 *
+	 * @return void
+	 */
+	public function test_check_permission_does_not_rate_limit_when_remote_addr_missing() {
+		unset( $_SERVER['REMOTE_ADDR'] );
+
+		$wrong_request = new WPCV_Test_Fake_Rest_Request( array( 'Authorization' => 'Bearer wrong-token' ) );
+
+		for ( $i = 0; $i < WPCV_Rest_Token::RATE_LIMIT_MAX_ATTEMPTS + 5; $i++ ) {
+			$result = WPCV_Rest_Run_Controller::check_permission( $wrong_request );
+
+			// 429(レート制限)ではなく401(トークン不一致)のままであることを確認する.
+			$this->assertSame( 401, $result->get_error_data()['status'] );
+		}
 	}
 
 	/**

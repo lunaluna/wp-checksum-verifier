@@ -461,6 +461,40 @@ if ( ! function_exists( 'update_site_option' ) ) {
 	}
 }
 
+if ( ! function_exists( 'get_main_site_id' ) ) {
+	/**
+	 * Stub get_main_site_id() — $GLOBALS['_wpcv_test_main_site_id'](既定 1)を返す.
+	 *
+	 * @param int|null $network_id 無視する.
+	 * @return int
+	 */
+	function get_main_site_id( $network_id = null ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		unset( $network_id );
+
+		return isset( $GLOBALS['_wpcv_test_main_site_id'] ) ? (int) $GLOBALS['_wpcv_test_main_site_id'] : 1;
+	}
+}
+
+if ( ! function_exists( 'get_blog_option' ) ) {
+	/**
+	 * Stub get_blog_option() — このダブルはマルチサイトの blog 分離を再現せず、
+	 * `$GLOBALS['_wpcv_test_options']` を(実際の `wp_options` と同じ想定で)
+	 * そのまま読む単純な実装(`WPCV_Migrator::get_stored_version()` の
+	 * legacy フォールバックをテストする用途にはこれで十分. `WPCV_Test_Fake_WPDB`
+	 * 同様、実際のマルチサイトDB分離までは再現しない簡易フェイク).
+	 *
+	 * @param int    $id            無視する.
+	 * @param string $option        オプション名.
+	 * @param mixed  $default_value 既定値.
+	 * @return mixed
+	 */
+	function get_blog_option( $id, $option, $default_value = false ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		unset( $id );
+
+		return get_option( $option, $default_value );
+	}
+}
+
 if ( ! function_exists( 'wp_next_scheduled' ) ) {
 	/**
 	 * Stub wp_next_scheduled() — $GLOBALS['_wpcv_test_scheduled_hooks'][$hook] を

@@ -167,12 +167,15 @@ class WPCV_API {
 	 * スキーマが WPCV_DB_VERSION まで migration 済みであることを「利用可能」の
 	 * 条件とする. 有効化直後で migration が未完了の一瞬を除き、通常は常に true.
 	 *
+	 * マルチサイト対応の読み取り(`wp_sitemeta` の site option を正とする)は
+	 * `WPCV_Migrator::get_stored_version()` に一本化してある(v0.3.1 §Step5。
+	 * 以前はここで `get_option()` を直接読んでおり、マルチサイトで
+	 * `WPCV_Migrator::maybe_upgrade()` とは別に同種のバグを抱えていた).
+	 *
 	 * @return bool
 	 */
 	public static function is_available() {
-		$stored = (int) get_option( WPCV_Migrator::DB_VERSION_OPTION, 0 );
-
-		return $stored >= WPCV_DB_VERSION;
+		return WPCV_Migrator::get_stored_version() >= WPCV_DB_VERSION;
 	}
 
 	/**

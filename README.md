@@ -5,7 +5,7 @@ tampering by comparing installed files against official checksum manifests
 (wp.org core/plugin checksums) and reports unknown files not present in any
 manifest.
 
-> **Status**: v0.3.0. The verification engine and all planned execution
+> **Status**: v0.3.1. The verification engine and all planned execution
 > model entry points (WP-CLI, WP-Cron, admin "Run now" button, REST API)
 > are implemented. Official theme verification and GitHub-hosted
 > plugin/theme verification are not implemented yet. See `CHANGELOG.md` for
