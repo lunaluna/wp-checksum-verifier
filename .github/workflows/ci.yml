@@ -117,7 +117,7 @@ jobs:
           build-dir: '.'
           # 開発用ファイル(配布物には含まれない)は検査対象から除外する.
           exclude-directories: '.github,.phpstan,vendor,tests,bin,lib'
-          exclude-files: '.editorconfig,.gitignore,.distignore,composer.json,composer.lock,phpcs.xml.dist,phpstan.neon.dist,phpunit.xml.dist'
+          exclude-files: '.editorconfig,.gitignore,.distignore,.claude.local.md,composer.json,composer.lock,phpcs.xml.dist,phpstan.neon.dist,phpunit.xml.dist'
           # Update URI: false を維持したまま GitHub Releases から自己更新する
           # 意図的な実装(wp.org 非公開 + GitHub 自己更新方針)であり、
           # wp.org 未登録スラッグの乗っ取り防止は引き続き有効。既知の

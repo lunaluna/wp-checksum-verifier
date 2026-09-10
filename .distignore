@@ -13,6 +13,7 @@
 .editorconfig
 .distignore
 .claude
+.claude.local.md
 .phpstan
 .DS_Store
 .phpunit.result.cache
