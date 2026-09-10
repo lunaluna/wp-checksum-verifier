@@ -47,10 +47,35 @@ class WPCV_CLI_Command {
 			return;
 		}
 
+		// 検証開始前に実行権(run 行)を予約する(v0.3.1 §Step1: `WPCV_Run_Coordinator::run()`
+		// はもう run 行を作らないため、同期呼び出し元が必ず先に予約すること。
+		// `WPCV_Run_Coordinator` の docblock 参照).
+		$reservation = WPCV_Plugin::repository()->reserve_run(
+			array(
+				'run_trigger' => 'cli',
+				'runner'      => 'sync',
+			)
+		);
+
+		if ( $reservation['lock_failed'] ) {
+			WP_CLI::error( '実行権の予約に失敗しました(lock取得失敗)。しばらくしてから再実行してください.' );
+			return;
+		}
+
+		if ( $reservation['active'] ) {
+			WP_CLI::error(
+				sprintf(
+					'既に実行中の run があります(run #%d)。完了を待ってから再実行してください.',
+					$reservation['run_id']
+				)
+			);
+			return;
+		}
+
 		$context = WPCV_Context_Builder::build( 'cli' );
 
 		try {
-			$result = WPCV_Plugin::run_coordinator()->run( $context );
+			$result = WPCV_Plugin::run_coordinator()->run( $reservation['run_id'], $context );
 		} catch ( InvalidArgumentException $e ) {
 			// 例外メッセージは固定文言のみで動的値を含まない.
 			// esc_html() での保護は DB 出力等の呼び出し元向けであり、CLI 標準出力への
@@ -64,7 +89,9 @@ class WPCV_CLI_Command {
 
 	/**
 	 * `--async` 指定時の処理. `WPCV_Runner_Async::enqueue_run()` を呼び、
-	 * enqueue できたか同期フォールバックしたかに応じて出力を切り替える.
+	 * enqueue できたか・busyか・enqueue自体が失敗したか・同期フォールバックしたか
+	 * に応じて出力を切り替える(v0.3.1 §Step2: `busy`/`action_id<=0`のときは
+	 * `result`がnullになるため、`report_result()`にそのまま渡すとエラーになる).
 	 *
 	 * @return void
 	 */
@@ -78,6 +105,16 @@ class WPCV_CLI_Command {
 					$enqueue_result['action_id']
 				)
 			);
+			return;
+		}
+
+		if ( $enqueue_result['busy'] ) {
+			WP_CLI::error( '既に実行中またはキュー投入済みの run があります。完了を待ってから再実行してください.' );
+			return;
+		}
+
+		if ( null === $enqueue_result['result'] ) {
+			WP_CLI::error( 'run のキュー投入に失敗しました(Action Scheduler への enqueue が失敗しました). 詳細は run の notes を確認してください.' );
 			return;
 		}
 

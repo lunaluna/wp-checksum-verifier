@@ -41,7 +41,7 @@ class WPCV_Migrator {
 	 * @return void
 	 */
 	public static function maybe_upgrade() {
-		$stored = (int) get_option( self::DB_VERSION_OPTION, 0 );
+		$stored = self::get_stored_version();
 
 		if ( $stored >= WPCV_DB_VERSION ) {
 			return;
@@ -49,7 +49,65 @@ class WPCV_Migrator {
 
 		self::create_or_update_tables();
 
-		update_option( self::DB_VERSION_OPTION, WPCV_DB_VERSION, true );
+		self::write_stored_version( WPCV_DB_VERSION );
+	}
+
+	/**
+	 * 保存済みの DB バージョンを読み取る(v0.3.1 §Step5).
+	 *
+	 * `WPCV_API::is_available()`(WPMAR等の依存チェック用の公開関数)も
+	 * このメソッドを使う。以前は `get_option()` を直接読んでおり、下記と
+	 * 同じマルチサイト非対応のバグを独自に抱えていたため、正の在り処を
+	 * このメソッド1箇所に一本化した(ロジック重複の排除).
+	 *
+	 * テーブル自体は `base_prefix` ベースの installation-level(クラス docblock
+	 * 参照)だが、v0.3.0時点では DB バージョンを常に(マルチサイトでも)
+	 * blog 単位の `wp_options` に保存していた。そのため別 blog を初めて
+	 * ロードするたびに `wpcv_db_version` が未設定(0)と判定され、
+	 * `create_or_update_tables()` が blog の数だけ重複実行されていた
+	 * (プラン§P2「DB schema versionがマルチサイトでblog単位」への対策)。
+	 *
+	 * マルチサイトでは `wp_sitemeta` の site option を正とする。ただし
+	 * site option が未設定(＝このバージョンのコードでまだ一度も書き込んで
+	 * いない)場合は、旧実装が main site の `wp_options` に書き込んでいた値を
+	 * 移行時の初期値として参照し、その場で site option 側へ書き込んでおく
+	 * (無条件に dbDelta を再実行させないため。加えて、書き込まずにいると
+	 * 次回以降のリクエストのたびにサブサイトで `switch_to_blog()` を伴う
+	 * フォールバック読み取りが繰り返されてしまうため、読み取り時点でキャッシュする).
+	 *
+	 * @return int
+	 */
+	public static function get_stored_version() {
+		if ( ! is_multisite() ) {
+			return (int) get_option( self::DB_VERSION_OPTION, 0 );
+		}
+
+		$site_version = get_site_option( self::DB_VERSION_OPTION, null );
+
+		if ( null !== $site_version ) {
+			return (int) $site_version;
+		}
+
+		$legacy_version = (int) get_blog_option( get_main_site_id(), self::DB_VERSION_OPTION, 0 );
+
+		update_site_option( self::DB_VERSION_OPTION, $legacy_version );
+
+		return $legacy_version;
+	}
+
+	/**
+	 * DB バージョンを保存する(v0.3.1 §Step5. マルチサイトでは site option へ).
+	 *
+	 * @param int $version 保存するバージョン.
+	 * @return void
+	 */
+	private static function write_stored_version( $version ) {
+		if ( is_multisite() ) {
+			update_site_option( self::DB_VERSION_OPTION, $version );
+			return;
+		}
+
+		update_option( self::DB_VERSION_OPTION, $version, true );
 	}
 
 	/**

@@ -87,6 +87,31 @@ class WPCV_Test_Fake_WPDB {
 	private $next_id = array();
 
 	/**
+	 * `get_var()` が返す値(`reserve_run()` の `GET_LOCK()` 呼び出し用)。
+	 *
+	 * 既定は `'1'`(lock 取得成功を模す。実際の MySQL の `GET_LOCK()` も成功時に
+	 * 整数 `1` を返す)。lock 取得失敗を模したいテストは `'0'` を設定する.
+	 *
+	 * @var string|null
+	 */
+	public $get_var_return = '1';
+
+	/**
+	 * `get_var()` に渡されたクエリ文字列の記録(アサーション用).
+	 *
+	 * @var array<int, string>
+	 */
+	public $get_var_calls = array();
+
+	/**
+	 * `query()` に渡されたクエリ文字列の記録(`RELEASE_LOCK()` が確実に呼ばれた
+	 * ことをテストで確認できるようにするため).
+	 *
+	 * @var array<int, string>
+	 */
+	public $query_calls = array();
+
+	/**
 	 * 行を追加する.
 	 *
 	 * @param string     $table  テーブル名.
@@ -168,19 +193,71 @@ class WPCV_Test_Fake_WPDB {
 
 		return isset( $this->rows[ $table ] ) ? array_values( $this->rows[ $table ] ) : array();
 	}
+
+	/**
+	 * 単一の値を返す(`WPCV_Repository::reserve_run()` の `GET_LOCK()` 専用の
+	 * 簡易フェイク)。実 SQL は実行せず、`$this->get_var_return` をそのまま返す.
+	 *
+	 * @param string $query クエリ文字列(記録のみ。実行はしない).
+	 * @return string|null
+	 */
+	public function get_var( $query ) {
+		$this->get_var_calls[] = $query;
+
+		return $this->get_var_return;
+	}
+
+	/**
+	 * クエリを実行する(`WPCV_Repository::reserve_run()` の `RELEASE_LOCK()` 専用の
+	 * 簡易フェイク)。実 SQL は実行せず、呼び出しを記録するだけ.
+	 *
+	 * @param string $query クエリ文字列(記録のみ).
+	 * @return true
+	 */
+	public function query( $query ) {
+		$this->query_calls[] = $query;
+
+		return true;
+	}
+
+	/**
+	 * プレースホルダーを実引数へ置換する(実 `$wpdb->prepare()` の簡易フェイク)。
+	 * このダブルは実 SQL を実行しないため、エスケープ処理は行わず `%s`/`%d` を
+	 * `vsprintf()` で単純に置換するだけで十分(呼び出し引数の確認は
+	 * `get_var_calls`/`query_calls` に記録された最終文字列で行う).
+	 *
+	 * @param string $query    クエリ(`%s`/`%d` プレースホルダーを含む).
+	 * @param mixed  ...$args  プレースホルダーに対応する値.
+	 * @return string
+	 */
+	public function prepare( $query, ...$args ) {
+		if ( 1 === count( $args ) && is_array( $args[0] ) ) {
+			$args = $args[0];
+		}
+
+		return vsprintf( str_replace( '%s', "'%s'", $query ), $args );
+	}
 }
 
 /**
  * コアのみ(常に成功するマニフェスト)を持つ、手書きスタブ組み立ての
- * `WPCV_Run_Coordinator` を作る.
+ * `WPCV_Run_Coordinator` と、それが使うのと同一インスタンスの `WPCV_Repository` /
+ * `WPCV_Test_Fake_WPDB` を組で作る.
  *
  * `CliCommandTest` と `RunnerAsyncTest` がどちらも「composition root
- * (`WPCV_Plugin::run_coordinator()`)を丸ごと差し替えて呼び出し結果を検証する」
- * ことを必要とするため、重複を避けてここに集約する(doubles.php の集約方針参照).
+ * (`WPCV_Plugin::run_coordinator()` / `WPCV_Plugin::repository()`)を丸ごと
+ * 差し替えて呼び出し結果を検証する」ことを必要とするため、重複を避けてここに
+ * 集約する(doubles.php の集約方針参照)。v0.3.1 §Step1で `WPCV_Run_Coordinator::run()`
+ * が予約済み run id を要求するようになったため、呼び出し元は本番の
+ * `WPCV_Plugin::run_coordinator()` と `WPCV_Plugin::repository()` が同じ
+ * `WPCV_Repository` インスタンスを共有するのと同様に、`repository` を
+ * `wpcv_test_inject_repository()` で必ず一緒に差し替えること(でなければ
+ * `reserve_run()` が本番の `global $wpdb` を必要とする composition root へ
+ * フォールバックしてしまう).
  *
- * @return WPCV_Run_Coordinator
+ * @return array{coordinator: WPCV_Run_Coordinator, repository: WPCV_Repository, wpdb: WPCV_Test_Fake_WPDB}
  */
-function wpcv_test_make_fake_run_coordinator() {
+function wpcv_test_make_fake_environment() {
 	$verifier = new WPCV_Verifier(
 		new WPCV_Test_Fake_Manifest_Source(
 			array(
@@ -199,14 +276,19 @@ function wpcv_test_make_fake_run_coordinator() {
 		new WPCV_Unknown_File_Scanner()
 	);
 
+	$wpdb       = new WPCV_Test_Fake_WPDB();
 	$repository = new WPCV_Repository(
-		new WPCV_Test_Fake_WPDB(),
+		$wpdb,
 		static function () {
 			return '2026-09-08 12:00:00';
 		}
 	);
 
-	return new WPCV_Run_Coordinator( $verifier, $repository );
+	return array(
+		'coordinator' => new WPCV_Run_Coordinator( $verifier, $repository ),
+		'repository'  => $repository,
+		'wpdb'        => $wpdb,
+	);
 }
 
 /**

@@ -10,17 +10,18 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * `POST /wp-json/wpcv/v1/run`(v0.3 §Step8、モードC・簡略版).
+ * `POST /wp-json/wpcv/v1/run`(v0.3 §Step8、v0.3.1 §Step4で同期専用に契約を見直し).
  *
- * マネージド系ホスティング(`DISABLE_WP_CRON`前提)向けの自動実行経路。ファイル
- * 単位の分割実行・詳細な残作業報告(`{"pending": 87, ...}`等)はv0.4以降に送り、
- * v0.3では次の2点のみに絞る:
- *
- * 1. 冪等性: 直近runが`running`状態のままなら新規runを作らず、その run_id を
- *    そのまま返す(連打しても二重作成されない).
- * 2. オポチュニスティックなキュー消化: Action Schedulerが利用可能なら、設定
- *    された時間予算(`WPCV_Settings::get_rest_time_budget_seconds()`)の範囲内で
- *    キューを処理し、時間内に処理できた分だけ進める.
+ * 旧バージョン(v0.3.0)では Action Scheduler が利用可能なら enqueue した上で、同一リクエスト
+ * 内で `ActionScheduler::runner()->run()` を直接呼んでキューをオポチュニスティックに
+ * 消化する設計だった。しかしこの呼び出しは WPCV 専用ではなくサイト全体の Action
+ * Scheduler キューを処理してしまう(他プラグインの保留中 action も実行され得る)
+ * という副作用があり、かつ「時間予算内で少しずつ前進する」という説明を保証できて
+ * いなかった(1 action = 1 run 全体という v0.3.1 のモデルでは、時間予算を超えた
+ * ところで安全に中断する仕組みが無いため)。v0.3.1 Step4 でこの副作用を除去し、
+ * REST は常に同期実行(`WPCV_Repository::reserve_run()` → `WPCV_Run_Coordinator::run()`)
+ * に一本化した。大規模サイトでは1リクエストで完走できる規模に限られる
+ * (README参照)。ファイル単位の分割実行・resume・厳密な時間予算管理はv0.4.0以降.
  *
  * 認証は`WPCV_Rest_Token`によるトークン専用(v0.3 §Step9)。cookie認証との併用は
  * しない(WordPressログインセッションを持たない外部システムcronから呼べる
@@ -118,11 +119,25 @@ class WPCV_Rest_Run_Controller {
 	}
 
 	/**
-	 * `POST /run` のハンドラ.
+	 * `POST /run` のハンドラ(v0.3.1 §Step4で同期専用に契約を見直し).
+	 *
+	 * 他の同期系エントリポイント(`WPCV_CLI_Command::__invoke()`)と同じ
+	 * `sweep_stale_running()` → `reserve_run()` → `WPCV_Run_Coordinator::run()`
+	 * の流れに統一する(REST 独自の事前チェック〔`find_active_run_id()`〕は
+	 * `reserve_run()` の advisory lock 内の判定と重複していたため廃止した).
+	 *
+	 * レスポンス契約:
+	 * - 新規 run が完走: 200 + `{status: 終端状態(success|partial|failed), run_id}`.
+	 * - 既に active(`queued`/`running`)な run がある: 200 +
+	 *   `{status: 'queued'|'running', run_id: 既存runのid}`(冪等性. 連打しても
+	 *   二重作成されない).
+	 * - advisory lock の取得に失敗: `WP_Error`(503. 一時的な混雑を表すため
+	 *   リトライ可能であることを示す).
+	 * - 検証中に例外が発生(run は failed 記録済み): `WP_Error`(500).
 	 *
 	 * @param WP_REST_Request $request リクエスト(v0.3では未使用. パラメータを
 	 *                                 持たないため).
-	 * @return WP_REST_Response
+	 * @return WP_REST_Response|WP_Error
 	 */
 	public static function handle_run( $request ) {
 		unset( $request );
@@ -130,102 +145,48 @@ class WPCV_Rest_Run_Controller {
 		$repository = WPCV_Plugin::repository();
 		$repository->sweep_stale_running( WPCV_Scheduler::STALE_THRESHOLD_MINUTES );
 
-		$active_run_id = $repository->find_active_run_id();
+		$reservation = $repository->reserve_run(
+			array(
+				'run_trigger' => 'rest',
+				'runner'      => 'sync',
+			)
+		);
 
-		if ( null !== $active_run_id ) {
+		if ( $reservation['lock_failed'] ) {
+			return new WP_Error(
+				'wpcv_rest_busy',
+				__( 'The verifier is busy. Try again shortly.', 'wp-checksum-verifier' ),
+				array( 'status' => 503 )
+			);
+		}
+
+		if ( $reservation['active'] ) {
 			return self::response(
 				array(
-					'status' => 'running',
-					'run_id' => $active_run_id,
+					'status' => $reservation['status'],
+					'run_id' => $reservation['run_id'],
 				)
 			);
 		}
 
-		$enqueue_result = WPCV_Runner_Async::enqueue_run( 'rest' );
+		$context = WPCV_Context_Builder::build( 'rest' );
 
-		if ( ! $enqueue_result['enqueued'] ) {
-			// Action Scheduler が利用不可 → `WPCV_Runner_Async::enqueue_run()` が
-			// 内部で同期フォールバック実行済み(この呼び出しの中で run が完走している).
-			return self::response(
-				array(
-					'status' => $enqueue_result['result']['summary']['status'],
-					'run_id' => $enqueue_result['result']['run_id'],
-				)
+		try {
+			$result = WPCV_Plugin::run_coordinator()->run( $reservation['run_id'], $context );
+		} catch ( Throwable $e ) {
+			return new WP_Error(
+				'wpcv_rest_run_failed',
+				__( 'The verification run failed. Check the run history for details.', 'wp-checksum-verifier' ),
+				array( 'status' => 500 )
 			);
 		}
-
-		$processed_actions = self::drain_queue_within_budget();
 
 		return self::response(
 			array(
-				'status'    => 'enqueued',
-				'processed' => 0 < $processed_actions,
+				'status' => $result['summary']['status'],
+				'run_id' => $result['run_id'],
 			)
 		);
-	}
-
-	/**
-	 * 設定された時間予算の範囲内で Action Scheduler のキューを処理する.
-	 *
-	 * @return int 処理したアクション数.
-	 */
-	private static function drain_queue_within_budget() {
-		if ( ! class_exists( 'ActionScheduler' ) ) {
-			return 0;
-		}
-
-		$seconds = self::time_budget_seconds();
-
-		$time_limit_filter = static function () use ( $seconds ) {
-			return $seconds;
-		};
-
-		// Action Scheduler 自身のキューランナーが使う時間予算
-		// (`action_scheduler_queue_runner_time_limit`. 既定30秒)を、このリクエスト
-		// 中だけ設定値で上書きする. 恒久的なフィルタ登録にしない理由は、この時間
-		// 予算がREST経由のオポチュニスティックな処理専用の値であり、WP-Cron等の
-		// 他の実行経路(Step6)に影響させたくないため.
-		add_filter( 'action_scheduler_queue_runner_time_limit', $time_limit_filter );
-
-		$processed_actions = (int) ActionScheduler::runner()->run( 'REST' );
-
-		remove_filter( 'action_scheduler_queue_runner_time_limit', $time_limit_filter );
-
-		return $processed_actions;
-	}
-
-	/**
-	 * 実際に使う時間予算(秒)を求める.
-	 *
-	 * @return int
-	 */
-	private static function time_budget_seconds() {
-		$max_execution_time = (int) ini_get( 'max_execution_time' );
-
-		return self::clamp_time_budget( WPCV_Settings::get_rest_time_budget_seconds(), $max_execution_time );
-	}
-
-	/**
-	 * 設定値を `max_execution_time` の70%を上限にクランプする(純粋関数として
-	 * 分離し、`ini_get()` を介さずテストできるようにしてある).
-	 *
-	 * @param int $configured_seconds 設定画面で保存された時間予算(秒).
-	 * @param int $max_execution_time `ini_get( 'max_execution_time' )` の値
-	 *                                (秒。0は無制限を意味する).
-	 * @return int
-	 */
-	public static function clamp_time_budget( $configured_seconds, $max_execution_time ) {
-		$configured_seconds = max( 1, (int) $configured_seconds );
-
-		if ( $max_execution_time <= 0 ) {
-			// 0 は無制限(WP-CLI実行時の既定等). REST(HTTPリクエスト)では通常
-			// 有限値が設定されているが、無制限の環境では設定値をそのまま使う.
-			return $configured_seconds;
-		}
-
-		$ceiling = (int) floor( $max_execution_time * 0.7 );
-
-		return max( 1, min( $configured_seconds, $ceiling ) );
 	}
 
 	/**

@@ -158,22 +158,36 @@ class WPCV_Rest_Token {
 	/**
 	 * `$identifier`(呼び出し元IPアドレス等)が失敗回数の上限に達しているかどうか.
 	 *
-	 * @param string $identifier レート制限の単位(呼び出し元が決める. 空文字も許容
-	 *                           するが、その場合は全呼び出し元が同じバケツを
-	 *                           共有することになるため呼び出し側で避けること).
+	 * `$identifier` が空文字の場合は常に false を返す(v0.3.1 §Step5。
+	 * `REMOTE_ADDR` が取得できない呼び出し元を空文字で識別すると、由来の異なる
+	 * 複数の呼び出し元が同じレート制限バケツを共有してしまい、無関係な呼び出し元が
+	 * 巻き添えでロックアウトされ得る〔プラン§P1〕。識別子が無い場合はレート制限
+	 * そのものを適用しない、という安全側の判断にする。`record_failed_attempt()`/
+	 * `clear_failed_attempts()` も同様に空文字では何もしない).
+	 *
+	 * @param string $identifier レート制限の単位(呼び出し元が決める).
 	 * @return bool
 	 */
 	public static function is_rate_limited( $identifier ) {
+		if ( '' === $identifier ) {
+			return false;
+		}
+
 		return self::RATE_LIMIT_MAX_ATTEMPTS <= (int) get_transient( self::rate_limit_key( $identifier ) );
 	}
 
 	/**
 	 * 認証失敗を記録する.
 	 *
-	 * @param string $identifier `is_rate_limited()` と同じ単位.
+	 * @param string $identifier `is_rate_limited()` と同じ単位. 空文字では何もしない
+	 *                           (`is_rate_limited()` の docblock参照).
 	 * @return void
 	 */
 	public static function record_failed_attempt( $identifier ) {
+		if ( '' === $identifier ) {
+			return;
+		}
+
 		$key   = self::rate_limit_key( $identifier );
 		$count = (int) get_transient( $key );
 
@@ -183,10 +197,14 @@ class WPCV_Rest_Token {
 	/**
 	 * 認証成功時、それまでの失敗記録を消す.
 	 *
-	 * @param string $identifier `is_rate_limited()` と同じ単位.
+	 * @param string $identifier `is_rate_limited()` と同じ単位. 空文字では何もしない.
 	 * @return void
 	 */
 	public static function clear_failed_attempts( $identifier ) {
+		if ( '' === $identifier ) {
+			return;
+		}
+
 		delete_transient( self::rate_limit_key( $identifier ) );
 	}
 

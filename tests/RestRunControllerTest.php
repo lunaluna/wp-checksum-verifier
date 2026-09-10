@@ -29,11 +29,10 @@ use PHPUnit\Framework\TestCase;
 /**
  * `WPCV_Rest_Run_Controller` のテスト.
  *
- * v0.3 §Step8/§Step9の計画通り、冪等性判定ロジック(`WPCV_Repository`のフェイク
- * 経由)・パーミッションコールバックのトークン認証+レート制限・時間予算の
- * クランプ計算(`clamp_time_budget()`. `ini_get()`を介さない純粋関数)を検証する。
- * ルーティング登録自体(`register_routes()`)・Action Schedulerの実キュー処理は
- * 実WordPress環境が必要なため対象外(実地検証側の責務).
+ * v0.3 §Step8/§Step9・v0.3.1 §Step4の計画通り、同期専用になった `handle_run()`
+ * の応答契約(新規run完了・active run・busy・検証失敗)とパーミッション
+ * コールバックのトークン認証+レート制限を検証する。ルーティング登録自体
+ * (`register_routes()`)は実WordPress環境が必要なため対象外(実地検証側の責務).
  */
 class RestRunControllerTest extends TestCase {
 
@@ -50,9 +49,13 @@ class RestRunControllerTest extends TestCase {
 			$GLOBALS['_wpcv_test_user_capabilities'],
 			$GLOBALS['_wpcv_test_as_enqueue_calls'],
 			$GLOBALS['_wpcv_test_bloginfo'],
-			$GLOBALS['_wpcv_test_transients']
+			$GLOBALS['_wpcv_test_transients'],
+			$GLOBALS['_wpcv_test_plugins'],
+			$GLOBALS['_wpcv_test_mu_plugins'],
+			$_SERVER['REMOTE_ADDR']
 		);
 		wpcv_test_inject_repository();
+		wpcv_test_inject_run_coordinator();
 	}
 
 	/**
@@ -62,6 +65,8 @@ class RestRunControllerTest extends TestCase {
 	 */
 	protected function tearDown(): void {
 		wpcv_test_inject_repository();
+		wpcv_test_inject_run_coordinator();
+		unset( $_SERVER['REMOTE_ADDR'] );
 		parent::tearDown();
 	}
 
@@ -108,11 +113,17 @@ class RestRunControllerTest extends TestCase {
 	}
 
 	/**
-	 * 失敗回数が上限に達すると、正しいトークンでも `429` で拒否されることを確認する.
+	 * 失敗回数が上限に達すると、正しいトークンでも `429` で拒否されることを確認する
+	 * (`REMOTE_ADDR` が設定されている前提。v0.3.1 §Step5で `REMOTE_ADDR` が空の
+	 * 場合はレート制限自体を適用しないよう変更したため、このテストでは明示的に
+	 * 設定する。`test_check_permission_does_not_rate_limit_when_remote_addr_missing()`
+	 * が空の場合の挙動を別途検証する).
 	 *
 	 * @return void
 	 */
 	public function test_check_permission_returns_429_after_rate_limit_exceeded() {
+		$_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+
 		$token           = WPCV_Rest_Token::generate();
 		$wrong_request   = new WPCV_Test_Fake_Rest_Request( array( 'Authorization' => 'Bearer wrong-token' ) );
 		$correct_request = new WPCV_Test_Fake_Rest_Request( array( 'Authorization' => 'Bearer ' . $token ) );
@@ -128,12 +139,34 @@ class RestRunControllerTest extends TestCase {
 	}
 
 	/**
-	 * 直近runが `running` のままなら新規runを作らず、その run_id を
-	 * そのまま返す(冪等性)ことを確認する.
+	 * `REMOTE_ADDR` が取得できない場合、何度失敗してもレート制限が発動しないことを
+	 * 確認する(v0.3.1 §Step5。プラン§P1「`REMOTE_ADDR` が空の場合に全呼び出し元が
+	 * 同じrate-limit bucketへ入らない」への対策. `WPCV_Rest_Token::is_rate_limited()`
+	 * の空文字ガードが、REST層の実際の呼び出し経路〔`client_identifier()`〕からも
+	 * 機能することの確認).
 	 *
 	 * @return void
 	 */
-	public function test_handle_run_returns_existing_run_id_when_already_running() {
+	public function test_check_permission_does_not_rate_limit_when_remote_addr_missing() {
+		unset( $_SERVER['REMOTE_ADDR'] );
+
+		$wrong_request = new WPCV_Test_Fake_Rest_Request( array( 'Authorization' => 'Bearer wrong-token' ) );
+
+		for ( $i = 0; $i < WPCV_Rest_Token::RATE_LIMIT_MAX_ATTEMPTS + 5; $i++ ) {
+			$result = WPCV_Rest_Run_Controller::check_permission( $wrong_request );
+
+			// 429(レート制限)ではなく401(トークン不一致)のままであることを確認する.
+			$this->assertSame( 401, $result->get_error_data()['status'] );
+		}
+	}
+
+	/**
+	 * 直近runが `running`/`queued` のままなら新規runを作らず、その run_id と
+	 * 実際の状態をそのまま返す(冪等性)ことを確認する(v0.3.1 §Step4).
+	 *
+	 * @return void
+	 */
+	public function test_handle_run_returns_existing_run_id_when_active() {
 		$wpdb = new WPCV_Test_Fake_WPDB();
 		$wpdb->insert(
 			'wp_wpcv_runs',
@@ -157,66 +190,83 @@ class RestRunControllerTest extends TestCase {
 
 		$this->assertSame( array( 'status' => 'running', 'run_id' => 1 ), $response->data );
 		$this->assertSame( 'no-store', $response->get_headers()['Cache-Control'] );
+		// active run が見つかった時点で早期returnするため、検証(target_runs)は
+		// 一切走らない(AS runnerも呼ばれない. プラン§Step4テスト
+		// 「active queued/running runに対して新規runを作らない」の確認).
+		$this->assertArrayNotHasKey( 'wp_wpcv_target_runs', $wpdb->rows );
 		$this->assertArrayNotHasKey( '_wpcv_test_as_enqueue_calls', $GLOBALS );
 	}
 
 	/**
-	 * 進行中の run が無ければ enqueue し(Action Scheduler が利用可能な
-	 * テスト環境では常にenqueue経路を通る。`RunnerAsyncTest` の docblock参照)、
-	 * `{"status":"enqueued", ...}` を返すことを確認する.
+	 * 進行中の run が無ければ同期的に検証を完走し、終端状態(success/partial/failed)
+	 * と run_id を200で返すことを確認する(v0.3.1 §Step4: RESTはAS runnerを呼ばず
+	 * 常に同期実行する。プラン§Step4テスト「REST実行でAS runnerを呼ばない」の確認).
 	 *
 	 * @return void
 	 */
-	public function test_handle_run_enqueues_when_no_active_run() {
-		$wpdb = new WPCV_Test_Fake_WPDB();
+	public function test_handle_run_completes_new_run_synchronously() {
+		$GLOBALS['_wpcv_test_bloginfo'] = array( 'version' => '6.8' );
+		$made                           = wpcv_test_make_fake_environment();
+		wpcv_test_inject_run_coordinator( $made['coordinator'] );
+		wpcv_test_inject_repository( $made['repository'] );
+
+		$response = WPCV_Rest_Run_Controller::handle_run( new WP_REST_Request() );
+
+		$this->assertInstanceOf( WP_REST_Response::class, $response );
+		$this->assertSame( 'success', $response->data['status'] );
+		$this->assertSame( 1, $response->data['run_id'] );
+		$this->assertSame( 'no-store', $response->get_headers()['Cache-Control'] );
+
+		// AS runner は一切呼ばれていない(enqueue も drain も無い).
+		$this->assertArrayNotHasKey( '_wpcv_test_as_enqueue_calls', $GLOBALS );
+
+		$row = $made['wpdb']->rows['wp_wpcv_runs'][1];
+		$this->assertSame( 'rest', $row['run_trigger'] );
+		$this->assertSame( 'sync', $row['runner'] );
+	}
+
+	/**
+	 * advisory lock の取得に失敗した場合、`WP_Error`(503)を返すことを確認する
+	 * (v0.3.1 §Step4テスト「busyのstatus codeとbodyを検証する」).
+	 *
+	 * @return void
+	 */
+	public function test_handle_run_returns_busy_error_when_lock_fails() {
+		$wpdb                 = new WPCV_Test_Fake_WPDB();
+		$wpdb->get_var_return = '0';
 		wpcv_test_inject_repository( new WPCV_Repository( $wpdb ) );
 
 		$response = WPCV_Rest_Run_Controller::handle_run( new WP_REST_Request() );
 
-		$this->assertSame( 'enqueued', $response->data['status'] );
-		$this->assertFalse( $response->data['processed'] ); // ActionSchedulerクラス未ロードのためdrainは0件.
-		$this->assertCount( 1, $GLOBALS['_wpcv_test_as_enqueue_calls'] );
-		list( $hook, $args ) = $GLOBALS['_wpcv_test_as_enqueue_calls'][0];
-		$this->assertSame( WPCV_Runner_Async::HOOK, $hook );
-		$this->assertSame( array( 'rest' ), $args );
+		$this->assertInstanceOf( WP_Error::class, $response );
+		$this->assertSame( 'wpcv_rest_busy', $response->get_error_code() );
+		$this->assertSame( 503, $response->get_error_data()['status'] );
+		$this->assertArrayNotHasKey( 'wp_wpcv_runs', $wpdb->rows );
 	}
 
 	/**
-	 * `max_execution_time` が無制限(0)のとき、設定値をそのまま使うことを確認する.
+	 * 検証中に例外が発生した場合、`WP_Error`(500)を返し、run は failed 記録
+	 * されることを確認する(v0.3.1 §Step4テスト「同期例外のstatus codeとbodyを
+	 * 検証する」)。`WPCV_Context_Builder::build()` が version を取得できない
+	 * (`_wpcv_test_bloginfo` 未設定)ことで `WPCV_Run_Coordinator::run()` の
+	 * バリデーション例外を誘発する.
 	 *
 	 * @return void
 	 */
-	public function test_clamp_time_budget_returns_configured_value_when_unlimited() {
-		$this->assertSame( 15, WPCV_Rest_Run_Controller::clamp_time_budget( 15, 0 ) );
-	}
+	public function test_handle_run_returns_error_when_verification_throws() {
+		$made = wpcv_test_make_fake_environment();
+		wpcv_test_inject_run_coordinator( $made['coordinator'] );
+		wpcv_test_inject_repository( $made['repository'] );
 
-	/**
-	 * 設定値が `max_execution_time` の70%以内に収まる場合、設定値をそのまま使うことを確認する.
-	 *
-	 * @return void
-	 */
-	public function test_clamp_time_budget_keeps_configured_value_within_ceiling() {
-		// max_execution_time=30 → 70% = 21. 設定値15はこれ以下なのでそのまま.
-		$this->assertSame( 15, WPCV_Rest_Run_Controller::clamp_time_budget( 15, 30 ) );
-	}
+		// $GLOBALS['_wpcv_test_bloginfo'] を設定しないことで version が空文字になり、
+		// WPCV_Run_Coordinator::run() がバリデーション例外を投げる.
+		$response = WPCV_Rest_Run_Controller::handle_run( new WP_REST_Request() );
 
-	/**
-	 * 設定値が `max_execution_time` の70%を超える場合、70%相当にクランプされることを確認する.
-	 *
-	 * @return void
-	 */
-	public function test_clamp_time_budget_clamps_to_seventy_percent_ceiling() {
-		// max_execution_time=10 → 70% = 7. 設定値15はこれを超えるため7にクランプ.
-		$this->assertSame( 7, WPCV_Rest_Run_Controller::clamp_time_budget( 15, 10 ) );
-	}
+		$this->assertInstanceOf( WP_Error::class, $response );
+		$this->assertSame( 'wpcv_rest_run_failed', $response->get_error_code() );
+		$this->assertSame( 500, $response->get_error_data()['status'] );
 
-	/**
-	 * 設定値が0以下でも最低1秒は確保されることを確認する.
-	 *
-	 * @return void
-	 */
-	public function test_clamp_time_budget_enforces_minimum_one_second() {
-		$this->assertSame( 1, WPCV_Rest_Run_Controller::clamp_time_budget( 0, 0 ) );
-		$this->assertSame( 1, WPCV_Rest_Run_Controller::clamp_time_budget( 15, 1 ) );
+		$row = $made['wpdb']->rows['wp_wpcv_runs'][1];
+		$this->assertSame( 'failed', $row['status'] );
 	}
 }

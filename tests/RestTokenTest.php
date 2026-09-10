@@ -156,6 +156,23 @@ class RestTokenTest extends TestCase {
 	}
 
 	/**
+	 * `Bearer` scheme は大文字小文字を区別しないことを確認する(v0.3.1 §Step5。
+	 * `extract_from_request()` は `stripos()` で判定しており既に大文字小文字
+	 * 非依存だったが、明示的なテストが無かったため回帰防止として追加する).
+	 *
+	 * @return void
+	 */
+	public function test_extract_from_request_bearer_scheme_is_case_insensitive() {
+		$request = new WPCV_Test_Fake_Rest_Request( array( 'Authorization' => 'bearer abc123' ) );
+
+		$this->assertSame( 'abc123', WPCV_Rest_Token::extract_from_request( $request ) );
+
+		$request_mixed_case = new WPCV_Test_Fake_Rest_Request( array( 'Authorization' => 'BeArEr abc123' ) );
+
+		$this->assertSame( 'abc123', WPCV_Rest_Token::extract_from_request( $request_mixed_case ) );
+	}
+
+	/**
 	 * どちらのヘッダーも無ければ空文字を返し、`get_param()`(クエリパラメータ)は
 	 * 一切呼ばれないことを確認する(§12.3: クエリパラメータでの指定は不可).
 	 *
@@ -217,5 +234,35 @@ class RestTokenTest extends TestCase {
 
 		$this->assertTrue( WPCV_Rest_Token::is_rate_limited( '203.0.113.3' ) );
 		$this->assertFalse( WPCV_Rest_Token::is_rate_limited( '203.0.113.4' ) );
+	}
+
+	/**
+	 * 識別子が空文字の場合、何度失敗を記録しても `is_rate_limited('')` は常に
+	 * false を返すことを確認する(v0.3.1 §Step5。プラン§P1「`REMOTE_ADDR` が
+	 * 空の場合に全呼び出し元が同じrate-limit bucketへ入らない」への対策。
+	 * `REMOTE_ADDR` を取得できない複数の呼び出し元が同じ空文字バケツを共有して
+	 * 巻き添えでロックアウトされる事態を、識別子が無い場合はそもそもレート制限を
+	 * 適用しないことで防ぐ).
+	 *
+	 * @return void
+	 */
+	public function test_rate_limit_is_never_applied_for_empty_identifier() {
+		for ( $i = 0; $i < WPCV_Rest_Token::RATE_LIMIT_MAX_ATTEMPTS + 5; $i++ ) {
+			WPCV_Rest_Token::record_failed_attempt( '' );
+		}
+
+		$this->assertFalse( WPCV_Rest_Token::is_rate_limited( '' ) );
+	}
+
+	/**
+	 * `clear_failed_attempts('')` が例外を投げず何もしないことを確認する
+	 * (空文字ガードの網羅性確認).
+	 *
+	 * @return void
+	 */
+	public function test_clear_failed_attempts_is_noop_for_empty_identifier() {
+		WPCV_Rest_Token::clear_failed_attempts( '' );
+
+		$this->addToAssertionCount( 1 );
 	}
 }

@@ -296,7 +296,10 @@ if ( ! function_exists( 'as_enqueue_async_action' ) ) {
 	/**
 	 * Stub as_enqueue_async_action() — records the call in
 	 * $GLOBALS['_wpcv_test_as_enqueue_calls'][] and returns a fake incrementing
-	 * action id (mirrors the real function's `int` return on success).
+	 * action id (mirrors the real function's `int` return on success), unless
+	 * $GLOBALS['_wpcv_test_as_enqueue_return_zero'] is truthy, in which case it
+	 * returns 0 (mirrors the real function's failure return, e.g. Action
+	 * Scheduler not initialized or the args-too-long guard tripping).
 	 *
 	 * @param string $hook     Hook name.
 	 * @param array  $args     Args passed to the hook.
@@ -308,7 +311,35 @@ if ( ! function_exists( 'as_enqueue_async_action' ) ) {
 	function as_enqueue_async_action( $hook, $args = array(), $group = '', $unique = false, $priority = 10 ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
 		$GLOBALS['_wpcv_test_as_enqueue_calls'][] = array( $hook, $args, $group, $unique, $priority );
 
+		if ( ! empty( $GLOBALS['_wpcv_test_as_enqueue_return_zero'] ) ) {
+			return 0;
+		}
+
 		return count( $GLOBALS['_wpcv_test_as_enqueue_calls'] );
+	}
+}
+
+if ( ! class_exists( 'ActionScheduler' ) ) {
+	/**
+	 * Minimal stub of ActionScheduler(実クラスは `lib/action-scheduler/classes/abstracts/ActionScheduler.php`)。
+	 * `WPCV_Runner_Async::enqueue_run()` の既定の可用性チェック
+	 * (`class_exists('ActionScheduler') && ActionScheduler::is_initialized()`)を
+	 * テストできるようにするためのスタブ. `$GLOBALS['_wpcv_test_action_scheduler_initialized']`
+	 * (既定 false)を返す.
+	 */
+	class ActionScheduler {
+
+		/**
+		 * Stub ActionScheduler::is_initialized().
+		 *
+		 * @param string|null $function_name 無視する(実クラスは `_doing_it_wrong()` 用に使うが、本スタブでは不要).
+		 * @return bool
+		 */
+		public static function is_initialized( $function_name = null ) {
+			unset( $function_name );
+
+			return ! empty( $GLOBALS['_wpcv_test_action_scheduler_initialized'] );
+		}
 	}
 }
 
@@ -324,6 +355,27 @@ if ( ! function_exists( 'is_multisite' ) ) {
 	 */
 	function is_multisite() { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
 		return ! empty( $GLOBALS['_wpcv_test_is_multisite'] );
+	}
+}
+
+if ( ! function_exists( 'is_main_site' ) ) {
+	/**
+	 * Stub is_main_site() — 実際の is_main_site() と同じく、非マルチサイトでは
+	 * 常に true(`wp-includes/functions.php` の実装を実地確認済み)。マルチサイト
+	 * では $GLOBALS['_wpcv_test_is_main_site'](既定 true)を返す.
+	 *
+	 * @param int|null $site_id    無視する.
+	 * @param int|null $network_id 無視する.
+	 * @return bool
+	 */
+	function is_main_site( $site_id = null, $network_id = null ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		unset( $site_id, $network_id );
+
+		if ( ! is_multisite() ) {
+			return true;
+		}
+
+		return ! isset( $GLOBALS['_wpcv_test_is_main_site'] ) || ! empty( $GLOBALS['_wpcv_test_is_main_site'] );
 	}
 }
 
@@ -406,6 +458,40 @@ if ( ! function_exists( 'update_site_option' ) ) {
 		$GLOBALS['_wpcv_test_update_site_option_calls'][] = array( $name, $value );
 
 		return true;
+	}
+}
+
+if ( ! function_exists( 'get_main_site_id' ) ) {
+	/**
+	 * Stub get_main_site_id() — $GLOBALS['_wpcv_test_main_site_id'](既定 1)を返す.
+	 *
+	 * @param int|null $network_id 無視する.
+	 * @return int
+	 */
+	function get_main_site_id( $network_id = null ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		unset( $network_id );
+
+		return isset( $GLOBALS['_wpcv_test_main_site_id'] ) ? (int) $GLOBALS['_wpcv_test_main_site_id'] : 1;
+	}
+}
+
+if ( ! function_exists( 'get_blog_option' ) ) {
+	/**
+	 * Stub get_blog_option() — このダブルはマルチサイトの blog 分離を再現せず、
+	 * `$GLOBALS['_wpcv_test_options']` を(実際の `wp_options` と同じ想定で)
+	 * そのまま読む単純な実装(`WPCV_Migrator::get_stored_version()` の
+	 * legacy フォールバックをテストする用途にはこれで十分. `WPCV_Test_Fake_WPDB`
+	 * 同様、実際のマルチサイトDB分離までは再現しない簡易フェイク).
+	 *
+	 * @param int    $id            無視する.
+	 * @param string $option        オプション名.
+	 * @param mixed  $default_value 既定値.
+	 * @return mixed
+	 */
+	function get_blog_option( $id, $option, $default_value = false ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		unset( $id );
+
+		return get_option( $option, $default_value );
 	}
 }
 

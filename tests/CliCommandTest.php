@@ -27,9 +27,14 @@ use PHPUnit\Framework\TestCase;
  * `wp wpcv run` の実体である `WPCV_CLI_Command::__invoke()` のテスト.
  *
  * 実際の `WPCV_Plugin::run_coordinator()`(composition root)は `global $wpdb`
- * を必要とするため、`doubles.php` の `wpcv_test_make_fake_run_coordinator()` /
- * `wpcv_test_inject_run_coordinator()` で手書きテストダブルに差し替える
- * (composition root 自体は `PluginTest` で別途検証済み).
+ * を必要とするため、`doubles.php` の `wpcv_test_make_fake_environment()` /
+ * `wpcv_test_inject_run_coordinator()` / `wpcv_test_inject_repository()` で
+ * 手書きテストダブルに差し替える(composition root 自体は `PluginTest` で別途検証済み)。
+ * v0.3.1 §Step1で `__invoke()` が `WPCV_Plugin::repository()->reserve_run()` を
+ * 直接呼ぶようになったため、`run_coordinator()` と `repository()` の両方を
+ * (本番の composition root が同じインスタンスを共有するのと同様に)同じ
+ * `WPCV_Repository` インスタンスで差し替える必要がある(`wpcv_test_make_fake_environment()`
+ * の docblock 参照).
  */
 class CliCommandTest extends TestCase {
 
@@ -58,8 +63,9 @@ class CliCommandTest extends TestCase {
 	 */
 	protected function setUp(): void {
 		parent::setUp();
-		unset( $GLOBALS['_wpcv_test_wp_cli_calls'], $GLOBALS['_wpcv_test_bloginfo'], $GLOBALS['_wpcv_test_plugins'], $GLOBALS['_wpcv_test_mu_plugins'], $GLOBALS['_wpcv_test_as_enqueue_calls'] );
+		unset( $GLOBALS['_wpcv_test_wp_cli_calls'], $GLOBALS['_wpcv_test_bloginfo'], $GLOBALS['_wpcv_test_plugins'], $GLOBALS['_wpcv_test_mu_plugins'], $GLOBALS['_wpcv_test_as_enqueue_calls'], $GLOBALS['_wpcv_test_action_scheduler_initialized'] );
 		wpcv_test_inject_run_coordinator();
+		wpcv_test_inject_repository();
 	}
 
 	/**
@@ -69,6 +75,7 @@ class CliCommandTest extends TestCase {
 	 */
 	protected function tearDown(): void {
 		wpcv_test_inject_run_coordinator();
+		wpcv_test_inject_repository();
 		parent::tearDown();
 	}
 
@@ -79,7 +86,9 @@ class CliCommandTest extends TestCase {
 	 */
 	public function test_invoke_runs_verification_and_reports_success() {
 		$GLOBALS['_wpcv_test_bloginfo'] = array( 'version' => '6.8' );
-		wpcv_test_inject_run_coordinator( wpcv_test_make_fake_run_coordinator() );
+		$made                           = wpcv_test_make_fake_environment();
+		wpcv_test_inject_run_coordinator( $made['coordinator'] );
+		wpcv_test_inject_repository( $made['repository'] );
 
 		$command = new WPCV_CLI_Command();
 		$command->__invoke( array(), array() );
@@ -98,7 +107,9 @@ class CliCommandTest extends TestCase {
 	 */
 	public function test_invoke_converts_invalid_argument_exception_to_wp_cli_error() {
 		// get_bloginfo('version') のスタブを未設定のままにし、空文字を返させる.
-		wpcv_test_inject_run_coordinator( wpcv_test_make_fake_run_coordinator() );
+		$made = wpcv_test_make_fake_environment();
+		wpcv_test_inject_run_coordinator( $made['coordinator'] );
+		wpcv_test_inject_repository( $made['repository'] );
 
 		$command = new WPCV_CLI_Command();
 		$command->__invoke( array(), array() );
@@ -110,21 +121,48 @@ class CliCommandTest extends TestCase {
 	}
 
 	/**
+	 * 既に active(running)な run がある場合、検証を実行せず `WP_CLI::error()` を
+	 * 呼ぶことを確認する(v0.3.1 §Step1: 同期 CLI も `reserve_run()` を通す
+	 * ようになったことで、同時実行の防止が効くようになったことの確認).
+	 *
+	 * @return void
+	 */
+	public function test_invoke_reports_error_when_run_already_active() {
+		$made = wpcv_test_make_fake_environment();
+		$made['repository']->reserve_run();
+		wpcv_test_inject_run_coordinator( $made['coordinator'] );
+		wpcv_test_inject_repository( $made['repository'] );
+
+		$command = new WPCV_CLI_Command();
+		$command->__invoke( array(), array() );
+
+		$this->assertArrayNotHasKey( 'success', $GLOBALS['_wpcv_test_wp_cli_calls'] );
+		$this->assertCount( 1, $GLOBALS['_wpcv_test_wp_cli_calls']['error'] );
+		$this->assertStringContainsString( 'run #1', $GLOBALS['_wpcv_test_wp_cli_calls']['error'][0] );
+	}
+
+	/**
 	 * `--async` 指定時、`WPCV_Runner_Async::enqueue_run()` 経由で enqueue され、
 	 * `WP_CLI::success()` に action_id を含むメッセージが渡されることを確認する
-	 * (`as_enqueue_async_action()` は `wp-stubs.php` に常設のスタブがあり、
-	 * このテスト環境では常に「利用可能」側の分岐になる).
+	 * (`ActionScheduler::is_initialized()` のスタブを真にして「利用可能」側の
+	 * 分岐を模す。v0.3.1 §Step2で既定可用性チェックがこれも見るようになった
+	 * ため明示的に設定する必要がある。`as_enqueue_async_action()` 自体は
+	 * `wp-stubs.php` に常設のスタブがある).
 	 *
 	 * @return void
 	 */
 	public function test_invoke_with_async_flag_enqueues_via_runner_async() {
+		$GLOBALS['_wpcv_test_action_scheduler_initialized'] = true;
+		$made                                               = wpcv_test_make_fake_environment();
+		wpcv_test_inject_repository( $made['repository'] );
+
 		$command = new WPCV_CLI_Command();
 		$command->__invoke( array(), array( 'async' => true ) );
 
 		$this->assertCount( 1, $GLOBALS['_wpcv_test_as_enqueue_calls'] );
 		list( $hook, $args ) = $GLOBALS['_wpcv_test_as_enqueue_calls'][0];
 		$this->assertSame( WPCV_Runner_Async::HOOK, $hook );
-		$this->assertSame( array( 'cli' ), $args );
+		$this->assertSame( array( 1, 'cli' ), $args );
 
 		$this->assertArrayNotHasKey( 'error', $GLOBALS['_wpcv_test_wp_cli_calls'] );
 		$this->assertCount( 1, $GLOBALS['_wpcv_test_wp_cli_calls']['success'] );
