@@ -47,17 +47,20 @@ supported. A `WPCV_REST_TOKEN` constant (e.g. in `wp-config.php`) overrides
 the token issued from the Settings screen. Repeated authentication failures
 from the same IP are rate-limited.
 
-The endpoint is idempotent: while a run is already in progress it returns
-that run's id instead of starting a new one. When Action Scheduler is
-available, it also opportunistically drains the queue within a configurable
-time budget (Settings screen; always clamped to 70% of the server's
-`max_execution_time`).
+The endpoint is idempotent: while a run is already in progress (`queued` or
+`running`) it returns that run's id and status instead of starting a new
+one. Otherwise it runs the verification synchronously within the same HTTP
+request and returns once it completes — there is no opportunistic queue
+draining or time budget. This means the endpoint is only suitable for sites
+small enough to complete a full run within one request; per-file chunked
+execution and resume are planned for a future release. A busy response
+(advisory lock contention) or an internal failure returns an error instead
+of a 200.
 
 ## Settings
 
 The plugin's settings screen (network admin menu on multisite) lets you
-configure: the daily WP-Cron run time (UTC), the REST time budget, and REST
-token issuance.
+configure: the daily WP-Cron run time (UTC) and REST token issuance.
 
 ## Distribution
 

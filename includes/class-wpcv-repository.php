@@ -122,11 +122,11 @@ class WPCV_Repository {
 	 *     active: bool,
 	 *     lock_failed: bool,
 	 * } `lock_failed` が真の場合は lock 取得に失敗しており run は作成していない
-	 *   (`run_id` は null)。`active` が真の場合は既存の `queued`/`running` run が
-	 *   見つかったため新規作成しておらず、`run_id` はその既存 run を指す
-	 *   (`status` は null。呼び出し元は「新規に予約できたか」だけを見れば十分な
-	 *   設計のため、既存 run の正確な状態までは返さない)。両方偽の場合のみ、
-	 *   新規に run を作成しており `run_id`/`status` が新規行を指す.
+	 *   (`run_id`/`status` は null)。`active` が真の場合は既存の `queued`/`running`
+	 *   run が見つかったため新規作成しておらず、`run_id`/`status` はその既存 run を
+	 *   指す(v0.3.1 §Step4: RESTの応答に実際の状態を含めるため、active 時も
+	 *   実際の `status` を返すようにした)。両方偽の場合のみ、新規に run を
+	 *   作成しており `run_id`/`status` が新規行を指す.
 	 */
 	public function reserve_run( array $args = array() ) {
 		$run_trigger    = isset( $args['run_trigger'] ) ? (string) $args['run_trigger'] : 'manual';
@@ -156,12 +156,12 @@ class WPCV_Repository {
 		}
 
 		try {
-			$active_run_id = $this->find_active_run_id();
+			$active_run = $this->find_active_run();
 
-			if ( null !== $active_run_id ) {
+			if ( null !== $active_run ) {
 				return array(
-					'run_id'      => $active_run_id,
-					'status'      => null,
+					'run_id'      => $active_run['id'],
+					'status'      => $active_run['status'],
 					'active'      => true,
 					'lock_failed' => false,
 				);
@@ -536,6 +536,22 @@ class WPCV_Repository {
 	 * @return int|null active な run が無ければ `null`.
 	 */
 	public function find_active_run_id() {
+		$active = $this->find_active_run();
+
+		return null === $active ? null : $active['id'];
+	}
+
+	/**
+	 * `find_active_run_id()` の id・status 両方を返す版(v0.3.1 §Step4)。
+	 *
+	 * `reserve_run()` の active 分岐(`WPCV_Rest_Run_Controller::handle_run()` が
+	 * 「既に進行中の run」レスポンスに実際の状態〔`queued`/`running`〕を含める
+	 * ために使う)向けに、`find_active_run_id()` の docblock の前提・戻り値の
+	 * 意味はすべてそのまま引き継ぐ.
+	 *
+	 * @return array{id: int, status: string}|null active な run が無ければ `null`.
+	 */
+	private function find_active_run() {
 		$table = $this->wpdb->base_prefix . 'wpcv_runs';
 
 		// sweep_stale_running() と同じ方針で、動的な値を含まない固定リテラルのみのクエリ.
@@ -547,7 +563,10 @@ class WPCV_Repository {
 			// `sweep_stale_running()` と同じ理由(テストダブルの WHERE 句非対応)で
 			// status を改めて確認する.
 			if ( in_array( $row['status'], self::ACTIVE_STATUSES, true ) ) {
-				return (int) $row['id'];
+				return array(
+					'id'     => (int) $row['id'],
+					'status' => (string) $row['status'],
+				);
 			}
 		}
 

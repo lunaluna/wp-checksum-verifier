@@ -292,44 +292,6 @@ if ( ! function_exists( 'add_action' ) ) {
 	}
 }
 
-if ( ! function_exists( 'add_filter' ) ) {
-	/**
-	 * Stub add_filter() — records the call in
-	 * $GLOBALS['_wpcv_test_added_filters'][$hook][] (used by
-	 * `WPCV_Rest_Run_Controller::drain_queue_within_budget()` to temporarily
-	 * override `action_scheduler_queue_runner_time_limit`; production code
-	 * does not read the value back via `apply_filters()` for this hook in a
-	 * way tests need to assert on, so recording the call is sufficient).
-	 *
-	 * @param string   $hook     Hook name.
-	 * @param callable $callback Callback.
-	 * @param int      $priority Priority.
-	 * @return true
-	 */
-	function add_filter( $hook, $callback, $priority = 10 ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
-		$GLOBALS['_wpcv_test_added_filters'][ $hook ][] = array( $callback, $priority );
-
-		return true;
-	}
-}
-
-if ( ! function_exists( 'remove_filter' ) ) {
-	/**
-	 * Stub remove_filter() — records the call in
-	 * $GLOBALS['_wpcv_test_removed_filters'][$hook][].
-	 *
-	 * @param string   $hook     Hook name.
-	 * @param callable $callback Callback.
-	 * @param int      $priority Priority.
-	 * @return true
-	 */
-	function remove_filter( $hook, $callback, $priority = 10 ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
-		$GLOBALS['_wpcv_test_removed_filters'][ $hook ][] = array( $callback, $priority );
-
-		return true;
-	}
-}
-
 if ( ! function_exists( 'as_enqueue_async_action' ) ) {
 	/**
 	 * Stub as_enqueue_async_action() — records the call in
@@ -363,10 +325,7 @@ if ( ! class_exists( 'ActionScheduler' ) ) {
 	 * `WPCV_Runner_Async::enqueue_run()` の既定の可用性チェック
 	 * (`class_exists('ActionScheduler') && ActionScheduler::is_initialized()`)を
 	 * テストできるようにするためのスタブ. `$GLOBALS['_wpcv_test_action_scheduler_initialized']`
-	 * (既定 false)を返す。`runner()` も持たせてあるのは、`class_exists('ActionScheduler')` が
-	 * (このスタブの定義により)テストプロセス内で真になることで
-	 * `WPCV_Rest_Run_Controller::drain_queue_within_budget()`(v0.3.1 §Step4で削除予定の
-	 * 旧実装)が実際に `ActionScheduler::runner()->run()` まで呼び進むため.
+	 * (既定 false)を返す.
 	 */
 	class ActionScheduler {
 
@@ -380,31 +339,6 @@ if ( ! class_exists( 'ActionScheduler' ) ) {
 			unset( $function_name );
 
 			return ! empty( $GLOBALS['_wpcv_test_action_scheduler_initialized'] );
-		}
-
-		/**
-		 * Stub ActionScheduler::runner() — `run( $context )` だけを持つ無名クラスを返す.
-		 * 呼び出しは `$GLOBALS['_wpcv_test_action_scheduler_runner_run_calls'][]` に記録し、
-		 * `$GLOBALS['_wpcv_test_action_scheduler_runner_processed']`(既定 0)を返す.
-		 *
-		 * @return object
-		 */
-		public static function runner() {
-			return new class() {
-				/**
-				 * Stub run().
-				 *
-				 * @param string $context Context.
-				 * @return int
-				 */
-				public function run( $context ) {
-					$GLOBALS['_wpcv_test_action_scheduler_runner_run_calls'][] = $context;
-
-					return isset( $GLOBALS['_wpcv_test_action_scheduler_runner_processed'] )
-						? $GLOBALS['_wpcv_test_action_scheduler_runner_processed']
-						: 0;
-				}
-			};
 		}
 	}
 }

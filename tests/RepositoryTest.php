@@ -103,6 +103,8 @@ class RepositoryTest extends TestCase {
 		$reservation = $repository->reserve_run();
 
 		$this->assertSame( 1, $reservation['run_id'] );
+		// v0.3.1 §Step4: active 時も実際の status(この場合 running)を返す.
+		$this->assertSame( 'running', $reservation['status'] );
 		$this->assertTrue( $reservation['active'] );
 		$this->assertFalse( $reservation['lock_failed'] );
 		$this->assertCount( 1, $wpdb->rows['wp_wpcv_runs'] );

@@ -74,9 +74,8 @@ class WPCV_Page_Settings {
 		$run_now_result  = self::maybe_handle_run_now();
 		$generated_token = self::maybe_handle_generate_token();
 
-		$run_time         = WPCV_Settings::get_run_time();
-		$rest_time_budget = WPCV_Settings::get_rest_time_budget_seconds();
-		$button_state     = self::run_now_button_state( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON );
+		$run_time     = WPCV_Settings::get_run_time();
+		$button_state = self::run_now_button_state( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON );
 		?>
 		<div class="wrap">
 			<h1><?php echo esc_html__( 'WP Checksum Verifier', 'wp-checksum-verifier' ); ?></h1>
@@ -110,17 +109,6 @@ class WPCV_Page_Settings {
 							<input type="number" min="0" max="59" step="1" name="wpcv_run_minute" id="wpcv_run_minute" value="<?php echo esc_attr( (string) $run_time['minute'] ); ?>" style="width: 4em;" />
 							<p class="description">
 								<?php echo esc_html__( 'The verification run starts automatically at this time every day (UTC).', 'wp-checksum-verifier' ); ?>
-							</p>
-						</td>
-					</tr>
-					<tr>
-						<th scope="row">
-							<label for="wpcv_rest_time_budget"><?php echo esc_html__( 'REST run time budget (seconds)', 'wp-checksum-verifier' ); ?></label>
-						</th>
-						<td>
-							<input type="number" min="1" max="<?php echo esc_attr( (string) WPCV_Settings::MAX_REST_TIME_BUDGET_SECONDS ); ?>" step="1" name="wpcv_rest_time_budget" id="wpcv_rest_time_budget" value="<?php echo esc_attr( (string) $rest_time_budget ); ?>" style="width: 6em;" />
-							<p class="description">
-								<?php echo esc_html__( 'How long a single POST /wp-json/wpcv/v1/run request may spend draining the queue. Always clamped to 70% of the server\'s max_execution_time.', 'wp-checksum-verifier' ); ?>
 							</p>
 						</td>
 					</tr>
@@ -225,12 +213,10 @@ class WPCV_Page_Settings {
 			return false;
 		}
 
-		$hour             = isset( $_POST['wpcv_run_hour'] ) ? absint( wp_unslash( $_POST['wpcv_run_hour'] ) ) : WPCV_Settings::DEFAULT_RUN_HOUR;
-		$minute           = isset( $_POST['wpcv_run_minute'] ) ? absint( wp_unslash( $_POST['wpcv_run_minute'] ) ) : WPCV_Settings::DEFAULT_RUN_MINUTE;
-		$rest_time_budget = isset( $_POST['wpcv_rest_time_budget'] ) ? absint( wp_unslash( $_POST['wpcv_rest_time_budget'] ) ) : WPCV_Settings::DEFAULT_REST_TIME_BUDGET_SECONDS;
+		$hour   = isset( $_POST['wpcv_run_hour'] ) ? absint( wp_unslash( $_POST['wpcv_run_hour'] ) ) : WPCV_Settings::DEFAULT_RUN_HOUR;
+		$minute = isset( $_POST['wpcv_run_minute'] ) ? absint( wp_unslash( $_POST['wpcv_run_minute'] ) ) : WPCV_Settings::DEFAULT_RUN_MINUTE;
 
 		WPCV_Settings::update_run_time( $hour, $minute );
-		WPCV_Settings::update_rest_time_budget_seconds( $rest_time_budget );
 		WPCV_Scheduler::reschedule();
 
 		return true;
