@@ -27,11 +27,26 @@ if ( ! defined( 'ABSPATH' ) ) {
 class WPCV_Scheduler {
 
 	/**
-	 * 自己連鎖する単発イベントの hook 名.
+	 * 自己連鎖する単発イベントの hook 名(定時実行専用).
 	 *
 	 * @var string
 	 */
 	const HOOK = 'wpcv_scheduled_verify';
+
+	/**
+	 * 「今すぐ実行」専用の単発イベントの hook 名(v0.3.1 §Step3).
+	 *
+	 * 定時実行(`self::HOOK`)と同じ hook・args で予約すると、WordPress の
+	 * `wp_schedule_single_event()` が持つ「同一 hook・同一 args の予約が10分以内に
+	 * 既にあれば拒否する」という重複判定(`wp-includes/cron.php` の
+	 * `wp_schedule_single_event()` 実装参照。実測確認済み)に、定時イベントの
+	 * 予約時刻の近くで「今すぐ実行」を押すと引っかかってしまう(プラン§P1
+	 * 「「今すぐ実行」が定時イベントと衝突する」への対策)。hook を分ければ
+	 * args が同じでも重複とみなされない.
+	 *
+	 * @var string
+	 */
+	const MANUAL_HOOK = 'wpcv_manual_verify';
 
 	/**
 	 * Stale 判定の閾値(分。`WPCV_Repository::sweep_stale_running()` に渡す).
@@ -51,10 +66,17 @@ class WPCV_Scheduler {
 	 * 自体は `DISABLE_WP_CRON` の影響を受けず「予約」までは行われ、実際の発火だけが
 	 * 抑止される設計のため(§6).
 	 *
+	 * 毎リクエストで `ensure_scheduled()` を呼び、定時イベントが欠落していれば
+	 * 補完予約する(v0.3.1 §Step3。プラン§P1「有効化時にしか初回予約を補完しない
+	 * ため、プラグイン更新やcron option消失から自己修復しない」への対策).
+	 *
 	 * @return void
 	 */
 	public static function init() {
 		add_action( self::HOOK, array( __CLASS__, 'handle_event' ) );
+		add_action( self::MANUAL_HOOK, array( __CLASS__, 'handle_manual_event' ) );
+
+		self::ensure_scheduled();
 	}
 
 	/**
@@ -63,23 +85,22 @@ class WPCV_Scheduler {
 	 * @return void
 	 */
 	public static function activate() {
-		if ( false === wp_next_scheduled( self::HOOK ) ) {
-			self::schedule_next();
-		}
+		self::ensure_scheduled();
 	}
 
 	/**
-	 * 無効化フックから呼ぶ. 予約済みの自己連鎖を止める.
+	 * 無効化フックから呼ぶ. 予約済みの定時・手動の両イベントを止める.
 	 *
 	 * @return void
 	 */
 	public static function deactivate() {
 		wp_clear_scheduled_hook( self::HOOK );
+		wp_clear_scheduled_hook( self::MANUAL_HOOK );
 	}
 
 	/**
 	 * 設定画面での実行時刻変更を反映する. 既存の予約の有無に関わらず、必ず
-	 * 一度クリアしてから新しい設定値で予約し直す(`activate()`/`handle_event()` の
+	 * 一度クリアしてから新しい設定値で予約し直す(`ensure_scheduled()` の
 	 * 「未予約のときだけ予約する」二重予約防止とは目的が異なり、こちらは
 	 * 「予約済みでも新しい時刻で上書きしたい」ため).
 	 *
@@ -93,19 +114,53 @@ class WPCV_Scheduler {
 	/**
 	 * `self::HOOK` のハンドラ. WP-Cron から呼ばれる.
 	 *
-	 * Stale run 検知 → 非同期実行の enqueue(`WPCV_Runner_Async::enqueue_run()`。
-	 * Action Scheduler が利用不可なら内部で同期フォールバックする) → 次回分の
-	 * 自己連鎖予約、の順で行う. WP-Cron は発火した単発イベントを自動的に削除する
-	 * ため、ここで呼ぶ `wp_next_scheduled()` は通常 false を返すが、`activate()` と
-	 * 同じ二重予約防止のガードを念のため揃えておく.
+	 * 次回分の自己連鎖予約を最初に確保してから run を受け付ける(v0.3.1 §Step3。
+	 * v0.3.0までは「stale sweep → enqueue → 次回予約」の順だったため、enqueue が
+	 * fatal error やタイムアウトで異常終了すると次回予約に到達せず、以降の定時
+	 * 実行が永久に途絶えていた。プラン§P1「Cronの次回予約が異常終了で途絶える」
+	 * への対策). WP-Cron は発火した単発イベントを自動的に削除するため、
+	 * `ensure_scheduled()` が呼ぶ `wp_next_scheduled()` は通常 false を返す.
 	 *
 	 * @return void
 	 */
 	public static function handle_event() {
+		self::ensure_scheduled();
+
+		self::run_verification( 'cron' );
+	}
+
+	/**
+	 * `self::MANUAL_HOOK` のハンドラ. 「今すぐ実行」ボタンから予約された単発
+	 * イベントとして WP-Cron から呼ばれる(v0.3.1 §Step3). 自己連鎖予約は
+	 * 行わない(単発の手動実行のため。`handle_event()` との違いはそこのみ).
+	 *
+	 * @return void
+	 */
+	public static function handle_manual_event() {
+		self::run_verification( 'manual' );
+	}
+
+	/**
+	 * Stale run 検知 → 非同期実行の enqueue、の共通処理(`handle_event()` と
+	 * `handle_manual_event()` で共有する).
+	 *
+	 * @param string $run_trigger `WPCV_Runner_Async::enqueue_run()` に渡す
+	 *                            `'cron'|'manual'`.
+	 * @return void
+	 */
+	private static function run_verification( $run_trigger ) {
 		WPCV_Plugin::repository()->sweep_stale_running( self::STALE_THRESHOLD_MINUTES );
 
-		WPCV_Runner_Async::enqueue_run( 'cron' );
+		WPCV_Runner_Async::enqueue_run( $run_trigger );
+	}
 
+	/**
+	 * 定時イベントが未予約なら補完予約する(`init()`・`activate()`・
+	 * `handle_event()` の3箇所で共有する自己修復ロジック. v0.3.1 §Step3).
+	 *
+	 * @return void
+	 */
+	private static function ensure_scheduled() {
 		if ( false === wp_next_scheduled( self::HOOK ) ) {
 			self::schedule_next();
 		}
@@ -115,9 +170,20 @@ class WPCV_Scheduler {
 	 * `WPCV_Settings` の実行時刻から次回の Unix timestamp を計算し、単発イベントを
 	 * 予約する.
 	 *
+	 * マルチサイトでは main site 以外では何もしない(v0.3.1 §Step3「マルチサイト
+	 * ではmain siteのcronへinstallationあたり1系列だけ登録する」)。`wpcv_runs`
+	 * テーブル等が `base_prefix` ベースの installation-level であり(`WPCV_Migrator`
+	 * の docblock 参照)、サイトごとに検証を繰り返す必要が無いため。`is_main_site()`
+	 * は非マルチサイトでは常に真を返す(WordPress core の仕様)ため、この関数
+	 * 単体でシングルサイト・マルチサイト両方の分岐を賄える.
+	 *
 	 * @return void
 	 */
 	private static function schedule_next() {
+		if ( ! is_main_site() ) {
+			return;
+		}
+
 		$run_time = WPCV_Settings::get_run_time();
 		$next     = self::next_timestamp_after( time(), $run_time['hour'], $run_time['minute'] );
 

@@ -424,6 +424,27 @@ if ( ! function_exists( 'is_multisite' ) ) {
 	}
 }
 
+if ( ! function_exists( 'is_main_site' ) ) {
+	/**
+	 * Stub is_main_site() — 実際の is_main_site() と同じく、非マルチサイトでは
+	 * 常に true(`wp-includes/functions.php` の実装を実地確認済み)。マルチサイト
+	 * では $GLOBALS['_wpcv_test_is_main_site'](既定 true)を返す.
+	 *
+	 * @param int|null $site_id    無視する.
+	 * @param int|null $network_id 無視する.
+	 * @return bool
+	 */
+	function is_main_site( $site_id = null, $network_id = null ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		unset( $site_id, $network_id );
+
+		if ( ! is_multisite() ) {
+			return true;
+		}
+
+		return ! isset( $GLOBALS['_wpcv_test_is_main_site'] ) || ! empty( $GLOBALS['_wpcv_test_is_main_site'] );
+	}
+}
+
 if ( ! function_exists( 'wp_parse_args' ) ) {
 	/**
 	 * Stub wp_parse_args() — 実際の wp_parse_args() と同じマージ順序

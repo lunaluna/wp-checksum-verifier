@@ -71,7 +71,7 @@ class WPCV_Page_Settings {
 		}
 
 		$saved           = self::maybe_handle_save();
-		$run_triggered   = self::maybe_handle_run_now();
+		$run_now_result  = self::maybe_handle_run_now();
 		$generated_token = self::maybe_handle_generate_token();
 
 		$run_time         = WPCV_Settings::get_run_time();
@@ -87,9 +87,13 @@ class WPCV_Page_Settings {
 				</div>
 			<?php endif; ?>
 
-			<?php if ( $run_triggered ) : ?>
+			<?php if ( true === $run_now_result ) : ?>
 				<div class="notice notice-success is-dismissible">
 					<p><?php echo esc_html__( 'A verification run has been scheduled.', 'wp-checksum-verifier' ); ?></p>
+				</div>
+			<?php elseif ( is_wp_error( $run_now_result ) ) : ?>
+				<div class="notice notice-error is-dismissible">
+					<p><?php echo esc_html( $run_now_result->get_error_message() ); ?></p>
 				</div>
 			<?php endif; ?>
 
@@ -234,30 +238,43 @@ class WPCV_Page_Settings {
 
 	/**
 	 * 「今すぐ実行」フォームが POST されていれば nonce・capability・`DISABLE_WP_CRON`を
-	 * 検証したうえで、単発イベントを即時(`time()`)で予約し `spawn_cron()` する.
+	 * 検証したうえで、`WPCV_Scheduler::MANUAL_HOOK` の単発イベントを即時(`time()`)で
+	 * 予約し `spawn_cron()` する.
 	 *
 	 * 同期実行はしない(§6.4: 管理画面のリクエストを検証の完了までブロックしない
-	 * ため。Step6の`WPCV_Scheduler::HOOK`ハンドラを再利用するため、実際の検証は
-	 * WP-Cronの通常の発火経路(`spawn_cron()`が起こす非同期HTTPリクエスト)を通る).
+	 * ため。実際の検証はWP-Cronの通常の発火経路(`spawn_cron()`が起こす非同期HTTP
+	 * リクエスト)を通る)。定時実行用の `WPCV_Scheduler::HOOK` ではなく専用の
+	 * `MANUAL_HOOK` を使う理由と、予約結果(`$wp_error = true` で `WP_Error` を
+	 * 受け取る)を検査する理由は `WPCV_Scheduler::MANUAL_HOOK` の docblock参照
+	 * (v0.3.1 §Step3。プラン§P1「「今すぐ実行」が定時イベントと衝突する」
+	 * 「予約結果を検査しないため、失敗しても成功noticeを出す」への対策).
 	 *
-	 * @return bool 予約を実行したかどうか.
+	 * @return true|WP_Error|null 予約に成功すれば `true`、失敗すれば `WP_Error`。
+	 *                            POST されていない・capability検証に失敗した・
+	 *                            `DISABLE_WP_CRON` で無効化されている場合は `null`
+	 *                            (何もnoticeを表示しない).
 	 */
 	private static function maybe_handle_run_now() {
 		if ( ! isset( $_POST[ self::RUN_NOW_NONCE_NAME ] ) ) {
-			return false;
+			return null;
 		}
 
 		check_admin_referer( self::RUN_NOW_NONCE_ACTION, self::RUN_NOW_NONCE_NAME );
 
 		if ( ! current_user_can( self::required_capability() ) ) {
-			return false;
+			return null;
 		}
 
 		if ( self::run_now_button_state( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON )['disabled'] ) {
-			return false;
+			return null;
 		}
 
-		wp_schedule_single_event( time(), WPCV_Scheduler::HOOK );
+		$scheduled = wp_schedule_single_event( time(), WPCV_Scheduler::MANUAL_HOOK, array(), true );
+
+		if ( is_wp_error( $scheduled ) ) {
+			return $scheduled;
+		}
+
 		spawn_cron();
 
 		return true;

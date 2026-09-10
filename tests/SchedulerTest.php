@@ -43,6 +43,7 @@ class SchedulerTest extends TestCase {
 		parent::setUp();
 		unset(
 			$GLOBALS['_wpcv_test_is_multisite'],
+			$GLOBALS['_wpcv_test_is_main_site'],
 			$GLOBALS['_wpcv_test_options'],
 			$GLOBALS['_wpcv_test_site_options'],
 			$GLOBALS['_wpcv_test_scheduled_hooks'],
@@ -120,7 +121,9 @@ class SchedulerTest extends TestCase {
 	}
 
 	/**
-	 * `deactivate()` は `wp_clear_scheduled_hook()` を呼ぶことを確認する.
+	 * `deactivate()` は `wp_clear_scheduled_hook()` を呼ぶことを確認する
+	 * (v0.3.1 §Step3で `MANUAL_HOOK` も対象になったため2回呼ばれる。
+	 * `test_deactivate_clears_both_hooks()` でより詳細に確認する).
 	 *
 	 * @return void
 	 */
@@ -130,7 +133,7 @@ class SchedulerTest extends TestCase {
 		WPCV_Scheduler::deactivate();
 
 		$this->assertFalse( wp_next_scheduled( WPCV_Scheduler::HOOK ) );
-		$this->assertCount( 1, $GLOBALS['_wpcv_test_clear_scheduled_hook_calls'] );
+		$this->assertCount( 2, $GLOBALS['_wpcv_test_clear_scheduled_hook_calls'] );
 	}
 
 	/**
@@ -195,5 +198,141 @@ class SchedulerTest extends TestCase {
 
 		// 3. 次回分が自己連鎖で再予約されている.
 		$this->assertNotFalse( wp_next_scheduled( WPCV_Scheduler::HOOK ) );
+	}
+
+	/**
+	 * `handle_event()` は run 受付(stale sweep・enqueue)が例外を投げても、
+	 * 次回分の自己連鎖予約が既に確保済みであることを確認する(v0.3.1 §Step3。
+	 * プラン§P1「Cronの次回予約が異常終了で途絶える」への対策. 例外を投げるのは
+	 * `run_verification()`(sweep_stale_running → enqueue_run の順)であり、
+	 * `ensure_scheduled()` はその前に呼ばれる設計であることの確認).
+	 *
+	 * @return void
+	 */
+	public function test_handle_event_keeps_next_schedule_when_verification_throws() {
+		$throwing_wpdb = new class() extends WPCV_Test_Fake_WPDB {
+			/**
+			 * 呼ばれたら必ず例外を投げる(sweep_stale_running() の DB 障害を模す).
+			 *
+			 * @param string $query  無視する.
+			 * @param string $output 無視する.
+			 * @return never
+			 * @throws RuntimeException 常に投げる.
+			 */
+			public function get_results( $query, $output = 'ARRAY_A' ) {
+				unset( $query, $output );
+				throw new RuntimeException( 'DB connection lost' );
+			}
+		};
+
+		wpcv_test_inject_repository( new WPCV_Repository( $throwing_wpdb ) );
+
+		try {
+			WPCV_Scheduler::handle_event();
+			$this->fail( 'RuntimeException を期待していたが投げられなかった.' );
+		} catch ( RuntimeException $e ) {
+			$this->assertSame( 'DB connection lost', $e->getMessage() );
+		}
+
+		$this->assertNotFalse( wp_next_scheduled( WPCV_Scheduler::HOOK ) );
+	}
+
+	/**
+	 * `init()` は定時イベントが未予約なら補完予約することを確認する(v0.3.1 §Step3。
+	 * プラン§P1「有効化時にしか初回予約を補完しないため、プラグイン更新やcron
+	 * option消失から自己修復しない」への対策. 通常ロード時に毎回呼ばれる `init()`
+	 * でも `activate()` と同じ自己修復が効くことの確認).
+	 *
+	 * @return void
+	 */
+	public function test_init_repairs_missing_schedule() {
+		WPCV_Scheduler::init();
+
+		$this->assertNotFalse( wp_next_scheduled( WPCV_Scheduler::HOOK ) );
+	}
+
+	/**
+	 * `init()` は既に予約済みなら二重予約しないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_init_does_not_duplicate_existing_schedule() {
+		wp_schedule_single_event( 12345, WPCV_Scheduler::HOOK );
+		unset( $GLOBALS['_wpcv_test_schedule_single_event_calls'] );
+
+		WPCV_Scheduler::init();
+
+		$this->assertArrayNotHasKey( '_wpcv_test_schedule_single_event_calls', $GLOBALS );
+	}
+
+	/**
+	 * マルチサイトで main site 以外では定時イベントを予約しないことを確認する
+	 * (v0.3.1 §Step3「マルチサイトではmain siteのcronへinstallationあたり1系列
+	 * だけ登録する」).
+	 *
+	 * @return void
+	 */
+	public function test_activate_skips_scheduling_on_non_main_site() {
+		$GLOBALS['_wpcv_test_is_multisite'] = true;
+		$GLOBALS['_wpcv_test_is_main_site'] = false;
+
+		WPCV_Scheduler::activate();
+
+		$this->assertFalse( wp_next_scheduled( WPCV_Scheduler::HOOK ) );
+		$this->assertArrayNotHasKey( '_wpcv_test_schedule_single_event_calls', $GLOBALS );
+	}
+
+	/**
+	 * マルチサイトの main site では通常どおり定時イベントを予約することを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_activate_schedules_on_main_site_of_multisite() {
+		$GLOBALS['_wpcv_test_is_multisite'] = true;
+		$GLOBALS['_wpcv_test_is_main_site'] = true;
+
+		WPCV_Scheduler::activate();
+
+		$this->assertNotFalse( wp_next_scheduled( WPCV_Scheduler::HOOK ) );
+	}
+
+	/**
+	 * `deactivate()` は定時(`HOOK`)・手動(`MANUAL_HOOK`)の両方をクリアすることを確認する
+	 * (v0.3.1 §Step3).
+	 *
+	 * @return void
+	 */
+	public function test_deactivate_clears_both_hooks() {
+		wp_schedule_single_event( 12345, WPCV_Scheduler::HOOK );
+		wp_schedule_single_event( 67890, WPCV_Scheduler::MANUAL_HOOK );
+
+		WPCV_Scheduler::deactivate();
+
+		$this->assertFalse( wp_next_scheduled( WPCV_Scheduler::HOOK ) );
+		$this->assertFalse( wp_next_scheduled( WPCV_Scheduler::MANUAL_HOOK ) );
+		$this->assertCount( 2, $GLOBALS['_wpcv_test_clear_scheduled_hook_calls'] );
+	}
+
+	/**
+	 * `handle_manual_event()` が `run_trigger = 'manual'` で enqueue し、
+	 * 定時イベントの自己連鎖予約は行わないことを確認する(v0.3.1 §Step3。
+	 * プラン§Step3テスト「manual runの `run_trigger` がmanualになる」の対策確認).
+	 *
+	 * @return void
+	 */
+	public function test_handle_manual_event_enqueues_with_manual_trigger_and_does_not_reschedule() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		wpcv_test_inject_repository( new WPCV_Repository( $wpdb ) );
+		$GLOBALS['_wpcv_test_action_scheduler_initialized'] = true;
+
+		WPCV_Scheduler::handle_manual_event();
+
+		$this->assertCount( 1, $GLOBALS['_wpcv_test_as_enqueue_calls'] );
+		list( , $args ) = $GLOBALS['_wpcv_test_as_enqueue_calls'][0];
+		$this->assertSame( array( 1, 'manual' ), $args );
+
+		// handle_manual_event() は定時イベントの自己連鎖予約(ensure_scheduled())を
+		// 行わない(handle_event() との唯一の違い).
+		$this->assertFalse( wp_next_scheduled( WPCV_Scheduler::HOOK ) );
 	}
 }
