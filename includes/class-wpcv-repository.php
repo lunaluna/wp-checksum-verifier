@@ -213,35 +213,60 @@ class WPCV_Repository {
 	}
 
 	/**
-	 * 実行(run)行を失敗状態にする(v0.3.1 §Step1).
+	 * 実行(run)行を失敗状態にする(v0.3.1 §Step1、§Step2で `queued` にも対応).
 	 *
-	 * `WPCV_Run_Coordinator::run()` が検証中に例外を投げた場合の記録先として使う。
-	 * `status = 'running'` を WHERE に含める(`finish_run()` と同じ理由。docblock参照).
-	 * `WPCV_Run_Coordinator::run()` に渡す run はこのメソッドが呼ばれる時点で
-	 * 必ず `running`(`reserve_run()` が直接 `running` で作った行、または
-	 * `mark_queued_running()` で `running` へ遷移させた行のいずれか)であるという
-	 * 呼び出し規約になっているため、対象を `running` に限定してよい.
+	 * 2つの呼び出し状況を想定する:
+	 *
+	 * 1. `WPCV_Run_Coordinator::run()` が検証中に例外を投げた場合(この時点で
+	 *    run は必ず `running`。`reserve_run()` が直接 `running` で作った行、または
+	 *    `mark_queued_running()` で `running` へ遷移させた行のいずれか).
+	 * 2. `queued` で予約した直後に Action Scheduler への enqueue 自体が失敗した
+	 *    場合(v0.3.1 §Step2。この時点で run はまだ `queued` のまま。ワーカーは
+	 *    一度も起動していないため、他プロセスとの競合は起こらない).
+	 *
+	 * `status = 'running'` を条件に更新を試み、対象行が見つからなければ
+	 * `status = 'queued'` を条件に再試行する(2段階。実 `$wpdb` の `update()` は
+	 * WHERE 句に IN() を組み立てられないため。`finish_run()` と異なり `queued` も
+	 * 受け付ける必要があるのはこのメソッドだけ. 状況1で更新できた場合は状況2の
+	 * 再試行は対象0件で no-op になるだけで安全).
 	 *
 	 * @param int    $run_id 対象の run の id.
-	 * @param string $notes  失敗理由(例外クラス名・メッセージ). 省略可.
-	 * @return bool 更新できたら true。false は対象行が既に `running` ではない
-	 *              (stale sweep に先を越された等)ことを意味する.
+	 * @param string $notes  失敗理由(例外クラス名・メッセージ等). 省略可.
+	 * @return bool 更新できたら true。false は対象行が `running`/`queued` の
+	 *              いずれでもない(stale sweep に先を越された等)ことを意味する.
 	 */
 	public function mark_run_failed( $run_id, $notes = '' ) {
-		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+		$table  = $this->wpdb->base_prefix . 'wpcv_runs';
+		$data   = array(
+			'finished_at' => call_user_func( $this->now ),
+			'status'      => 'failed',
+			'notes'       => (string) $notes,
+		);
+		$format = array( '%s', '%s', '%s' );
 
 		$updated = $this->wpdb->update(
 			$table,
-			array(
-				'finished_at' => call_user_func( $this->now ),
-				'status'      => 'failed',
-				'notes'       => (string) $notes,
-			),
+			$data,
 			array(
 				'id'     => (int) $run_id,
 				'status' => self::STATUS_RUNNING,
 			),
-			array( '%s', '%s', '%s' ),
+			$format,
+			array( '%d', '%s' )
+		);
+
+		if ( $updated > 0 ) {
+			return true;
+		}
+
+		$updated = $this->wpdb->update(
+			$table,
+			$data,
+			array(
+				'id'     => (int) $run_id,
+				'status' => self::STATUS_QUEUED,
+			),
+			$format,
 			array( '%d', '%s' )
 		);
 

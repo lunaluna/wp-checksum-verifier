@@ -144,12 +144,39 @@ class WPCV_Rest_Run_Controller {
 		$enqueue_result = WPCV_Runner_Async::enqueue_run( 'rest' );
 
 		if ( ! $enqueue_result['enqueued'] ) {
-			// Action Scheduler が利用不可 → `WPCV_Runner_Async::enqueue_run()` が
-			// 内部で同期フォールバック実行済み(この呼び出しの中で run が完走している).
+			if ( null !== $enqueue_result['result'] ) {
+				// Action Scheduler が利用不可 → `WPCV_Runner_Async::enqueue_run()` が
+				// 内部で同期フォールバック実行済み(この呼び出しの中で run が完走している).
+				return self::response(
+					array(
+						'status' => $enqueue_result['result']['summary']['status'],
+						'run_id' => $enqueue_result['result']['run_id'],
+					)
+				);
+			}
+
+			if ( $enqueue_result['busy'] ) {
+				// v0.3.1 §Step1のadvisory lockが、この関数冒頭の事前チェック
+				// (129-142行目)とのわずかな race を検知した状態(REST自身の事前
+				// チェックと`reserve_run()`の間に別リクエストが割り込んだ場合のみ
+				// 起こりうる). 適切な `WP_Error` レスポンス(400/409等)への置き換えは
+				// v0.3.1 §Step4のREST全体の契約見直しで対応する。ここでは暫定的に
+				// 旧来の`running`応答と同じ形へフォールバックし、クラッシュだけを防ぐ.
+				return self::response(
+					array(
+						'status' => 'running',
+						'run_id' => $repository->find_active_run_id(),
+					)
+				);
+			}
+
+			// enqueue 自体が失敗した(action_id が正の整数でなかった). run は
+			// `WPCV_Runner_Async::enqueue_run()` 内で failed 記録済み(プラン§P1
+			// 「enqueue失敗を成功扱いする」への対策)。エラーレスポンスの形式は
+			// v0.3.1 §Step4で見直す.
 			return self::response(
 				array(
-					'status' => $enqueue_result['result']['summary']['status'],
-					'run_id' => $enqueue_result['result']['run_id'],
+					'status' => 'failed',
 				)
 			);
 		}

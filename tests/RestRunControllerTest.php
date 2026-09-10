@@ -50,7 +50,10 @@ class RestRunControllerTest extends TestCase {
 			$GLOBALS['_wpcv_test_user_capabilities'],
 			$GLOBALS['_wpcv_test_as_enqueue_calls'],
 			$GLOBALS['_wpcv_test_bloginfo'],
-			$GLOBALS['_wpcv_test_transients']
+			$GLOBALS['_wpcv_test_transients'],
+			$GLOBALS['_wpcv_test_action_scheduler_initialized'],
+			$GLOBALS['_wpcv_test_action_scheduler_runner_run_calls'],
+			$GLOBALS['_wpcv_test_action_scheduler_runner_processed']
 		);
 		wpcv_test_inject_repository();
 	}
@@ -161,24 +164,63 @@ class RestRunControllerTest extends TestCase {
 	}
 
 	/**
-	 * 進行中の run が無ければ enqueue し(Action Scheduler が利用可能な
-	 * テスト環境では常にenqueue経路を通る。`RunnerAsyncTest` の docblock参照)、
+	 * 進行中の run が無ければ enqueue し(`ActionScheduler::is_initialized()` の
+	 * スタブが真を返す状態にして「利用可能」側の分岐を模す。v0.3.1 §Step2で
+	 * `WPCV_Runner_Async::enqueue_run()` の既定可用性チェックが
+	 * `is_initialized()` も見るようになったため明示的に設定する必要がある)、
 	 * `{"status":"enqueued", ...}` を返すことを確認する.
 	 *
 	 * @return void
 	 */
 	public function test_handle_run_enqueues_when_no_active_run() {
+		$GLOBALS['_wpcv_test_action_scheduler_initialized'] = true;
+
 		$wpdb = new WPCV_Test_Fake_WPDB();
 		wpcv_test_inject_repository( new WPCV_Repository( $wpdb ) );
 
 		$response = WPCV_Rest_Run_Controller::handle_run( new WP_REST_Request() );
 
 		$this->assertSame( 'enqueued', $response->data['status'] );
-		$this->assertFalse( $response->data['processed'] ); // ActionSchedulerクラス未ロードのためdrainは0件.
+		$this->assertFalse( $response->data['processed'] ); // スタブの runner()->run() は既定で0を返す.
 		$this->assertCount( 1, $GLOBALS['_wpcv_test_as_enqueue_calls'] );
 		list( $hook, $args ) = $GLOBALS['_wpcv_test_as_enqueue_calls'][0];
 		$this->assertSame( WPCV_Runner_Async::HOOK, $hook );
-		$this->assertSame( array( 'rest' ), $args );
+		// enqueue する args は run_id(このテストでは1)と $run_trigger(v0.3.1 §Step2).
+		$this->assertSame( array( 1, 'rest' ), $args );
+	}
+
+	/**
+	 * enqueue 直前の advisory lock による busy 判定(v0.3.1 §Step1・Step2。
+	 * この関数冒頭の事前チェックとの race でのみ起こりうる)でも、クラッシュせず
+	 * 既存 run の id を返すことを確認する(Step4でのREST全体の契約見直しまでの
+	 * 暫定的なフォールバック応答. `WPCV_Rest_Run_Controller::handle_run()` 参照).
+	 *
+	 * @return void
+	 */
+	public function test_handle_run_returns_running_when_enqueue_reports_busy() {
+		$GLOBALS['_wpcv_test_action_scheduler_initialized'] = true;
+
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-10 12:00:00',
+				'status'      => 'queued',
+				'run_trigger' => 'rest',
+				'runner'      => 'async',
+			)
+		);
+		$repository = new WPCV_Repository( $wpdb );
+		wpcv_test_inject_repository( $repository );
+
+		// find_active_run_id() は queued も active とみなすため(v0.3.1 §Step1)、
+		// この関数冒頭の事前チェックの時点で本来は早期returnする経路だが、
+		// 「事前チェック後・reserve_run前に割り込まれた」状況を直接模すため、
+		// handle_run() ではなく enqueue_run() の busy 分岐だけを確認する.
+		$result = WPCV_Runner_Async::enqueue_run( 'rest' );
+
+		$this->assertFalse( $result['enqueued'] );
+		$this->assertTrue( $result['busy'] );
 	}
 
 	/**

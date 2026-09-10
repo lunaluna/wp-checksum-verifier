@@ -49,7 +49,8 @@ class SchedulerTest extends TestCase {
 			$GLOBALS['_wpcv_test_schedule_single_event_calls'],
 			$GLOBALS['_wpcv_test_clear_scheduled_hook_calls'],
 			$GLOBALS['_wpcv_test_as_enqueue_calls'],
-			$GLOBALS['_wpcv_test_bloginfo']
+			$GLOBALS['_wpcv_test_bloginfo'],
+			$GLOBALS['_wpcv_test_action_scheduler_initialized']
 		);
 		wpcv_test_inject_repository();
 	}
@@ -174,18 +175,23 @@ class SchedulerTest extends TestCase {
 
 		wpcv_test_inject_repository( new WPCV_Repository( $wpdb, $now ) );
 
+		// `ActionScheduler::is_initialized()` を真にし、enqueue 経路(可用性あり)を
+		// 通す(v0.3.1 §Step2で `WPCV_Runner_Async::enqueue_run()` の既定可用性
+		// チェックがこれも見るようになったため明示的に設定する必要がある).
+		$GLOBALS['_wpcv_test_action_scheduler_initialized'] = true;
+
 		WPCV_Scheduler::handle_event();
 
 		// 1. stale run が failed 化されている.
 		$this->assertSame( 'failed', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
 
-		// 2. `WPCV_Runner_Async::enqueue_run( 'cron' )` が enqueue 経路を通っている
-		// (テスト環境では `as_enqueue_async_action()` スタブが常設されているため
-		// 可用性チェックは常に真になる. `RunnerAsyncTest` の docblock参照).
+		// 2. `WPCV_Runner_Async::enqueue_run( 'cron' )` が enqueue 経路を通っている.
 		$this->assertCount( 1, $GLOBALS['_wpcv_test_as_enqueue_calls'] );
 		list( $hook, $args ) = $GLOBALS['_wpcv_test_as_enqueue_calls'][0];
 		$this->assertSame( WPCV_Runner_Async::HOOK, $hook );
-		$this->assertSame( array( 'cron' ), $args );
+		// enqueue する args は run_id(stale run の1件を failed 化した直後に
+		// 新規 queued run として2件目が作られるため2)と $run_trigger(v0.3.1 §Step2).
+		$this->assertSame( array( 2, 'cron' ), $args );
 
 		// 3. 次回分が自己連鎖で再予約されている.
 		$this->assertNotFalse( wp_next_scheduled( WPCV_Scheduler::HOOK ) );

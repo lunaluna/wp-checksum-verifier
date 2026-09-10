@@ -89,7 +89,9 @@ class WPCV_CLI_Command {
 
 	/**
 	 * `--async` 指定時の処理. `WPCV_Runner_Async::enqueue_run()` を呼び、
-	 * enqueue できたか同期フォールバックしたかに応じて出力を切り替える.
+	 * enqueue できたか・busyか・enqueue自体が失敗したか・同期フォールバックしたか
+	 * に応じて出力を切り替える(v0.3.1 §Step2: `busy`/`action_id<=0`のときは
+	 * `result`がnullになるため、`report_result()`にそのまま渡すとエラーになる).
 	 *
 	 * @return void
 	 */
@@ -103,6 +105,16 @@ class WPCV_CLI_Command {
 					$enqueue_result['action_id']
 				)
 			);
+			return;
+		}
+
+		if ( $enqueue_result['busy'] ) {
+			WP_CLI::error( '既に実行中またはキュー投入済みの run があります。完了を待ってから再実行してください.' );
+			return;
+		}
+
+		if ( null === $enqueue_result['result'] ) {
+			WP_CLI::error( 'run のキュー投入に失敗しました(Action Scheduler への enqueue が失敗しました). 詳細は run の notes を確認してください.' );
 			return;
 		}
 

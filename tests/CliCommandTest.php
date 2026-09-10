@@ -63,7 +63,7 @@ class CliCommandTest extends TestCase {
 	 */
 	protected function setUp(): void {
 		parent::setUp();
-		unset( $GLOBALS['_wpcv_test_wp_cli_calls'], $GLOBALS['_wpcv_test_bloginfo'], $GLOBALS['_wpcv_test_plugins'], $GLOBALS['_wpcv_test_mu_plugins'], $GLOBALS['_wpcv_test_as_enqueue_calls'] );
+		unset( $GLOBALS['_wpcv_test_wp_cli_calls'], $GLOBALS['_wpcv_test_bloginfo'], $GLOBALS['_wpcv_test_plugins'], $GLOBALS['_wpcv_test_mu_plugins'], $GLOBALS['_wpcv_test_as_enqueue_calls'], $GLOBALS['_wpcv_test_action_scheduler_initialized'] );
 		wpcv_test_inject_run_coordinator();
 		wpcv_test_inject_repository();
 	}
@@ -144,19 +144,25 @@ class CliCommandTest extends TestCase {
 	/**
 	 * `--async` 指定時、`WPCV_Runner_Async::enqueue_run()` 経由で enqueue され、
 	 * `WP_CLI::success()` に action_id を含むメッセージが渡されることを確認する
-	 * (`as_enqueue_async_action()` は `wp-stubs.php` に常設のスタブがあり、
-	 * このテスト環境では常に「利用可能」側の分岐になる).
+	 * (`ActionScheduler::is_initialized()` のスタブを真にして「利用可能」側の
+	 * 分岐を模す。v0.3.1 §Step2で既定可用性チェックがこれも見るようになった
+	 * ため明示的に設定する必要がある。`as_enqueue_async_action()` 自体は
+	 * `wp-stubs.php` に常設のスタブがある).
 	 *
 	 * @return void
 	 */
 	public function test_invoke_with_async_flag_enqueues_via_runner_async() {
+		$GLOBALS['_wpcv_test_action_scheduler_initialized'] = true;
+		$made                                               = wpcv_test_make_fake_environment();
+		wpcv_test_inject_repository( $made['repository'] );
+
 		$command = new WPCV_CLI_Command();
 		$command->__invoke( array(), array( 'async' => true ) );
 
 		$this->assertCount( 1, $GLOBALS['_wpcv_test_as_enqueue_calls'] );
 		list( $hook, $args ) = $GLOBALS['_wpcv_test_as_enqueue_calls'][0];
 		$this->assertSame( WPCV_Runner_Async::HOOK, $hook );
-		$this->assertSame( array( 'cli' ), $args );
+		$this->assertSame( array( 1, 'cli' ), $args );
 
 		$this->assertArrayNotHasKey( 'error', $GLOBALS['_wpcv_test_wp_cli_calls'] );
 		$this->assertCount( 1, $GLOBALS['_wpcv_test_wp_cli_calls']['success'] );
