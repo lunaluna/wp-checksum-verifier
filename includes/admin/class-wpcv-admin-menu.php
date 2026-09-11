@@ -52,6 +52,7 @@ class WPCV_Admin_Menu {
 		);
 
 		self::add_run_history_submenu( 'manage_options' );
+		self::add_findings_submenu( 'manage_options' );
 	}
 
 	/**
@@ -70,6 +71,7 @@ class WPCV_Admin_Menu {
 		);
 
 		self::add_run_history_submenu( 'manage_network_options' );
+		self::add_findings_submenu( 'manage_network_options' );
 	}
 
 	/**
@@ -90,6 +92,24 @@ class WPCV_Admin_Menu {
 			$capability,
 			'wpcv-runs',
 			array( 'WPCV_Page_Run_History', 'render' )
+		);
+	}
+
+	/**
+	 * 検出結果画面(`WPCV_Page_Findings`. v0.4.0 §Step9)のサブメニューを追加する
+	 * (`add_run_history_submenu()`と同じ理由でcapabilityだけを引数化する).
+	 *
+	 * @param string $capability この画面に必要な capability.
+	 * @return void
+	 */
+	private static function add_findings_submenu( $capability ) {
+		add_submenu_page(
+			'wpcv-settings',
+			__( 'Findings', 'wp-checksum-verifier' ),
+			__( 'Findings', 'wp-checksum-verifier' ),
+			$capability,
+			'wpcv-findings',
+			array( 'WPCV_Page_Findings', 'render' )
 		);
 	}
 }
