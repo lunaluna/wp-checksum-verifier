@@ -194,10 +194,13 @@ class WPCV_Runner_Async {
 	 * `self::HOOK` のフックハンドラ. Action Scheduler のワーカーから呼ばれる.
 	 *
 	 * `enqueue_via_action_scheduler()` が enqueue 時点で予約しておいた `queued` run を
-	 * `mark_queued_running()` で引き継ぐ(v0.3.1 §Step2)。対象行が既に `queued`
-	 * ではない場合(stale sweep に先を越された、Action Scheduler の再実行で
-	 * 同じ action が2度発火した等)は検証を行わず no-op で戻る(プラン§Step2の
-	 * テスト「同じAS actionが再実行されても検証は1回だけ行う」への対策).
+	 * `mark_queued_planning()` で引き継ぐ(v0.3.1 §Step2。v0.4.0コードレビュー
+	 * CR-01是正で遷移先を`running`から`planning`へ変更 ―― target_runsの保存が
+	 * 完了する〔`WPCV_Run_Starter::plan_and_save()`が`planning→running`へ遷移
+	 * させる〕までは`running`にしない。対象行が既に`queued`ではない場合
+	 * (stale sweep に先を越された、Action Scheduler の再実行で同じ action が
+	 * 2度発火した等)は検証を行わず no-op で戻る(プラン§Step2のテスト「同じAS
+	 * actionが再実行されても検証は1回だけ行う」への対策).
 	 *
 	 * `$context` は `$run_trigger` から `WPCV_Context_Builder::build()` で都度
 	 * 組み立て直す(クラス docblock 参照。enqueue 時点の `$context` は保持しない).
@@ -215,7 +218,7 @@ class WPCV_Runner_Async {
 	 * @return void
 	 */
 	public static function run_async_action( $run_id, $run_trigger ) {
-		if ( ! WPCV_Plugin::run_repository()->mark_queued_running( (int) $run_id ) ) {
+		if ( ! WPCV_Plugin::run_repository()->mark_queued_planning( (int) $run_id ) ) {
 			return;
 		}
 

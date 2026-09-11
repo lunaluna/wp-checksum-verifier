@@ -107,13 +107,15 @@ class WPCV_Run_Repository {
 	 * 実行権(run 行)を排他的に予約する(v0.3.1 §Step1).
 	 *
 	 * 「1 action = 1 run」の一括実行モデル(v0.3.1では新しい lock テーブルや
-	 * 分割 work item を持たない。プラン§設計判断参照)のもとで、`queued`/`running`
-	 * の run 行そのものを実行権(active lease)として使う。MySQL の名前付き
-	 * advisory lock(`GET_LOCK()`/`RELEASE_LOCK()`)で「active run の検索」と
-	 * 「行の insert」を1つの直列区間にまとめ、同時受付(REST連打・cron と手動実行の
-	 * 競合など)で2件以上の run が同時に作られることを防ぐ。lock はこの受付処理
-	 * だけを保護し、取得後の長い検証処理そのものは保護しない(その間は作成した
-	 * run 行の `queued`/`running` 状態自体が排他状態を表す).
+	 * 分割 work item を持たない。プラン§設計判断参照)のもとで、
+	 * `WPCV_Run_Status::ACTIVE`(`queued`/`planning`/`running`)の run 行そのものを
+	 * 実行権(active lease)として使う。MySQL の名前付き advisory lock
+	 * (`GET_LOCK()`/`RELEASE_LOCK()`)で「active run の検索」と「行の insert」を
+	 * 1つの直列区間にまとめ、同時受付(REST連打・cron と手動実行の競合など)で
+	 * 2件以上の run が同時に作られることを防ぐ。lock はこの受付処理だけを保護し、
+	 * 取得後の長い検証処理そのものは保護しない(その間は作成した run 行の
+	 * active な状態自体が排他状態を表す。`planning`状態自体の意味は
+	 * `WPCV_Run_Status`のクラスdocblock参照).
 	 *
 	 * @param array $args {
 	 *     省略可能なオプション.
@@ -124,11 +126,17 @@ class WPCV_Run_Repository {
 	 *                                  実行したか」を表すだけで、下記
 	 *                                  `initial_status` の決定には使わない). 既定 'sync'.
 	 *     @type string $initial_status active run が無い場合に新規作成する run の
-	 *                                  初期状態. `WPCV_Run_Status::RUNNING`(既定。
-	 *                                  即座に検証を始める同期系の呼び出し元向け)
-	 *                                  または `WPCV_Run_Status::QUEUED`(Action Scheduler
-	 *                                  へ enqueue してから実際の実行までに間が
-	 *                                  空く呼び出し元向け).
+	 *                                  初期状態. `WPCV_Run_Status::PLANNING`
+	 *                                  (既定。即座にtargetの列挙・保存を始める
+	 *                                  同期系の呼び出し元向け。v0.4.0コード
+	 *                                  レビューCR-01是正で`RUNNING`から変更 ――
+	 *                                  target_runsの保存が終わるまで他プロセスに
+	 *                                  「target 0件で完了」と誤認させないため、
+	 *                                  呼び出し元は`WPCV_Run_Starter::plan_and_save()`
+	 *                                  経由で保存完了後に`running`へ遷移させる
+	 *                                  こと)または `WPCV_Run_Status::QUEUED`
+	 *                                  (Action Scheduler へ enqueue してから実際の
+	 *                                  実行までに間が空く呼び出し元向け).
 	 * }
 	 * @return array{
 	 *     run_id: int|null,
@@ -145,7 +153,7 @@ class WPCV_Run_Repository {
 	public function reserve_run( array $args = array() ) {
 		$run_trigger    = isset( $args['run_trigger'] ) ? (string) $args['run_trigger'] : 'manual';
 		$runner         = isset( $args['runner'] ) ? (string) $args['runner'] : 'sync';
-		$initial_status = isset( $args['initial_status'] ) ? (string) $args['initial_status'] : WPCV_Run_Status::RUNNING;
+		$initial_status = isset( $args['initial_status'] ) ? (string) $args['initial_status'] : WPCV_Run_Status::PLANNING;
 
 		// ローカル変数名を `$wpdb` にするのは WPCS の PreparedSQL sniff 対策
 		// (`$this->wpdb->prepare()` のように `$wpdb` 直書きでない形だと
@@ -196,25 +204,30 @@ class WPCV_Run_Repository {
 	}
 
 	/**
-	 * `queued` の run 行を `running` へ条件付きで更新する(v0.3.1 §Step1).
+	 * `queued` の run 行を `planning` へ条件付きで更新する(v0.3.1 §Step1で新設、
+	 * v0.4.0コードレビューCR-01是正で遷移先を`running`から`planning`へ変更し
+	 * 改名した。旧名`mark_queued_running()`).
 	 *
-	 * Action Scheduler ワーカーが、enqueue 時に予約しておいた `queued` run を
-	 * 実際の検証開始時点で引き継ぐために使う。`status = 'queued'` を WHERE に
-	 * 含めるため、stale sweep に先を越されて既に `failed` にされていた場合は
-	 * 更新されず、戻り値で呼び出し元に伝わる(プラン§P1「stale化後に旧ワーカーが
-	 * 成功で上書きできる」への対策).
+	 * Action Scheduler ワーカーが、enqueue 時に予約しておいた `queued` run を、
+	 * target を列挙・保存し始める時点で引き継ぐために使う。`status = 'queued'`
+	 * を WHERE に含めるため、stale sweep に先を越されて既に `failed` にされて
+	 * いた場合は更新されず、戻り値で呼び出し元に伝わる(プラン§P1「stale化後に
+	 * 旧ワーカーが成功で上書きできる」への対策)。ここでは`running`ではなく
+	 * `planning`にするのは、target_runsの保存が完了するまで他プロセスに
+	 * 「進行中」と誤認させないため(`WPCV_Run_Starter::plan_and_save()`の
+	 * クラス docblock 参照).
 	 *
 	 * @param int $run_id 対象の run の id.
-	 * @return bool 更新できたら true(呼び出し元は検証を続行してよい)。false は
-	 *              対象行が既に `queued` ではない(stale 化・多重発火等)ことを
-	 *              意味し、呼び出し元は検証を開始せず no-op とすること.
+	 * @return bool 更新できたら true(呼び出し元は列挙・保存を続行してよい)。
+	 *              false は対象行が既に `queued` ではない(stale 化・多重発火等)
+	 *              ことを意味し、呼び出し元は検証を開始せず no-op とすること.
 	 */
-	public function mark_queued_running( $run_id ) {
+	public function mark_queued_planning( $run_id ) {
 		$table = $this->wpdb->base_prefix . 'wpcv_runs';
 
 		$updated = $this->wpdb->update(
 			$table,
-			array( 'status' => WPCV_Run_Status::RUNNING ),
+			array( 'status' => WPCV_Run_Status::PLANNING ),
 			array(
 				'id'     => (int) $run_id,
 				'status' => WPCV_Run_Status::QUEUED,
@@ -227,60 +240,32 @@ class WPCV_Run_Repository {
 	}
 
 	/**
-	 * 実行(run)行を失敗状態にする(v0.3.1 §Step1、§Step2で `queued` にも対応).
+	 * `planning` の run 行を `running` へ条件付きで更新する(v0.4.0コード
+	 * レビューCR-01是正で新設).
 	 *
-	 * 2つの呼び出し状況を想定する:
+	 * `WPCV_Run_Starter::plan_and_save()` が `wpcv_target_runs` への保存を
+	 * 完了した直後に呼ぶ。この遷移が成功して初めて、他プロセス(REST の
+	 * ポーリング等)がこの run を「target が確定済みの進行中run」として
+	 * 安全に `WPCV_Chunk_Dispatcher::dispatch()` へ渡せるようになる
+	 * (target_runsが1件も無いままclaim対象0件→即completeと誤認する競合
+	 * 〔v0.4.0コードレビューCR-01〕への対策)。
 	 *
-	 * 1. `WPCV_Run_Coordinator::run()` が検証中に例外を投げた場合(この時点で
-	 *    run は必ず `running`。`reserve_run()` が直接 `running` で作った行、または
-	 *    `mark_queued_running()` で `running` へ遷移させた行のいずれか).
-	 * 2. `queued` で予約した直後に Action Scheduler への enqueue 自体が失敗した
-	 *    場合(この時点で run はまだ `queued` のまま。ワーカーは一度も起動して
-	 *    いないため、他プロセスとの競合は起こらない).
-	 *
-	 * `status = 'running'` を条件に更新を試み、対象行が見つからなければ
-	 * `status = 'queued'` を条件に再試行する(2段階。実 `$wpdb` の `update()` は
-	 * WHERE 句に IN() を組み立てられないため。`finish_run()` と異なり `queued` も
-	 * 受け付ける必要があるのはこのメソッドだけ. 状況1で更新できた場合は状況2の
-	 * 再試行は対象0件で no-op になるだけで安全).
-	 *
-	 * @param int    $run_id 対象の run の id.
-	 * @param string $notes  失敗理由(例外クラス名・メッセージ等). 省略可.
-	 * @return bool 更新できたら true。false は対象行が `running`/`queued` の
-	 *              いずれでもない(stale sweep に先を越された等)ことを意味する.
+	 * @param int $run_id 対象の run の id.
+	 * @return bool 更新できたら true。false は対象行が既に `planning` では
+	 *              ない(stale sweep・deadline超過に先を越された等)ことを
+	 *              意味し、呼び出し元は検証を継続すべきでない.
 	 */
-	public function mark_run_failed( $run_id, $notes = '' ) {
-		$table  = $this->wpdb->base_prefix . 'wpcv_runs';
-		$data   = array(
-			'finished_at' => call_user_func( $this->now ),
-			'status'      => WPCV_Run_Status::FAILED,
-			'notes'       => (string) $notes,
-		);
-		$format = array( '%s', '%s', '%s' );
+	public function mark_planning_running( $run_id ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
 
 		$updated = $this->wpdb->update(
 			$table,
-			$data,
+			array( 'status' => WPCV_Run_Status::RUNNING ),
 			array(
 				'id'     => (int) $run_id,
-				'status' => WPCV_Run_Status::RUNNING,
+				'status' => WPCV_Run_Status::PLANNING,
 			),
-			$format,
-			array( '%d', '%s' )
-		);
-
-		if ( $updated > 0 ) {
-			return true;
-		}
-
-		$updated = $this->wpdb->update(
-			$table,
-			$data,
-			array(
-				'id'     => (int) $run_id,
-				'status' => WPCV_Run_Status::QUEUED,
-			),
-			$format,
+			array( '%s' ),
 			array( '%d', '%s' )
 		);
 
@@ -288,61 +273,116 @@ class WPCV_Run_Repository {
 	}
 
 	/**
-	 * 実行(run)行を `WPCV_Run_Status::ABORTED` にする(v0.4.0 §Step4: run
-	 * deadline超過sweep。`WPCV_Chunk_Dispatcher` から呼ぶ).
+	 * 実行(run)行を失敗状態にする(v0.3.1 §Step1、§Step2で `queued` にも対応、
+	 * v0.4.0コードレビューCR-01是正で `planning` にも対応).
 	 *
-	 * `mark_run_failed()` と同じ2段階CAS(`running`→ダメなら`queued`)を使う理由も
+	 * 呼び出し時点で run が取り得る状態:
+	 *
+	 * 1. `running`(`WPCV_Chunk_Dispatcher::dispatch()` 呼び出し中の例外等).
+	 * 2. `queued`(`queued` で予約した直後に Action Scheduler への enqueue
+	 *    自体が失敗した場合。ワーカーは一度も起動していないため他プロセスとの
+	 *    競合は起こらない).
+	 * 3. `planning`(`WPCV_Run_Starter::plan_and_save()` が列挙・保存・
+	 *    `planning→running`遷移のいずれかで例外を投げた場合).
+	 *
+	 * 3状態を順に試す(`update_active_run()` 参照。実 `$wpdb` の `update()` は
+	 * WHERE 句に IN() を組み立てられないため)。`finish_run()` と異なり
+	 * active な状態すべてを受け付ける必要があるのはこのメソッドと
+	 * `mark_run_aborted()` だけ.
+	 *
+	 * @param int    $run_id 対象の run の id.
+	 * @param string $notes  失敗理由(例外クラス名・メッセージ等). 省略可.
+	 * @return bool 更新できたら true。false は対象行が active な状態
+	 *              (`WPCV_Run_Status::ACTIVE`)のいずれでもない(stale sweep に
+	 *              先を越された等)ことを意味する.
+	 */
+	public function mark_run_failed( $run_id, $notes = '' ) {
+		return $this->update_active_run(
+			$run_id,
+			array(
+				'finished_at' => call_user_func( $this->now ),
+				'status'      => WPCV_Run_Status::FAILED,
+				'notes'       => (string) $notes,
+			),
+			array( '%s', '%s', '%s' )
+		);
+	}
+
+	/**
+	 * 実行(run)行を `WPCV_Run_Status::ABORTED` にする(v0.4.0 §Step4: run
+	 * deadline超過sweep。`WPCV_Chunk_Dispatcher` から呼ぶ。CR-01是正で
+	 * `planning` にも対応).
+	 *
+	 * `mark_run_failed()` と同じ3段階CAS(`update_active_run()`)を使う理由も
 	 * 同じ(`mark_run_failed()` の docblock 参照。ここでは「deadline超過」という
 	 * 別の終端理由のため専用メソッドとして分離した).
 	 *
 	 * @param int    $run_id 対象の run の id.
 	 * @param string $notes  終了理由. 省略可.
-	 * @return bool 更新できたら true。false は対象行が `running`/`queued` の
-	 *              いずれでもない(既に終端状態だった等)ことを意味する.
+	 * @return bool 更新できたら true。false は対象行が active な状態
+	 *              (`WPCV_Run_Status::ACTIVE`)のいずれでもない(既に終端状態
+	 *              だった等)ことを意味する.
 	 */
 	public function mark_run_aborted( $run_id, $notes = '' ) {
-		$table  = $this->wpdb->base_prefix . 'wpcv_runs';
-		$data   = array(
-			'finished_at' => call_user_func( $this->now ),
-			'status'      => WPCV_Run_Status::ABORTED,
-			'notes'       => (string) $notes,
-		);
-		$format = array( '%s', '%s', '%s' );
-
-		$updated = $this->wpdb->update(
-			$table,
-			$data,
+		return $this->update_active_run(
+			$run_id,
 			array(
-				'id'     => (int) $run_id,
-				'status' => WPCV_Run_Status::RUNNING,
+				'finished_at' => call_user_func( $this->now ),
+				'status'      => WPCV_Run_Status::ABORTED,
+				'notes'       => (string) $notes,
 			),
-			$format,
-			array( '%d', '%s' )
+			array( '%s', '%s', '%s' )
 		);
+	}
 
-		if ( $updated > 0 ) {
-			return true;
+	/**
+	 * Active な run 行(`WPCV_Run_Status::ACTIVE` のいずれか)を、状態を順に
+	 * 試して更新する(v0.4.0コードレビューCR-01是正: `mark_run_failed()`/
+	 * `mark_run_aborted()` が個別に持っていた2段階CAS〔`running`→`queued`〕を
+	 * 共通化し、新設した `planning` にも対応する3段階にした).
+	 *
+	 * 実 `$wpdb::update()` の WHERE 句には IN() を組み立てられないため、
+	 * `WPCV_Run_Status::ACTIVE` の順に1状態ずつ試す(いずれか1つで更新できた
+	 * 時点で終了。他の状態への再試行は対象0件のno-opになるだけで安全)。
+	 * 「どのactive状態からでも終端へ倒せる」という操作の意味が変わらない
+	 * この2メソッドだけがこのヘルパーを使う想定(`finish_run()`のように
+	 * 特定の1状態〔`running`〕のみを条件にすべき箇所には使わない).
+	 *
+	 * @param int   $run_id 対象の run の id.
+	 * @param array $data   更新するデータ.
+	 * @param array $format `$data` の `%s`/`%d` 書式(1件目の要素は必ず
+	 *                       `array( 'id' => ..., 'status' => ... )` のWHERE用
+	 *                       書式〔`%d`, `%s`〕の前に来る点は呼び出し元が揃える).
+	 * @return bool `WPCV_Run_Status::ACTIVE` のいずれかで更新できたら true.
+	 */
+	private function update_active_run( $run_id, array $data, array $format ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+
+		foreach ( WPCV_Run_Status::ACTIVE as $status ) {
+			$updated = $this->wpdb->update(
+				$table,
+				$data,
+				array(
+					'id'     => (int) $run_id,
+					'status' => $status,
+				),
+				$format,
+				array( '%d', '%s' )
+			);
+
+			if ( $updated > 0 ) {
+				return true;
+			}
 		}
 
-		$updated = $this->wpdb->update(
-			$table,
-			$data,
-			array(
-				'id'     => (int) $run_id,
-				'status' => WPCV_Run_Status::QUEUED,
-			),
-			$format,
-			array( '%d', '%s' )
-		);
-
-		return $updated > 0;
+		return false;
 	}
 
 	/**
 	 * 実行(run)行を新規 insert する(`reserve_run()`/`reserve_due_run()` からのみ
 	 * 呼ぶ内部ヘルパー).
 	 *
-	 * @param string      $status        insert する `status`(`WPCV_Run_Status::RUNNING` または
+	 * @param string      $status        insert する `status`(`WPCV_Run_Status::PLANNING` または
 	 *                                   `WPCV_Run_Status::QUEUED`).
 	 * @param string      $run_trigger   cron|manual|cli|rest.
 	 * @param string      $runner        sync|async.
@@ -467,9 +507,14 @@ class WPCV_Run_Repository {
 		$table = $this->wpdb->base_prefix . 'wpcv_runs';
 
 		// 動的な値を含まない固定リテラルのみのクエリ(status/日時の絞り込みは
-		// 下の PHP 側で行う).
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static table literal, no user input.
-		$active_rows = $this->wpdb->get_results( "SELECT id, started_at, status FROM {$table} WHERE status IN ( 'queued', 'running' )", ARRAY_A );
+		// 下の PHP 側で行う。IN リストは `WPCV_Run_Status::ACTIVE` から組み立てる
+		// ―― v0.4.0コードレビューCR-01是正で、ここに `'queued', 'running'` の
+		// 2値を直書きしていたことが判明した。`planning` 状態を追加した際に
+		// この文字列を更新し忘れると、`planning` の run が stale sweep の対象から
+		// 漏れる〔=このメソッドが `WPCV_Run_Status::is_active()` と食い違う〕
+		// という同種の事故が起きるため、直書きをやめて一箇所から生成する).
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static literal (built from a hardcoded enum, no user input), table name only.
+		$active_rows = $this->wpdb->get_results( "SELECT id, started_at, status FROM {$table} WHERE status IN ( {$this->active_status_sql_list()} )", ARRAY_A );
 		$active_rows = is_array( $active_rows ) ? $active_rows : array();
 
 		$threshold = $this->stale_threshold( (int) $minutes );
@@ -511,8 +556,9 @@ class WPCV_Run_Repository {
 	}
 
 	/**
-	 * 現在 `queued`/`running`(実行権を保持している)の run が無いかを調べる
-	 * (v0.3 §Step8: RESTハンドラの冪等性判定に使う。v0.3.1 §Step1で `queued` も対象に拡張).
+	 * 現在 active(`WPCV_Run_Status::ACTIVE`。実行権を保持している)の run が
+	 * 無いかを調べる(v0.3 §Step8: RESTハンドラの冪等性判定に使う。v0.3.1 §Step1で
+	 * `queued` も対象に拡張、v0.4.0コードレビューCR-01是正で `planning` も対象に拡張).
 	 *
 	 * 呼び出し側は先に `sweep_stale_running()` を呼んでおくこと(このメソッドは
 	 * stale 判定を行わない。ここで見つかる行は「stale ではない = 現在進行中と
@@ -679,9 +725,9 @@ class WPCV_Run_Repository {
 	 *
 	 * `reserve_run()` と同じ advisory lock の中で次の順に判定する:
 	 *
-	 * 1. active run(`queued`/`running`)があれば、`reserve_run()` と同じくそれを
-	 *    返す(新規作成は行わない。5分間隔の外部cronが連打しても、進行中の run が
-	 *    1件そのまま前進し続けることを保証する).
+	 * 1. active run(`queued`/`planning`/`running`)があれば、`reserve_run()` と
+	 *    同じくそれを返す(新規作成は行わない。5分間隔の外部cronが連打しても、
+	 *    進行中の run が1件そのまま前進し続けることを保証する).
 	 * 2. 無ければ、現在時刻(`$this->now`)が本日の設定実行時刻(`$hour:$minute`
 	 *    UTC)をまだ過ぎていない場合、または本日分の run(`scheduled_for` の暦日が
 	 *    今日と一致する run。ステータスは問わない)が既に存在する場合は、
@@ -711,7 +757,7 @@ class WPCV_Run_Repository {
 	public function reserve_due_run( $hour, $minute, array $args = array() ) {
 		$run_trigger    = isset( $args['run_trigger'] ) ? (string) $args['run_trigger'] : 'manual';
 		$runner         = isset( $args['runner'] ) ? (string) $args['runner'] : 'sync';
-		$initial_status = isset( $args['initial_status'] ) ? (string) $args['initial_status'] : WPCV_Run_Status::RUNNING;
+		$initial_status = isset( $args['initial_status'] ) ? (string) $args['initial_status'] : WPCV_Run_Status::PLANNING;
 
 		$wpdb      = $this->wpdb;
 		$lock_name = $this->lock_name();
@@ -828,9 +874,10 @@ class WPCV_Run_Repository {
 	private function find_active_run() {
 		$table = $this->wpdb->base_prefix . 'wpcv_runs';
 
-		// sweep_stale_running() と同じ方針で、動的な値を含まない固定リテラルのみのクエリ.
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static table literal, no user input.
-		$active_rows = $this->wpdb->get_results( "SELECT id, status FROM {$table} WHERE status IN ( 'queued', 'running' )", ARRAY_A );
+		// sweep_stale_running() と同じ方針で、動的な値を含まない固定リテラルのみの
+		// クエリ(IN リストの組み立て理由も同じ. `active_status_sql_list()` 参照).
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static literal (built from a hardcoded enum, no user input), table name only.
+		$active_rows = $this->wpdb->get_results( "SELECT id, status FROM {$table} WHERE status IN ( {$this->active_status_sql_list()} )", ARRAY_A );
 		$active_rows = is_array( $active_rows ) ? $active_rows : array();
 
 		foreach ( $active_rows as $row ) {
@@ -874,5 +921,21 @@ class WPCV_Run_Repository {
 		$rows = $this->wpdb->get_results( "SELECT * FROM {$table}", ARRAY_A );
 
 		return is_array( $rows ) ? $rows : array();
+	}
+
+	/**
+	 * `WPCV_Run_Status::ACTIVE` から `IN ( 'a', 'b', ... )` に埋め込む値部分を
+	 * 組み立てる(v0.4.0コードレビューCR-01是正)。
+	 *
+	 * `sweep_stale_running()`/`find_active_run()` がそれぞれ独自に
+	 * `'queued', 'running'` を直書きしており、`planning` 状態を追加した際に
+	 * 片方だけ更新して同期が崩れる事故が実際に起きかけた(このメソッド追加の
+	 * 経緯そのもの)。値はすべて `WPCV_Run_Status` の定数(ユーザー入力を含まない
+	 * 固定enum)であるため、`prepare()` を介さない文字列連結でも安全.
+	 *
+	 * @return string
+	 */
+	private function active_status_sql_list() {
+		return "'" . implode( "', '", WPCV_Run_Status::ACTIVE ) . "'";
 	}
 }

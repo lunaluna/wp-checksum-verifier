@@ -403,6 +403,11 @@ class RestRunControllerTest extends TestCase {
 				'runner'      => 'async',
 			)
 		);
+		// `reserve_run()` は既定で`planning`状態のrunを作る(v0.4.0コードレビュー
+		// CR-01是正)。このテストが検証したいのは「running状態で他workerの
+		// lease待ちになる」分岐のため、`WPCV_Run_Starter::plan_and_save()`が
+		// 本番で行う`planning→running`遷移をここで再現する.
+		$made['run_repository']->mark_planning_running( $reservation['run_id'] );
 		// 他workerが有効なleaseでclaim中のtarget_runを1件だけ用意する(claim_next()
 		// が候補無しと判定し、runもまだ終端でないため dispatch() が 'waiting' を
 		// 返す状況を模す).

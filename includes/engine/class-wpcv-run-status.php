@@ -20,13 +20,28 @@ if ( ! defined( 'ABSPATH' ) ) {
  *
  * `aborted` はStep4で導入するrun deadline sweepが遷移させる状態で、Step1時点
  * では定数と遷移表のみ用意し、実際に遷移させるロジックはまだ無い.
+ *
+ * `planning`はv0.4.0コードレビューCR-01是正で追加した(target_runsを列挙・
+ * 保存している最中であることを表す中間状態。`running`になった時点で
+ * target_runsの保存が完了していることを保証し、他プロセスが「target 0件 =
+ * 完了」と誤認する競合を防ぐ。`WPCV_Run_Starter::plan_and_save()`のクラス
+ * docblock参照)。
  */
 class WPCV_Run_Status {
 
 	/** キュー投入済み・実行待ち(Action Scheduler enqueue直後など). */
 	const QUEUED = 'queued';
 
-	/** 検証処理中. */
+	/**
+	 * Target_runsを列挙・保存している最中(v0.4.0コードレビューCR-01是正で追加).
+	 *
+	 * この状態のrunにはtarget_runsがまだ1件も存在しない可能性があるため、
+	 * `WPCV_Chunk_Dispatcher::dispatch()`はclaim・完了判定を行わず待機する
+	 * (`queued`と同様に扱う).
+	 */
+	const PLANNING = 'planning';
+
+	/** 検証処理中(target_runsの保存が完了済み). */
 	const RUNNING = 'running';
 
 	/** 全 target が成功した(終端). */
@@ -46,7 +61,7 @@ class WPCV_Run_Status {
 	 *
 	 * @var string[]
 	 */
-	const ACTIVE = array( self::QUEUED, self::RUNNING );
+	const ACTIVE = array( self::QUEUED, self::PLANNING, self::RUNNING );
 
 	/**
 	 * それ以上遷移しない状態の一覧.
@@ -61,8 +76,9 @@ class WPCV_Run_Status {
 	 * @var array<string, string[]>
 	 */
 	const TRANSITIONS = array(
-		self::QUEUED  => array( self::RUNNING, self::FAILED, self::ABORTED ),
-		self::RUNNING => array( self::SUCCESS, self::PARTIAL, self::FAILED, self::ABORTED ),
+		self::QUEUED   => array( self::PLANNING, self::FAILED, self::ABORTED ),
+		self::PLANNING => array( self::RUNNING, self::FAILED, self::ABORTED ),
+		self::RUNNING  => array( self::SUCCESS, self::PARTIAL, self::FAILED, self::ABORTED ),
 	);
 
 	/**

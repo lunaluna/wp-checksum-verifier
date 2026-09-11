@@ -34,24 +34,25 @@ class RunRepositoryTest extends TestCase {
 	}
 
 	/**
-	 * reserve_run() が active run の無い状態で新規 running 行を insert し、
-	 * その run_id を返すことを確認する(引数省略時の既定 = 同期・running).
+	 * reserve_run() が active run の無い状態で新規 planning 行を insert し、
+	 * その run_id を返すことを確認する(引数省略時の既定 = 同期・planning。
+	 * v0.4.0コードレビューCR-01是正で既定を`running`から`planning`へ変更した).
 	 *
 	 * @return void
 	 */
-	public function test_reserve_run_inserts_running_row_by_default() {
+	public function test_reserve_run_inserts_planning_row_by_default() {
 		$wpdb       = new WPCV_Test_Fake_WPDB();
 		$repository = $this->make_repository( $wpdb );
 
 		$reservation = $repository->reserve_run();
 
 		$this->assertSame( 1, $reservation['run_id'] );
-		$this->assertSame( 'running', $reservation['status'] );
+		$this->assertSame( 'planning', $reservation['status'] );
 		$this->assertFalse( $reservation['active'] );
 		$this->assertFalse( $reservation['lock_failed'] );
 
 		$row = $wpdb->rows['wp_wpcv_runs'][1];
-		$this->assertSame( 'running', $row['status'] );
+		$this->assertSame( 'planning', $row['status'] );
 		$this->assertSame( '2026-09-08 12:00:00', $row['started_at'] );
 		$this->assertSame( 'manual', $row['run_trigger'] );
 		$this->assertSame( 'sync', $row['runner'] );
@@ -149,12 +150,13 @@ class RunRepositoryTest extends TestCase {
 	}
 
 	/**
-	 * mark_queued_running() が queued 行だけを running へ更新し、
-	 * true を返すことを確認する.
+	 * mark_queued_planning() が queued 行だけを planning へ更新し、
+	 * true を返すことを確認する(v0.4.0コードレビューCR-01是正で
+	 * `mark_queued_running()`から改名・遷移先を`planning`へ変更).
 	 *
 	 * @return void
 	 */
-	public function test_mark_queued_running_transitions_queued_row() {
+	public function test_mark_queued_planning_transitions_queued_row() {
 		$wpdb = new WPCV_Test_Fake_WPDB();
 		$wpdb->insert(
 			'wp_wpcv_runs',
@@ -168,17 +170,17 @@ class RunRepositoryTest extends TestCase {
 
 		$repository = $this->make_repository( $wpdb );
 
-		$this->assertTrue( $repository->mark_queued_running( 1 ) );
-		$this->assertSame( 'running', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
+		$this->assertTrue( $repository->mark_queued_planning( 1 ) );
+		$this->assertSame( 'planning', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
 	}
 
 	/**
-	 * mark_queued_running() は対象行が既に queued でなければ(stale sweep に
+	 * mark_queued_planning() は対象行が既に queued でなければ(stale sweep に
 	 * 先を越された等)何もせず false を返すことを確認する.
 	 *
 	 * @return void
 	 */
-	public function test_mark_queued_running_returns_false_when_not_queued() {
+	public function test_mark_queued_planning_returns_false_when_not_queued() {
 		$wpdb = new WPCV_Test_Fake_WPDB();
 		$wpdb->insert(
 			'wp_wpcv_runs',
@@ -193,8 +195,58 @@ class RunRepositoryTest extends TestCase {
 
 		$repository = $this->make_repository( $wpdb );
 
-		$this->assertFalse( $repository->mark_queued_running( 1 ) );
+		$this->assertFalse( $repository->mark_queued_planning( 1 ) );
 		$this->assertSame( 'failed', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
+	}
+
+	/**
+	 * mark_planning_running() が planning 行だけを running へ更新し、true を
+	 * 返すことを確認する(v0.4.0コードレビューCR-01是正で新設。
+	 * `WPCV_Run_Starter::plan_and_save()`がtarget_runsの保存直後に呼ぶ遷移).
+	 *
+	 * @return void
+	 */
+	public function test_mark_planning_running_transitions_planning_row() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-08 12:00:00',
+				'status'      => 'planning',
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$this->assertTrue( $repository->mark_planning_running( 1 ) );
+		$this->assertSame( 'running', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
+	}
+
+	/**
+	 * mark_planning_running() は対象行が既に planning でなければ(stale sweep・
+	 * deadline超過sweepに先を越された等)何もせず false を返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_mark_planning_running_returns_false_when_not_planning() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-08 08:00:00',
+				'status'      => 'aborted',
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+				'notes'       => 'deadline超過により aborted 化済み',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$this->assertFalse( $repository->mark_planning_running( 1 ) );
+		$this->assertSame( 'aborted', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
 	}
 
 	/**
@@ -208,6 +260,7 @@ class RunRepositoryTest extends TestCase {
 		$repository = $this->make_repository( $wpdb );
 
 		$reservation = $repository->reserve_run();
+		$repository->mark_planning_running( $reservation['run_id'] );
 
 		$this->assertTrue( $repository->mark_run_failed( $reservation['run_id'], 'RuntimeException: boom' ) );
 
@@ -215,6 +268,25 @@ class RunRepositoryTest extends TestCase {
 		$this->assertSame( 'failed', $row['status'] );
 		$this->assertSame( '2026-09-08 12:00:00', $row['finished_at'] );
 		$this->assertSame( 'RuntimeException: boom', $row['notes'] );
+	}
+
+	/**
+	 * mark_run_failed() が(reserve_run()の既定である)planning 行も failed へ
+	 * 更新できることを確認する(v0.4.0コードレビューCR-01是正:
+	 * `update_active_run()`が3段階CASに拡張されたことの直接確認. `WPCV_Run_Starter::
+	 * plan_and_save()`が列挙・保存中に例外を投げた場合の実際の状態に対応する).
+	 *
+	 * @return void
+	 */
+	public function test_mark_run_failed_updates_planning_row() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$reservation = $repository->reserve_run();
+
+		$this->assertSame( 'planning', $wpdb->rows['wp_wpcv_runs'][ $reservation['run_id'] ]['status'] );
+		$this->assertTrue( $repository->mark_run_failed( $reservation['run_id'], 'RuntimeException: boom during planning' ) );
+		$this->assertSame( 'failed', $wpdb->rows['wp_wpcv_runs'][ $reservation['run_id'] ]['status'] );
 	}
 
 	/**
@@ -242,6 +314,60 @@ class RunRepositoryTest extends TestCase {
 	}
 
 	/**
+	 * mark_run_aborted() が active な状態(running/queued/planning)いずれからも
+	 * abortedへ更新できることを確認する(v0.4.0コードレビューCR-01是正:
+	 * `mark_run_failed()`と共有する`update_active_run()`の3段階CASを、
+	 * `mark_run_aborted()`側からも直接確認する。それまでは`ChunkDispatcherTest`
+	 * 経由の間接的な確認しか無かった).
+	 *
+	 * @return void
+	 */
+	public function test_mark_run_aborted_updates_row_from_any_active_status() {
+		foreach ( array( 'running', 'queued', 'planning' ) as $status ) {
+			$wpdb = new WPCV_Test_Fake_WPDB();
+			$wpdb->insert(
+				'wp_wpcv_runs',
+				array(
+					'started_at'  => '2026-09-08 08:00:00',
+					'status'      => $status,
+					'run_trigger' => 'cron',
+					'runner'      => 'async',
+				)
+			);
+
+			$repository = $this->make_repository( $wpdb );
+
+			$this->assertTrue( $repository->mark_run_aborted( 1, 'deadline exceeded' ), "status={$status}" );
+			$this->assertSame( 'aborted', $wpdb->rows['wp_wpcv_runs'][1]['status'], "status={$status}" );
+			$this->assertSame( 'deadline exceeded', $wpdb->rows['wp_wpcv_runs'][1]['notes'], "status={$status}" );
+		}
+	}
+
+	/**
+	 * mark_run_aborted() は対象行が既にterminal状態なら何もせずfalseを返す
+	 * ことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_mark_run_aborted_returns_false_when_terminal() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-08 08:00:00',
+				'status'      => 'success',
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$this->assertFalse( $repository->mark_run_aborted( 1, 'should not apply' ) );
+		$this->assertSame( 'success', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
+	}
+
+	/**
 	 * finish_run() が対象の run 行を status = summary の値・finished_at・
 	 * 各カウントで更新することを確認する.
 	 *
@@ -252,6 +378,9 @@ class RunRepositoryTest extends TestCase {
 		$repository = $this->make_repository( $wpdb );
 
 		$run_id = $repository->reserve_run()['run_id'];
+		// finish_run() は running 状態のみを対象にするため、reserve_run() の既定
+		// (v0.4.0コードレビューCR-01是正で `planning`)から遷移させておく.
+		$repository->mark_planning_running( $run_id );
 
 		$updated = $repository->finish_run(
 			$run_id,
@@ -445,6 +574,32 @@ class RunRepositoryTest extends TestCase {
 	}
 
 	/**
+	 * 古い `planning` の run も stale として `failed` に更新することを確認する
+	 * (v0.4.0コードレビューCR-01是正: `active_status_sql_list()`のdocblock参照).
+	 *
+	 * @return void
+	 */
+	public function test_sweep_stale_running_marks_old_planning_row_as_failed() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-08 11:00:00',
+				'status'      => 'planning',
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$swept = $repository->sweep_stale_running( 30 );
+
+		$this->assertSame( 1, $swept );
+		$this->assertSame( 'failed', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
+	}
+
+	/**
 	 * stale sweep に先を越されて failed 化された run を、後から戻ってきた
 	 * 旧ワーカーが `finish_run()` で成功へ上書きできないことを確認する
 	 * (プラン§P1「stale化後に旧ワーカーが成功で上書きできる」の統合的な確認.
@@ -568,6 +723,34 @@ class RunRepositoryTest extends TestCase {
 			array(
 				'started_at'  => '2026-09-09 11:55:00',
 				'status'      => 'queued',
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$this->assertSame( 1, $repository->find_active_run_id() );
+	}
+
+	/**
+	 * `planning` 状態の run も active として id を返すことを確認する(v0.4.0
+	 * コードレビューCR-01是正)。
+	 *
+	 * `find_active_run()`/`sweep_stale_running()` は本来 `WPCV_Run_Status::ACTIVE`
+	 * と同期しているべきSQLのIN句を独自に持っており、`planning`追加時に
+	 * 片方だけ更新して見落とす事故が実際に起きかけた(`active_status_sql_list()`
+	 * のdocblock参照)。このテストはその回帰を検出する.
+	 *
+	 * @return void
+	 */
+	public function test_find_active_run_id_returns_id_when_planning() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-09 11:55:00',
+				'status'      => 'planning',
 				'run_trigger' => 'cron',
 				'runner'      => 'async',
 			)
@@ -740,7 +923,9 @@ class RunRepositoryTest extends TestCase {
 		);
 
 		$this->assertSame( 1, $reservation['run_id'] );
-		$this->assertSame( 'running', $reservation['status'] );
+		// v0.4.0コードレビューCR-01是正で `reserve_due_run()` の既定 initial_status も
+		// `running` から `planning` へ変更した(`reserve_run()` と同じ理由).
+		$this->assertSame( 'planning', $reservation['status'] );
 		$this->assertFalse( $reservation['active'] );
 		$this->assertTrue( $reservation['created'] );
 

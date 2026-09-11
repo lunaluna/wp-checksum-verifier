@@ -104,11 +104,14 @@ class WPCV_Run_Coordinator {
 	 * コア・公式プラグイン・MU プラグイン領域を検証し、1回の run として保存する.
 	 *
 	 * `$run_id` は呼び出し元が `WPCV_Run_Repository::reserve_run()`(必要なら
-	 * `mark_queued_running()` で `queued` から引き継いで)で事前に予約した、
-	 * 既に `running` である run の id を渡すこと(v0.3.1 §Step1由来の契約。
-	 * このクラス自身は run 行を作成しない).
+	 * `mark_queued_planning()` で `queued` から引き継いで)で事前に予約した、
+	 * 既に `planning` である run の id を渡すこと(v0.3.1 §Step1由来の契約。
+	 * v0.4.0コードレビューCR-01是正で `running` から `planning` に変更 ――
+	 * `WPCV_Run_Starter::plan_and_save()` がtarget_runsの保存後に`running`へ
+	 * 遷移させるため、このクラス自身は run 行を作成せず、`running`への遷移も
+	 * 自分では行わない).
 	 *
-	 * @param int   $run_id  呼び出し元が予約済みの(`running` 状態の)run の id.
+	 * @param int   $run_id  呼び出し元が予約済みの(`planning` 状態の)run の id.
 	 * @param array $context `WPCV_Context_Builder::build()` と同じ形
 	 *                        (version/plugins/plugin_dir/mu_plugin_dir/mu_plugins).
 	 * @return array {

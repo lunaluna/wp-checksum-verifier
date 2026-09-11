@@ -288,7 +288,7 @@ class WPCV_Target_Run_Repository {
 	 * (v0.4.0 §Step4: `WPCV_Chunk_Dispatcher` から呼ぶ).
 	 *
 	 * 実際の排他は `$wpdb->update()` の `WHERE id = ? AND status = ?`(読み取り時点の
-	 * 状態を条件に含む Compare-And-Swap)が担う。これは `WPCV_Run_Repository::mark_queued_running()`
+	 * 状態を条件に含む Compare-And-Swap)が担う。これは `WPCV_Run_Repository::mark_queued_planning()`
 	 * と同じパターンで、MySQL の `UPDATE ... WHERE` は単一の原子的な文であるため、
 	 * 2つの worker が同じ行を同時に claim しようとしても、先に成功した側だけが
 	 * 影響行数1を得て、後発は影響行数0(=claim失敗。呼び出し元は次の候補を

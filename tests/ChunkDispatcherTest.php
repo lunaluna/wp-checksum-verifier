@@ -134,8 +134,31 @@ class ChunkDispatcherTest extends TestCase {
 					'run_id'        => $run_id,
 					'delay_seconds' => $delay_seconds,
 				);
+			},
+			static function () {
+				return strtotime( '2026-09-11 12:00:00' );
 			}
 		);
+	}
+
+	/**
+	 * `reserve_run()`(既定で`planning`状態のrunを作る。v0.4.0コードレビュー
+	 * CR-01是正)で予約したうえで、`mark_planning_running()`で`running`へ
+	 * 進めて返す(`WPCV_Run_Starter::plan_and_save()`が本番で行う遷移を
+	 * このテストファイルのfixtureとして再現する。`dispatch()`のclaim・
+	 * 完了判定は`running`のrunにのみ働くため、それらを検証するテストは
+	 * このヘルパー経由でrunを用意すること。`queued`/`planning`のまま待機
+	 * させる分岐自体を検証するテスト・deadline超過を検証するテストは
+	 * 対象外〔`reserve_run()`を直接使う〕).
+	 *
+	 * @param WPCV_Run_Repository $run_repository `wpcv_runs` の永続化層.
+	 * @return array `reserve_run()` の戻り値と同じ形.
+	 */
+	private function reserve_and_start_running( WPCV_Run_Repository $run_repository ) {
+		$reservation = $run_repository->reserve_run();
+		$run_repository->mark_planning_running( $reservation['run_id'] );
+
+		return $reservation;
 	}
 
 	/**
@@ -164,7 +187,7 @@ class ChunkDispatcherTest extends TestCase {
 	public function test_dispatch_returns_already_terminal_for_finished_run() {
 		$wpdb         = new WPCV_Test_Fake_WPDB();
 		$repositories = $this->make_repositories( $wpdb );
-		$reservation  = $repositories['run_repository']->reserve_run();
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
 		$repositories['run_repository']->finish_run(
 			$reservation['run_id'],
 			array(
@@ -188,8 +211,79 @@ class ChunkDispatcherTest extends TestCase {
 	}
 
 	/**
+	 * v0.4.0コードレビューCR-01の直接的な回帰テスト: run が `planning`(target_runs
+	 * の列挙・保存が別プロセスでまだ完了していない)で、target_runsが1件も
+	 * 無い状態でも、`dispatch()`はそれを「完了」と誤認して`run_finalized`
+	 * (success)にしてはならない。この保護が無いと、`WPCV_Verifier::summarize(
+	 * array() )`が「0件中0件success」を`success`として返してしまい、実際には
+	 * 1つのtargetも検証していないrunが正常完了として公開されてしまう
+	 * (`WPCV_Chunk_Dispatcher`のクラスdocblock「CR-01是正」参照).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_does_not_finalize_planning_run_with_no_targets_yet() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $repositories['run_repository']->reserve_run();
+		$run_id       = $reservation['run_id'];
+
+		// reserve_run() の既定どおり planning のまま(まだ plan_and_save() を
+		// 呼んでいない = target_runsは1件も無い)であることが前提.
+		$this->assertSame( WPCV_Run_Status::PLANNING, $wpdb->rows['wp_wpcv_runs'][ $run_id ]['status'] );
+		$this->assertSame( array(), $repositories['target_run_repository']->find_all_by_run( $run_id ) );
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array(), $continuation_calls );
+
+		$result = $dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$this->assertSame( 'waiting_for_plan', $result['action'] );
+		// runはtarget 0件のままsuccessに確定されていないことを確認する
+		// (このアサーションが無いと、`run_finalized`/successへの回帰を
+		// 見逃す)。
+		$this->assertSame( WPCV_Run_Status::PLANNING, $wpdb->rows['wp_wpcv_runs'][ $run_id ]['status'] );
+		$this->assertNotSame( 'success', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['status'] );
+	}
+
+	/**
+	 * `queued`状態(Action Scheduler enqueue直後、workerがまだ手を付けていない)の
+	 * runも同様にclaim対象0件を「完了」と誤認しないことを確認する(CR-01是正の
+	 * 別経路 ―— `WPCV_Runner_Async::run_async_action()`が`mark_queued_planning()`
+	 * を呼ぶ前に、別プロセスが同じrunを`dispatch()`する競合を想定).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_does_not_finalize_queued_run_with_no_targets_yet() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $repositories['run_repository']->reserve_run(
+			array(
+				'run_trigger'    => 'cron',
+				'runner'         => 'async',
+				'initial_status' => WPCV_Run_Status::QUEUED,
+			)
+		);
+		$run_id = $reservation['run_id'];
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array(), $continuation_calls );
+
+		$result = $dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$this->assertSame( 'waiting_for_plan', $result['action'] );
+		$this->assertSame( WPCV_Run_Status::QUEUED, $wpdb->rows['wp_wpcv_runs'][ $run_id ]['status'] );
+	}
+
+	/**
 	 * `deadline_at` を過去にすると、runと非終端のtarget_runがすべて `aborted` に
-	 * なることを確認する(v0.4.0 §Step4「run deadline超過sweep」).
+	 * なることを確認する(v0.4.0 §Step4「run deadline超過sweep」)。
+	 *
+	 * `reserve_and_start_running()` を使わず `reserve_run()` を直接呼び、runを
+	 * `planning`のままにする(v0.4.0コードレビューCR-01是正の回帰テストを兼ねる:
+	 * `planning`のまま止まったrun ―― 列挙・保存を担当するworkerがクラッシュした
+	 * 場合等 ―― もdeadline超過sweepの対象になり、`queued`/`planning`の待機分岐
+	 * より先にdeadline判定が効くことを確認する。`WPCV_Chunk_Dispatcher::dispatch()`
+	 * のクラスdocblock参照).
 	 *
 	 * @return void
 	 */
@@ -198,6 +292,8 @@ class ChunkDispatcherTest extends TestCase {
 		$repositories = $this->make_repositories( $wpdb );
 		$reservation  = $repositories['run_repository']->reserve_run();
 		$run_id       = $reservation['run_id'];
+
+		$this->assertSame( WPCV_Run_Status::PLANNING, $wpdb->rows['wp_wpcv_runs'][ $run_id ]['status'] );
 
 		// deadline_at を過去に書き換える(`reserve_run()` は未来の値しか作れないため直接操作).
 		$wpdb->rows['wp_wpcv_runs'][ $run_id ]['deadline_at'] = '2000-01-01 00:00:00';
@@ -227,7 +323,7 @@ class ChunkDispatcherTest extends TestCase {
 	public function test_dispatch_finalizes_run_when_all_targets_terminal() {
 		$wpdb         = new WPCV_Test_Fake_WPDB();
 		$repositories = $this->make_repositories( $wpdb );
-		$reservation  = $repositories['run_repository']->reserve_run();
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
 		$run_id       = $reservation['run_id'];
 
 		$repositories['target_run_repository']->save_target_runs(
@@ -265,7 +361,7 @@ class ChunkDispatcherTest extends TestCase {
 	public function test_dispatch_schedules_delayed_recheck_when_waiting_for_other_worker() {
 		$wpdb         = new WPCV_Test_Fake_WPDB();
 		$repositories = $this->make_repositories( $wpdb );
-		$reservation  = $repositories['run_repository']->reserve_run();
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
 		$run_id       = $reservation['run_id'];
 
 		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
@@ -297,7 +393,7 @@ class ChunkDispatcherTest extends TestCase {
 	public function test_dispatch_completes_core_manifest_target_and_schedules_immediate_continuation() {
 		$wpdb         = new WPCV_Test_Fake_WPDB();
 		$repositories = $this->make_repositories( $wpdb );
-		$reservation  = $repositories['run_repository']->reserve_run();
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
 		$run_id       = $reservation['run_id'];
 
 		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
@@ -329,7 +425,7 @@ class ChunkDispatcherTest extends TestCase {
 	public function test_dispatch_marks_core_unverifiable_when_manifest_fetch_fails() {
 		$wpdb         = new WPCV_Test_Fake_WPDB();
 		$repositories = $this->make_repositories( $wpdb );
-		$reservation  = $repositories['run_repository']->reserve_run();
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
 		$run_id       = $reservation['run_id'];
 
 		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
@@ -371,7 +467,7 @@ class ChunkDispatcherTest extends TestCase {
 	public function test_dispatch_marks_core_scan_unverifiable_when_manifest_fetch_fails() {
 		$wpdb         = new WPCV_Test_Fake_WPDB();
 		$repositories = $this->make_repositories( $wpdb );
-		$reservation  = $repositories['run_repository']->reserve_run();
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
 		$run_id       = $reservation['run_id'];
 
 		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
@@ -420,7 +516,7 @@ class ChunkDispatcherTest extends TestCase {
 	public function test_dispatch_completes_core_scan_target_with_findings_from_all_areas() {
 		$wpdb         = new WPCV_Test_Fake_WPDB();
 		$repositories = $this->make_repositories( $wpdb );
-		$reservation  = $repositories['run_repository']->reserve_run();
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
 		$run_id       = $reservation['run_id'];
 
 		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
@@ -473,7 +569,7 @@ class ChunkDispatcherTest extends TestCase {
 	public function test_dispatch_completes_plugin_target_by_resolving_current_context() {
 		$wpdb         = new WPCV_Test_Fake_WPDB();
 		$repositories = $this->make_repositories( $wpdb );
-		$reservation  = $repositories['run_repository']->reserve_run();
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
 		$run_id       = $reservation['run_id'];
 
 		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
@@ -518,7 +614,7 @@ class ChunkDispatcherTest extends TestCase {
 	public function test_dispatch_marks_plugin_target_missing_when_no_longer_present() {
 		$wpdb         = new WPCV_Test_Fake_WPDB();
 		$repositories = $this->make_repositories( $wpdb );
-		$reservation  = $repositories['run_repository']->reserve_run();
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
 		$run_id       = $reservation['run_id'];
 
 		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
@@ -554,7 +650,7 @@ class ChunkDispatcherTest extends TestCase {
 	public function test_dispatch_marks_muplugin_loader_unverifiable_immediately() {
 		$wpdb         = new WPCV_Test_Fake_WPDB();
 		$repositories = $this->make_repositories( $wpdb );
-		$reservation  = $repositories['run_repository']->reserve_run();
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
 		$run_id       = $reservation['run_id'];
 
 		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
@@ -590,7 +686,7 @@ class ChunkDispatcherTest extends TestCase {
 	public function test_dispatch_completes_muplugin_scan_as_success_when_dir_absent_from_context() {
 		$wpdb         = new WPCV_Test_Fake_WPDB();
 		$repositories = $this->make_repositories( $wpdb );
-		$reservation  = $repositories['run_repository']->reserve_run();
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
 		$run_id       = $reservation['run_id'];
 
 		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
@@ -625,7 +721,7 @@ class ChunkDispatcherTest extends TestCase {
 	public function test_dispatch_marks_only_the_claimed_target_failed_on_exception() {
 		$wpdb         = new WPCV_Test_Fake_WPDB();
 		$repositories = $this->make_repositories( $wpdb );
-		$reservation  = $repositories['run_repository']->reserve_run();
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
 		$run_id       = $reservation['run_id'];
 
 		$target_run_ids = $repositories['target_run_repository']->save_target_runs(

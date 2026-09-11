@@ -26,9 +26,22 @@ if ( ! defined( 'ABSPATH' ) ) {
  *
  * 1. Lease切れ(stale worker)の掃除(`sweep_expired_leases()`)
  * 2. Run自体のdeadline超過を検知して `aborted` へ倒す
- * 3. Claim可能な target_run を1件claimし、1chunk分処理する
- * 4. Claim対象が無ければ、全target_runが終端状態かどうかを見て run を確定する
+ * 3. Runが`queued`/`planning`(target_runsの列挙・保存が別プロセスでまだ完了
+ *    していない)なら、claimを試みず待機する
+ * 4. Claim可能な target_run を1件claimし、1chunk分処理する
+ * 5. Claim対象が無ければ、全target_runが終端状態かどうかを見て run を確定する
  *    (終端でなければ、他workerの処理待ちとして遅延re-checkを予約するだけ)
+ *
+ * v0.4.0コードレビューCR-01是正: 3.を追加する前は、runが`queued`/`running`の
+ * いずれかで「active」と判定されるだけで、target_runsがまだ1件も保存されて
+ * いない状態(`WPCV_Run_Starter::plan_and_save()`が列挙・保存している最中)でも
+ * 5.の分岐に進めてしまい、`WPCV_Verifier::summarize( array() )`が「0件中0件
+ * success」を`success`として返してしまう実際のレースコンディションがあった
+ * (同一runを複数プロセスが並行して触る経路 ―― Action Schedulerワーカーが
+ * planning中に別のREST `POST /run` ポーリングが同じrunを見つけて`dispatch()`
+ * を呼ぶ等 ―― で発生し得た)。`planning`状態を新設し、target_runsの保存が
+ * 完了するまでrunを`running`にしないことで解消した(`WPCV_Run_Status`・
+ * `WPCV_Run_Starter`のクラスdocblock参照).
  *
  * `$context`(version/plugins/plugin_dir/mu_plugin_dir/mu_plugins)は
  * `WPCV_Runner_Async` と同じ理由(AS の args 8,000文字制限。
@@ -218,7 +231,8 @@ class WPCV_Chunk_Dispatcher {
 	 *                        (version/plugins/plugin_dir/mu_plugin_dir/mu_plugins).
 	 * @return array{action: string} 少なくとも `action` キーを持つ結果
 	 *               (`run_not_found`|`run_already_terminal`|`aborted`|
-	 *               `run_finalized`|`waiting`|`processed`。テスト・観測用).
+	 *               `waiting_for_plan`|`run_finalized`|`waiting`|`processed`。
+	 *               テスト・観測用).
 	 */
 	public function dispatch( $run_id, array $context ) {
 		$run_id = (int) $run_id;
@@ -242,10 +256,25 @@ class WPCV_Chunk_Dispatcher {
 		}
 
 		if ( ! empty( $run['deadline_at'] ) && $this->is_past( $run['deadline_at'] ) ) {
+			// `queued`/`planning`のまま止まったrun(worker crash等)もここで
+			// 拾えるよう、claim対象の有無を見る前にdeadlineだけを先に判定する.
 			$this->run_repository->mark_run_aborted( $run_id, 'run deadline を超過したため aborted にしました.' );
 			$this->target_run_repository->abort_non_terminal_for_run( $run_id );
 
 			return array( 'action' => 'aborted' );
+		}
+
+		if ( in_array( $run['status'], array( WPCV_Run_Status::QUEUED, WPCV_Run_Status::PLANNING ), true ) ) {
+			// v0.4.0コードレビューCR-01是正: target_runsの列挙・保存がまだ完了して
+			// いない(別プロセスが`WPCV_Run_Starter::plan_and_save()`の途中)。
+			// target_runsが1件も無い可能性があるため、ここでclaim対象0件を
+			// 「完了」と誤認してrunをsuccess/partial確定させてはならない
+			// (実際に検出されたレースコンディション。このクラスのdocblock参照)。
+			// 列挙・保存を担当している側が`mark_planning_running()`で`running`へ
+			// 遷移させるまで、ここでは何もせず待機する.
+			$this->schedule_continuation( $run_id, 0 );
+
+			return array( 'action' => 'waiting_for_plan' );
 		}
 
 		$lease_owner = call_user_func( $this->lease_owner_factory );
@@ -280,6 +309,15 @@ class WPCV_Chunk_Dispatcher {
 
 	/**
 	 * Claim対象が無かった場合の分岐(run確定判定、または待機).
+	 *
+	 * `dispatch()` はrunが`WPCV_Run_Status::RUNNING`の場合にのみここへ到達する
+	 * (`queued`/`planning`は`dispatch()`自身が別分岐で待機を返す。クラス
+	 * docblock「CR-01是正」参照)。`running`は`WPCV_Run_Starter::plan_and_save()`が
+	 * target_runsの保存を終えてから遷移させる状態であるため、ここで
+	 * `$target_runs`が空になることはない(`WPCV_Run_Planner::plan()`は最低でも
+	 * core targetを1件返す)。したがって空配列に対する `WPCV_Verifier::summarize()`
+	 * が「0件中0件success=success」を返す分岐(v0.4.0コードレビューCR-01で
+	 * 問題になった経路)は、この呼び出し元の制約上到達しない.
 	 *
 	 * @param int $run_id 対象の run の id.
 	 * @return array{action: string}
