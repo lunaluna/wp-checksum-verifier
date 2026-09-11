@@ -23,19 +23,14 @@ if ( ! defined( 'ABSPATH' ) ) {
  * (WP-Cron / WP-CLI / REST といった実行モデルのエントリポイント。§6、v0.3 対象)が
  * それらを解決して `$context` として渡す設計とし、このクラス自体は単体テストで
  * 実 WordPress 環境やテストダブルの大きな面積を必要としないようにしている.
+ *
+ * v0.4.0 §Step2で新設した `WPCV_Run_Planner` と列挙対象(`CORE_BUNDLED_PLUGIN_FILES`・
+ * プラグインの slug 解決)が重複しないよう、これらは `WPCV_Run_Planner` 側へ
+ * 移設し、このクラスはそれを呼ぶ形にした(挙動は変えていない。列挙と検証を
+ * 1メソッド内で行う設計自体は、v0.4.0 §Step5でdispatcher経由の実行方式へ
+ * 接続するまでの間、互換動作として維持する).
  */
 class WPCV_Run_Coordinator {
-
-	/**
-	 * コアの checksums に同梱され、プラグイン次元では二重に検証しないファイル(§3.2).
-	 *
-	 * `hello.php` は WordPress コアの配布物に含まれ、コアの checksums API が
-	 * そのまま返す(`wp-content/plugins/hello.php` として)。プラグイン次元でも
-	 * 検証すると、同じファイルに対して2つの target が競合して存在することになる.
-	 *
-	 * @var string[]
-	 */
-	const CORE_BUNDLED_PLUGIN_FILES = array( 'hello.php' );
 
 	/**
 	 * 検証エンジン.
@@ -142,11 +137,11 @@ class WPCV_Run_Coordinator {
 			$findings      = array_merge( $findings, $core_result['findings'] );
 
 			foreach ( $plugins as $plugin_file => $plugin_data ) {
-				if ( in_array( (string) $plugin_file, self::CORE_BUNDLED_PLUGIN_FILES, true ) ) {
+				if ( in_array( (string) $plugin_file, WPCV_Run_Planner::CORE_BUNDLED_PLUGIN_FILES, true ) ) {
 					continue;
 				}
 
-				$resolved       = self::resolve_plugin_slug_and_root( (string) $plugin_file, $plugin_dir );
+				$resolved       = WPCV_Run_Planner::resolve_plugin_slug_and_root( (string) $plugin_file, $plugin_dir );
 				$plugin_version = isset( $plugin_data['Version'] ) ? (string) $plugin_data['Version'] : '';
 
 				$plugin_result = $this->verifier->verify_plugin(
@@ -190,37 +185,5 @@ class WPCV_Run_Coordinator {
 
 			throw $e;
 		}
-	}
-
-	/**
-	 * `get_plugins()` のキー(プラグインファイル)から slug と検証の基準ディレクトリを求める.
-	 *
-	 * ディレクトリ型プラグイン(`{slug}/{file}.php`)は `{slug}` をそのまま使う。
-	 * 単一ファイルプラグイン(`{file}.php`。スラッシュを含まない)は wp.org 上の
-	 * slug がファイル名と一致するとは限らないため、ファイル名から拡張子を除いた
-	 * ものをベストエフォートで slug として使う(§3.4 のメモに記載済みの既知の限界.
-	 * 一致しない場合は `WPCV_Source_Wporg_Plugin` が `manifest_not_found` を返し、
-	 * unverifiable として記録されるだけなので、誤った `modified` 警告にはならない).
-	 *
-	 * @param string $plugin_file `get_plugins()` のキー.
-	 * @param string $plugin_dir  `WP_PLUGIN_DIR` の絶対パス.
-	 * @return array{slug: string, plugin_root_dir: string}
-	 */
-	private static function resolve_plugin_slug_and_root( $plugin_file, $plugin_dir ) {
-		$plugin_dir = rtrim( $plugin_dir, '/' );
-
-		if ( false !== strpos( $plugin_file, '/' ) ) {
-			$slug = strstr( $plugin_file, '/', true );
-
-			return array(
-				'slug'            => $slug,
-				'plugin_root_dir' => $plugin_dir . '/' . $slug,
-			);
-		}
-
-		return array(
-			'slug'            => pathinfo( $plugin_file, PATHINFO_FILENAME ),
-			'plugin_root_dir' => $plugin_dir,
-		);
 	}
 }

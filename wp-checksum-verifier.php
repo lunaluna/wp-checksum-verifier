@@ -120,6 +120,12 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-verifier.
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-run-repository.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-target-run-repository.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-finding-repository.php';
+
+/**
+ * Run 開始時点でのtarget列挙(v0.4.0 §Step2). `WPCV_Run_Coordinator` が列挙
+ * ロジック(`CORE_BUNDLED_PLUGIN_FILES`・slug解決)を委譲するため、先に読み込む.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-run-planner.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-run-coordinator.php';
 
 /**
