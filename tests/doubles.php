@@ -432,6 +432,21 @@ function wpcv_test_inject_chunk_dispatcher( $dispatcher = null ) {
 }
 
 /**
+ * `WPCV_Plugin::sync_dispatcher()` が返すインスタンスを差し替える
+ * (`wpcv_test_inject_run_repository()` と同じ手法. v0.4.0 §Step6:
+ * `WPCV_Rest_Run_Controller::handle_run()` が `WPCV_Plugin::sync_dispatcher()` を
+ * 直接呼ぶようになったため、実 `global $wpdb` 無しでテストするのに必要).
+ *
+ * @param WPCV_Chunk_Dispatcher|null $dispatcher 差し替え先. 省略時はキャッシュを空に戻す.
+ * @return void
+ */
+function wpcv_test_inject_sync_dispatcher( $dispatcher = null ) {
+	$property = new ReflectionProperty( WPCV_Plugin::class, 'sync_dispatcher' );
+	$property->setAccessible( true );
+	$property->setValue( null, $dispatcher );
+}
+
+/**
  * `WPCV_Verifier` の各 `verify_*()` が返す target_run の最小形を作る.
  *
  * @param array $overrides 上書きするフィールド.

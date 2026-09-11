@@ -107,4 +107,53 @@ class SettingsTest extends TestCase {
 
 		$this->assertSame( array( 'hour' => 5, 'minute' => 30 ), WPCV_Settings::get_run_time() );
 	}
+
+	/**
+	 * 未保存の状態では既定値が返ることを確認する(v0.4.0 §Step6).
+	 *
+	 * @return void
+	 */
+	public function test_get_external_http_time_budget_seconds_returns_default_when_unset() {
+		$this->assertSame(
+			WPCV_Settings::DEFAULT_EXTERNAL_HTTP_TIME_BUDGET_SECONDS,
+			WPCV_Settings::get_external_http_time_budget_seconds()
+		);
+	}
+
+	/**
+	 * 保存した値がそのまま返ることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_update_external_http_time_budget_seconds_persists_value() {
+		WPCV_Settings::update_external_http_time_budget_seconds( 15 );
+
+		$this->assertSame( 15, WPCV_Settings::get_external_http_time_budget_seconds() );
+	}
+
+	/**
+	 * 範囲外(5-55外)の値は clamp されることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_update_external_http_time_budget_seconds_clamps_out_of_range_values() {
+		WPCV_Settings::update_external_http_time_budget_seconds( 999 );
+		$this->assertSame( 55, WPCV_Settings::get_external_http_time_budget_seconds() );
+
+		WPCV_Settings::update_external_http_time_budget_seconds( 0 );
+		$this->assertSame( 5, WPCV_Settings::get_external_http_time_budget_seconds() );
+	}
+
+	/**
+	 * 既存の `run_hour`/`run_minute` 設定に影響を与えないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_update_external_http_time_budget_seconds_does_not_touch_run_time() {
+		WPCV_Settings::update_run_time( 5, 30 );
+
+		WPCV_Settings::update_external_http_time_budget_seconds( 15 );
+
+		$this->assertSame( array( 'hour' => 5, 'minute' => 30 ), WPCV_Settings::get_run_time() );
+	}
 }

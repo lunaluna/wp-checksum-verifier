@@ -24,6 +24,11 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 既存の`WPCV_API`/`WPCV_Migrator`は`global $wpdb;`を直接参照するが、この
  * クラスは単体テストで実DBを使わずに検証したいため、コンストラクタで
  * `$wpdb`相当のオブジェクトを注入できるようにする(既存クラスとの意図的な差異).
+ *
+ * v0.4.0 §Step6で `reserve_due_run()`(外部HTTPモードの日次due判定込み予約)・
+ * `find_most_recent_run()` を追加した。`reserve_run()` は「呼ばれた時点で
+ * 常に即座に予約する」同期系エントリポイント(CLI・手動・cron)向けのままとし、
+ * 外部HTTP専用の日次due判定ロジックを混在させないよう別メソッドとして分離した.
  */
 class WPCV_Run_Repository {
 
@@ -315,33 +320,43 @@ class WPCV_Run_Repository {
 	}
 
 	/**
-	 * 実行(run)行を新規 insert する(`reserve_run()` からのみ呼ぶ内部ヘルパー).
+	 * 実行(run)行を新規 insert する(`reserve_run()`/`reserve_due_run()` からのみ
+	 * 呼ぶ内部ヘルパー).
 	 *
-	 * @param string $status      insert する `status`(`WPCV_Run_Status::RUNNING` または
-	 *                            `WPCV_Run_Status::QUEUED`).
-	 * @param string $run_trigger cron|manual|cli|rest.
-	 * @param string $runner      sync|async.
+	 * @param string      $status        insert する `status`(`WPCV_Run_Status::RUNNING` または
+	 *                                   `WPCV_Run_Status::QUEUED`).
+	 * @param string      $run_trigger   cron|manual|cli|rest.
+	 * @param string      $runner        sync|async.
+	 * @param string|null $scheduled_for `reserve_due_run()`(v0.4.0 §Step6)が渡す、
+	 *                                   本日の設定実行時刻のUTC DATETIME文字列。
+	 *                                   `reserve_run()` からは渡されず(常に `null`)、
+	 *                                   その場合は列を書き込まない(既存の
+	 *                                   同期実行系の挙動に影響しない).
 	 * @return int 作成した run の id.
 	 */
-	private function insert_run_row( $status, $run_trigger, $runner ) {
+	private function insert_run_row( $status, $run_trigger, $runner, $scheduled_for = null ) {
 		$table      = $this->wpdb->base_prefix . 'wpcv_runs';
 		$now_string = call_user_func( $this->now );
 
-		$this->wpdb->insert(
-			$table,
-			array(
-				'started_at'  => $now_string,
-				'status'      => $status,
-				'run_trigger' => $run_trigger,
-				'runner'      => $runner,
-				// v0.4.0 §Step4: `WPCV_Chunk_Dispatcher` が deadline超過を検知して
-				// `aborted` へ倒すためのしきい値(`DEFAULT_DEADLINE_HOURS` のdocblock参照)。
-				// 一括実行(`WPCV_Run_Coordinator`)はこの列を読まないため、
-				// 書き込むだけで既存の同期実行系の挙動には影響しない.
-				'deadline_at' => gmdate( 'Y-m-d H:i:s', strtotime( $now_string ) + self::DEFAULT_DEADLINE_HOURS * HOUR_IN_SECONDS ),
-			),
-			array( '%s', '%s', '%s', '%s', '%s' )
+		$data   = array(
+			'started_at'  => $now_string,
+			'status'      => $status,
+			'run_trigger' => $run_trigger,
+			'runner'      => $runner,
+			// v0.4.0 §Step4: `WPCV_Chunk_Dispatcher` が deadline超過を検知して
+			// `aborted` へ倒すためのしきい値(`DEFAULT_DEADLINE_HOURS` のdocblock参照)。
+			// 一括実行(`WPCV_Run_Coordinator`)はこの列を読まないため、
+			// 書き込むだけで既存の同期実行系の挙動には影響しない.
+			'deadline_at' => gmdate( 'Y-m-d H:i:s', strtotime( $now_string ) + self::DEFAULT_DEADLINE_HOURS * HOUR_IN_SECONDS ),
 		);
+		$format = array( '%s', '%s', '%s', '%s', '%s' );
+
+		if ( null !== $scheduled_for ) {
+			$data['scheduled_for'] = $scheduled_for;
+			$format[]              = '%s';
+		}
+
+		$this->wpdb->insert( $table, $data, $format );
 
 		return (int) $this->wpdb->insert_id;
 	}
@@ -508,21 +523,178 @@ class WPCV_Run_Repository {
 	 * @return array|null 見つからなければ `null`.
 	 */
 	public function find_by_id( $run_id ) {
-		$table = $this->wpdb->base_prefix . 'wpcv_runs';
-
-		// find_active_run() と同じ方針(動的な値を含まない固定リテラルのみのクエリ.
-		// id の絞り込みは下の PHP 側で行う).
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static table literal, no user input.
-		$rows = $this->wpdb->get_results( "SELECT * FROM {$table}", ARRAY_A );
-		$rows = is_array( $rows ) ? $rows : array();
-
-		foreach ( $rows as $row ) {
+		foreach ( $this->all_rows() as $row ) {
 			if ( (int) $row['id'] === (int) $run_id ) {
 				return $row;
 			}
 		}
 
 		return null;
+	}
+
+	/**
+	 * 全run行のうち、最も新しい(id最大の)ものを1件返す(v0.4.0 §Step6:
+	 * `WPCV_Rest_Run_Controller` が「作業対象のrunが無い」場合に直近の状態を
+	 * 報告するために使う).
+	 *
+	 * @return array|null run行が1件も無ければ `null`.
+	 */
+	public function find_most_recent_run() {
+		$rows = $this->all_rows();
+
+		if ( empty( $rows ) ) {
+			return null;
+		}
+
+		usort(
+			$rows,
+			static function ( $a, $b ) {
+				return (int) $b['id'] <=> (int) $a['id'];
+			}
+		);
+
+		return $rows[0];
+	}
+
+	/**
+	 * 外部HTTP(v0.4.0 §Step6)向けに、日次due判定込みで実行権を予約する.
+	 *
+	 * `reserve_run()` と同じ advisory lock の中で次の順に判定する:
+	 *
+	 * 1. active run(`queued`/`running`)があれば、`reserve_run()` と同じくそれを
+	 *    返す(新規作成は行わない。5分間隔の外部cronが連打しても、進行中の run が
+	 *    1件そのまま前進し続けることを保証する).
+	 * 2. 無ければ、現在時刻(`$this->now`)が本日の設定実行時刻(`$hour:$minute`
+	 *    UTC)をまだ過ぎていない場合、または本日分の run(`scheduled_for` の暦日が
+	 *    今日と一致する run。ステータスは問わない)が既に存在する場合は、
+	 *    何も作成せず `run_id: null` を返す(「作業対象の run が無い」ことを表す。
+	 *    呼び出し元は `find_most_recent_run()` 等で直近の状態を報告すること).
+	 * 3. どちらでもなければ、`scheduled_for` に本日の設定実行時刻を記録した新規
+	 *    run を作成する.
+	 *
+	 * `$hour`/`$minute` を(`WPCV_Settings` 経由の値そのものではなく)プリミティブな
+	 * 値で受け取るのは、他の Repository メソッドと同じく「現在時刻」の唯一の情報源を
+	 * `$this->now` に一本化し、テストで固定時刻を注入するだけで due/not-due の
+	 * どちらの分岐も決定的に検証できるようにするため(呼び出し元が別途 `time()` を
+	 * 読んで判定を分散させると、テストが実際の壁時計時刻に依存してしまう).
+	 *
+	 * @param int   $hour   設定実行時刻の時(UTC. 0-23).
+	 * @param int   $minute 設定実行時刻の分(UTC. 0-59).
+	 * @param array $args   `reserve_run()` と同じ(`run_trigger`/`runner`/`initial_status`).
+	 * @return array{
+	 *     run_id: int|null,
+	 *     status: string|null,
+	 *     active: bool,
+	 *     created: bool,
+	 *     lock_failed: bool,
+	 * } `created` が真の場合のみ、呼び出し元は `WPCV_Run_Starter::plan_and_save()` で
+	 *   target_runs を保存する必要がある(`active` な既存 run は既に保存済みのため不要).
+	 */
+	public function reserve_due_run( $hour, $minute, array $args = array() ) {
+		$run_trigger    = isset( $args['run_trigger'] ) ? (string) $args['run_trigger'] : 'manual';
+		$runner         = isset( $args['runner'] ) ? (string) $args['runner'] : 'sync';
+		$initial_status = isset( $args['initial_status'] ) ? (string) $args['initial_status'] : WPCV_Run_Status::RUNNING;
+
+		$wpdb      = $this->wpdb;
+		$lock_name = $this->lock_name();
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- GET_LOCK() はキャッシュ不可.
+		$lock_acquired = $wpdb->get_var(
+			$wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $lock_name, self::LOCK_TIMEOUT_SECONDS )
+		);
+
+		if ( '1' !== (string) $lock_acquired ) {
+			return array(
+				'run_id'      => null,
+				'status'      => null,
+				'active'      => false,
+				'created'     => false,
+				'lock_failed' => true,
+			);
+		}
+
+		try {
+			$active_run = $this->find_active_run();
+
+			if ( null !== $active_run ) {
+				return array(
+					'run_id'      => $active_run['id'],
+					'status'      => $active_run['status'],
+					'active'      => true,
+					'created'     => false,
+					'lock_failed' => false,
+				);
+			}
+
+			$now_string    = call_user_func( $this->now );
+			$scheduled_for = gmdate( 'Y-m-d H:i:s', $this->today_due_at( (int) $hour, (int) $minute ) );
+
+			if ( $now_string < $scheduled_for || $this->has_run_scheduled_for_date( substr( $scheduled_for, 0, 10 ) ) ) {
+				return array(
+					'run_id'      => null,
+					'status'      => null,
+					'active'      => false,
+					'created'     => false,
+					'lock_failed' => false,
+				);
+			}
+
+			$run_id = $this->insert_run_row( $initial_status, $run_trigger, $runner, $scheduled_for );
+
+			return array(
+				'run_id'      => $run_id,
+				'status'      => $initial_status,
+				'active'      => false,
+				'created'     => true,
+				'lock_failed' => false,
+			);
+		} finally {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- RELEASE_LOCK() はキャッシュ不可.
+			$wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock_name ) );
+		}
+	}
+
+	/**
+	 * `$this->now` が属するUTC暦日における `$hour:$minute` の Unix timestamp を返す
+	 * (「今日の設定実行時刻」。その時刻を過ぎているかどうかは問わない.
+	 * `reserve_due_run()` の due 判定専用の内部ヘルパー).
+	 *
+	 * @param int $hour   時(UTC).
+	 * @param int $minute 分(UTC).
+	 * @return int
+	 */
+	private function today_due_at( $hour, $minute ) {
+		$now_timestamp = strtotime( call_user_func( $this->now ) );
+
+		return gmmktime(
+			$hour,
+			$minute,
+			0,
+			(int) gmdate( 'n', $now_timestamp ),
+			(int) gmdate( 'j', $now_timestamp ),
+			(int) gmdate( 'Y', $now_timestamp )
+		);
+	}
+
+	/**
+	 * 指定した暦日(`Y-m-d`)を `scheduled_for` に持つ run が(ステータスを問わず)
+	 * 既に存在するかどうかを調べる(`reserve_due_run()` の「当日分は作成済みか」判定).
+	 *
+	 * @param string $date `Y-m-d` 形式(UTC).
+	 * @return bool
+	 */
+	private function has_run_scheduled_for_date( $date ) {
+		foreach ( $this->all_rows() as $row ) {
+			if ( empty( $row['scheduled_for'] ) ) {
+				continue;
+			}
+
+			if ( substr( (string) $row['scheduled_for'], 0, 10 ) === $date ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**
@@ -567,5 +739,22 @@ class WPCV_Run_Repository {
 		$now_timestamp = strtotime( call_user_func( $this->now ) );
 
 		return gmdate( 'Y-m-d H:i:s', $now_timestamp - ( $minutes * 60 ) );
+	}
+
+	/**
+	 * `find_by_id()`/`find_most_recent_run()`/`has_run_scheduled_for_date()`で
+	 * 共有する「テーブルの全行を読み取る」処理(v0.4.0 §Step6で `find_by_id()` から
+	 * 抽出。`WPCV_Target_Run_Repository::all_rows()` と同じ理由〔テストダブルが
+	 * WHERE 句を解釈しないための設計〕).
+	 *
+	 * @return array<int, array>
+	 */
+	private function all_rows() {
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static table literal, no user input.
+		$rows = $this->wpdb->get_results( "SELECT * FROM {$table}", ARRAY_A );
+
+		return is_array( $rows ) ? $rows : array();
 	}
 }

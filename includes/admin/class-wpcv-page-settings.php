@@ -14,7 +14,10 @@ if ( ! defined( 'ABSPATH' ) ) {
  *
  * 実行時刻(UTC)の変更フォームをv0.3 §Step6で、「今すぐ実行」ボタンを§Step7で、
  * REST時間予算の変更フォームを§Step8で、RESTトークンの発行UIを§Step9で追加した
- * (v0.3計画の全9ステップの最後のUI追加).
+ * (v0.3計画の全9ステップの最後のUI追加)。§Step8のREST時間予算はv0.3.1 §Step4で
+ * 廃止した(`WPCV_Settings` のクラス docblock 参照)。v0.4.0 §Step6で、外部HTTP
+ * モード専用の時間予算(`external_http_time_budget_seconds`)を実行時刻フォームの
+ * 下に追加した(キー名を変えており、廃止済みの旧設定とは別物).
  */
 class WPCV_Page_Settings {
 
@@ -74,8 +77,9 @@ class WPCV_Page_Settings {
 		$run_now_result  = self::maybe_handle_run_now();
 		$generated_token = self::maybe_handle_generate_token();
 
-		$run_time     = WPCV_Settings::get_run_time();
-		$button_state = self::run_now_button_state( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON );
+		$run_time                          = WPCV_Settings::get_run_time();
+		$external_http_time_budget_seconds = WPCV_Settings::get_external_http_time_budget_seconds();
+		$button_state                      = self::run_now_button_state( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON );
 		?>
 		<div class="wrap">
 			<h1><?php echo esc_html__( 'WP Checksum Verifier', 'wp-checksum-verifier' ); ?></h1>
@@ -112,7 +116,18 @@ class WPCV_Page_Settings {
 							:
 							<input type="number" min="0" max="59" step="1" name="wpcv_run_minute" id="wpcv_run_minute" value="<?php echo esc_attr( (string) $run_time['minute'] ); ?>" style="width: 4em;" />
 							<p class="description">
-								<?php echo esc_html__( 'The verification run starts automatically at this time every day (UTC).', 'wp-checksum-verifier' ); ?>
+								<?php echo esc_html__( 'The verification run starts automatically at this time every day (UTC). External HTTP mode (below) also uses this time to decide when to start the daily run.', 'wp-checksum-verifier' ); ?>
+							</p>
+						</td>
+					</tr>
+					<tr>
+						<th scope="row">
+							<label for="wpcv_external_http_time_budget_seconds"><?php echo esc_html__( 'External HTTP time budget (seconds)', 'wp-checksum-verifier' ); ?></label>
+						</th>
+						<td>
+							<input type="number" min="5" max="55" step="1" name="wpcv_external_http_time_budget_seconds" id="wpcv_external_http_time_budget_seconds" value="<?php echo esc_attr( (string) $external_http_time_budget_seconds ); ?>" style="width: 5em;" />
+							<p class="description">
+								<?php echo esc_html__( 'When an external scheduler calls POST /wp-json/wpcv/v1/run, this is how long (per request) it keeps advancing the run before returning. Keep it well under your host\'s max_execution_time.', 'wp-checksum-verifier' ); ?>
 							</p>
 						</td>
 					</tr>
@@ -222,6 +237,12 @@ class WPCV_Page_Settings {
 
 		WPCV_Settings::update_run_time( $hour, $minute );
 		WPCV_Scheduler::reschedule();
+
+		$time_budget_seconds = isset( $_POST['wpcv_external_http_time_budget_seconds'] )
+			? absint( wp_unslash( $_POST['wpcv_external_http_time_budget_seconds'] ) )
+			: WPCV_Settings::DEFAULT_EXTERNAL_HTTP_TIME_BUDGET_SECONDS;
+
+		WPCV_Settings::update_external_http_time_budget_seconds( $time_budget_seconds );
 
 		return true;
 	}

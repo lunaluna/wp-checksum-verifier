@@ -79,4 +79,26 @@ class PluginTest extends TestCase {
 	public function test_chunk_result_repository_returns_chunk_result_repository_instance() {
 		$this->assertInstanceOf( WPCV_Chunk_Result_Repository::class, WPCV_Plugin::chunk_result_repository() );
 	}
+
+	/**
+	 * `sync_dispatcher()`(v0.4.0 §Step5/§Step6)が `WPCV_Chunk_Dispatcher` のインスタンスを
+	 * 返し、複数回呼び出しても同一インスタンスが返ることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_sync_dispatcher_returns_same_instance_on_repeated_calls() {
+		$this->assertInstanceOf( WPCV_Chunk_Dispatcher::class, WPCV_Plugin::sync_dispatcher() );
+		$this->assertSame( WPCV_Plugin::sync_dispatcher(), WPCV_Plugin::sync_dispatcher() );
+	}
+
+	/**
+	 * `sync_dispatcher()` と `chunk_dispatcher()` が別インスタンスであることを確認する
+	 * (continuation schedulerの有無が異なるため。`WPCV_Plugin::sync_dispatcher()` の
+	 * docblock参照).
+	 *
+	 * @return void
+	 */
+	public function test_sync_dispatcher_is_a_different_instance_from_chunk_dispatcher() {
+		$this->assertNotSame( WPCV_Plugin::sync_dispatcher(), WPCV_Plugin::chunk_dispatcher() );
+	}
 }

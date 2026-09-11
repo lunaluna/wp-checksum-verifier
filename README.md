@@ -47,20 +47,32 @@ supported. A `WPCV_REST_TOKEN` constant (e.g. in `wp-config.php`) overrides
 the token issued from the Settings screen. Repeated authentication failures
 from the same IP are rate-limited.
 
-The endpoint is idempotent: while a run is already in progress (`queued` or
-`running`) it returns that run's id and status instead of starting a new
-one. Otherwise it runs the verification synchronously within the same HTTP
-request and returns once it completes — there is no opportunistic queue
-draining or time budget. This means the endpoint is only suitable for sites
-small enough to complete a full run within one request; per-file chunked
-execution and resume are planned for a future release. A busy response
-(advisory lock contention) or an internal failure returns an error instead
-of a 200.
+The endpoint is meant to be polled by an external scheduler (e.g. every 5
+minutes) and does not start a new run on every call:
+
+- If a run is already in progress (`queued` or `running`), it advances that
+  run's chunked execution (the same target/file-level dispatcher WP-Cron and
+  WP-CLI use) for up to the configured time budget (Settings screen,
+  default 20s) and returns.
+- If no run is in progress and the configured daily run time (UTC, the same
+  setting used by WP-Cron) has passed and no run has been made for today
+  yet, it starts a new run and advances it the same way.
+- Otherwise (not yet due, or today's run already exists) it does not start
+  anything and reports the most recent run instead.
+
+The response includes `run_id`, `status`, `pending_targets`,
+`retry_targets`, and `next_retry_at`, so the caller can tell whether a run
+is still in progress and keep polling. The endpoint never runs the global
+Action Scheduler queue — only this plugin's own work advances. A busy
+response (advisory lock contention) or an internal failure returns an
+error instead of a 200.
 
 ## Settings
 
 The plugin's settings screen (network admin menu on multisite) lets you
-configure: the daily WP-Cron run time (UTC) and REST token issuance.
+configure: the daily run time (UTC, shared by WP-Cron and the REST
+endpoint's due check), the REST endpoint's per-request time budget, and
+REST token issuance.
 
 ## Distribution
 

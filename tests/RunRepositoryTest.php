@@ -577,4 +577,182 @@ class RunRepositoryTest extends TestCase {
 
 		$this->assertSame( 1, $repository->find_active_run_id() );
 	}
+
+	/**
+	 * `find_most_recent_run()` が run 行を1件も持たない場合に `null` を返すことを
+	 * 確認する(v0.4.0 §Step6).
+	 *
+	 * @return void
+	 */
+	public function test_find_most_recent_run_returns_null_when_no_runs() {
+		$repository = $this->make_repository( new WPCV_Test_Fake_WPDB() );
+
+		$this->assertNull( $repository->find_most_recent_run() );
+	}
+
+	/**
+	 * `find_most_recent_run()` が最も id の大きい(最後に作成された)行を返すことを
+	 * 確認する.
+	 *
+	 * @return void
+	 */
+	public function test_find_most_recent_run_returns_highest_id_row() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-07 03:00:00',
+				'status'      => 'success',
+				'run_trigger' => 'rest',
+				'runner'      => 'sync',
+			)
+		);
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-08 03:00:00',
+				'status'      => 'failed',
+				'run_trigger' => 'rest',
+				'runner'      => 'sync',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$run = $repository->find_most_recent_run();
+
+		$this->assertSame( 2, $run['id'] );
+		$this->assertSame( 'failed', $run['status'] );
+	}
+
+	/**
+	 * `reserve_due_run()` が active run(`queued`/`running`)を返すとき、due判定を
+	 * 行わず(=まだ due でなくても)既存 run をそのまま返すことを確認する
+	 * (v0.4.0 §Step6: 5分間隔の外部cronが連打しても進行中のrunがそのまま
+	 * 前進し続けることの確認).
+	 *
+	 * @return void
+	 */
+	public function test_reserve_due_run_returns_active_run_regardless_of_due_time() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-08 11:00:00',
+				'status'      => 'running',
+				'run_trigger' => 'rest',
+				'runner'      => 'sync',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		// 設定実行時刻(23:00)はまだ過ぎていないが、active runがあればdue判定より
+		// 優先してそれを返す.
+		$reservation = $repository->reserve_due_run( 23, 0 );
+
+		$this->assertSame( 1, $reservation['run_id'] );
+		$this->assertSame( 'running', $reservation['status'] );
+		$this->assertTrue( $reservation['active'] );
+		$this->assertFalse( $reservation['created'] );
+		$this->assertCount( 1, $wpdb->rows['wp_wpcv_runs'] );
+	}
+
+	/**
+	 * `reserve_due_run()` が、active runが無く設定実行時刻を過ぎ、本日分の run が
+	 * まだ無い場合に、`scheduled_for` 付きで新規 run を作成することを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_reserve_due_run_creates_run_when_due_and_not_yet_created_today() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		// 固定 now は 2026-09-08 12:00:00. 設定実行時刻 11:00 は既に過ぎている.
+		$reservation = $repository->reserve_due_run(
+			11,
+			0,
+			array(
+				'run_trigger' => 'rest',
+				'runner'      => 'sync',
+			)
+		);
+
+		$this->assertSame( 1, $reservation['run_id'] );
+		$this->assertSame( 'running', $reservation['status'] );
+		$this->assertFalse( $reservation['active'] );
+		$this->assertTrue( $reservation['created'] );
+
+		$row = $wpdb->rows['wp_wpcv_runs'][1];
+		$this->assertSame( '2026-09-08 11:00:00', $row['scheduled_for'] );
+		$this->assertSame( 'rest', $row['run_trigger'] );
+	}
+
+	/**
+	 * `reserve_due_run()` が、設定実行時刻をまだ過ぎていない場合は何も作成せず
+	 * `run_id: null` を返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_reserve_due_run_does_nothing_when_not_yet_due() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		// 固定 now は 2026-09-08 12:00:00. 設定実行時刻 13:00 はまだ来ていない.
+		$reservation = $repository->reserve_due_run( 13, 0 );
+
+		$this->assertNull( $reservation['run_id'] );
+		$this->assertFalse( $reservation['active'] );
+		$this->assertFalse( $reservation['created'] );
+		$this->assertFalse( $reservation['lock_failed'] );
+		$this->assertArrayNotHasKey( 'wp_wpcv_runs', $wpdb->rows );
+	}
+
+	/**
+	 * `reserve_due_run()` が、本日分の run が(ステータスを問わず)既に存在する
+	 * 場合は2件目を作成しないことを確認する(v0.4.0 §Step6: 5分間隔の外部cronが
+	 * 連打しても同一日に1件しか作られないことの確認).
+	 *
+	 * @return void
+	 */
+	public function test_reserve_due_run_does_not_create_second_run_for_same_day() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'    => '2026-09-08 11:00:05',
+				'finished_at'   => '2026-09-08 11:00:10',
+				'status'        => 'success',
+				'run_trigger'   => 'rest',
+				'runner'        => 'sync',
+				'scheduled_for' => '2026-09-08 11:00:00',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$reservation = $repository->reserve_due_run( 11, 0 );
+
+		$this->assertNull( $reservation['run_id'] );
+		$this->assertFalse( $reservation['created'] );
+		$this->assertCount( 1, $wpdb->rows['wp_wpcv_runs'] );
+	}
+
+	/**
+	 * `reserve_due_run()` も `reserve_run()` と同じく advisory lock の取得に失敗
+	 * した場合 `lock_failed: true` を返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_reserve_due_run_returns_lock_failed_when_get_lock_fails() {
+		$wpdb                 = new WPCV_Test_Fake_WPDB();
+		$wpdb->get_var_return = '0';
+		$repository           = $this->make_repository( $wpdb );
+
+		$reservation = $repository->reserve_due_run( 11, 0 );
+
+		$this->assertTrue( $reservation['lock_failed'] );
+		$this->assertNull( $reservation['run_id'] );
+		$this->assertArrayNotHasKey( 'wp_wpcv_runs', $wpdb->rows );
+	}
 }
