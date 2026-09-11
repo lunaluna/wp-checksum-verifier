@@ -58,4 +58,116 @@ class FindingRepositoryTest extends TestCase {
 			array( wpcv_test_make_finding( array( 'target_id' => 'core' ) ) )
 		);
 	}
+
+	/**
+	 * `query()` が指定 run_id 以外の finding を含めないことを確認する
+	 * (v0.4.0 §Step7).
+	 *
+	 * @return void
+	 */
+	public function test_query_filters_by_run_id() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 1, 'path' => 'a.php' ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 2, 'path' => 'b.php' ) ) );
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+		$result     = $repository->query( array( 'run_id' => 1 ) );
+
+		$this->assertSame( 1, $result['total'] );
+		$this->assertSame( 'a.php', $result['rows'][0]['path'] );
+	}
+
+	/**
+	 * `query()` が `dimension`/`status`/`severity` の allowlist フィルタを適用することを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_query_filters_by_dimension_status_and_severity() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 1, 'path' => 'core.php', 'dimension' => 'core', 'status' => 'modified', 'severity' => 'high' ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 1, 'path' => 'plugin.php', 'dimension' => 'plugin', 'status' => 'added', 'severity' => 'medium' ) ) );
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$this->assertSame(
+			array( 'core.php' ),
+			array_column( $repository->query( array( 'run_id' => 1, 'dimension' => array( 'core' ) ) )['rows'], 'path' )
+		);
+		$this->assertSame(
+			array( 'plugin.php' ),
+			array_column( $repository->query( array( 'run_id' => 1, 'status' => array( 'added' ) ) )['rows'], 'path' )
+		);
+		$this->assertSame(
+			array( 'core.php' ),
+			array_column( $repository->query( array( 'run_id' => 1, 'severity' => array( 'high' ) ) )['rows'], 'path' )
+		);
+	}
+
+	/**
+	 * `query()` が既定で suppressed/closed の finding を除外し、
+	 * `include_suppressed`/`include_closed` で含められることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_query_excludes_suppressed_and_closed_by_default() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 1, 'path' => 'open.php' ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 1, 'path' => 'suppressed.php', 'suppressed_by' => 'soft_change' ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 1, 'path' => 'closed.php', 'closed_at' => '2026-09-08 00:00:00', 'closed_reason' => 'fixed' ) ) );
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$default_result = $repository->query( array( 'run_id' => 1 ) );
+		$this->assertSame( array( 'open.php' ), array_column( $default_result['rows'], 'path' ) );
+		$this->assertSame( 1, $default_result['total'] );
+
+		$with_suppressed = $repository->query( array( 'run_id' => 1, 'include_suppressed' => true ) );
+		$this->assertContains( 'suppressed.php', array_column( $with_suppressed['rows'], 'path' ) );
+		$this->assertNotContains( 'closed.php', array_column( $with_suppressed['rows'], 'path' ) );
+
+		$with_closed = $repository->query( array( 'run_id' => 1, 'include_closed' => true ) );
+		$this->assertContains( 'closed.php', array_column( $with_closed['rows'], 'path' ) );
+	}
+
+	/**
+	 * `query()` が `sort`/`order` に従って並べ替えることを確認する
+	 * (allowlist外の`sort`は`id`にフォールバックする).
+	 *
+	 * @return void
+	 */
+	public function test_query_sorts_by_allowlisted_column() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 1, 'path' => 'b.php' ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 1, 'path' => 'a.php' ) ) );
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$asc = $repository->query( array( 'run_id' => 1, 'sort' => 'path', 'order' => 'asc' ) );
+		$this->assertSame( array( 'a.php', 'b.php' ), array_column( $asc['rows'], 'path' ) );
+
+		$desc = $repository->query( array( 'run_id' => 1, 'sort' => 'path', 'order' => 'desc' ) );
+		$this->assertSame( array( 'b.php', 'a.php' ), array_column( $desc['rows'], 'path' ) );
+	}
+
+	/**
+	 * `query()` が `page`/`per_page` に従って結果を分割し、`total` には
+	 * pagination前の全件数を返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_query_paginates_results() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		foreach ( range( 1, 5 ) as $i ) {
+			$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 1, 'path' => "file{$i}.php" ) ) );
+		}
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$page1 = $repository->query( array( 'run_id' => 1, 'per_page' => 2, 'page' => 1 ) );
+		$this->assertSame( array( 'file1.php', 'file2.php' ), array_column( $page1['rows'], 'path' ) );
+		$this->assertSame( 5, $page1['total'] );
+
+		$page3 = $repository->query( array( 'run_id' => 1, 'per_page' => 2, 'page' => 3 ) );
+		$this->assertSame( array( 'file5.php' ), array_column( $page3['rows'], 'path' ) );
+	}
 }

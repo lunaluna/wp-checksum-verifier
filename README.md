@@ -39,13 +39,22 @@ Every run sweeps and fails any previous run stuck in `running` state
 
 ### REST API
 
-`POST /wp-json/wpcv/v1/run` requires a bearer token, issued from the
-Settings screen (shown once at generation time; only a salted hash is
-stored). Send it as `Authorization: Bearer <token>` (preferred) or
-`X-WPCV-Token: <token>`. Query-string tokens are intentionally not
-supported. A `WPCV_REST_TOKEN` constant (e.g. in `wp-config.php`) overrides
-the token issued from the Settings screen. Repeated authentication failures
-from the same IP are rate-limited.
+Every endpoint below requires a bearer token: send it as
+`Authorization: Bearer <token>` (preferred) or `X-WPCV-Token: <token>`.
+Query-string tokens are intentionally not supported, and every response is
+sent with `Cache-Control: no-store`. Repeated authentication failures from
+the same IP are rate-limited. Tokens are split into two independent scopes,
+each issued separately from the Settings screen (shown once at generation
+time; only a salted hash is stored):
+
+- **run** — required by `POST /run`. A `WPCV_REST_TOKEN` constant (e.g. in
+  `wp-config.php`) overrides the run-scope token issued from the Settings
+  screen; it does not apply to the read scope below.
+- **read** — required by `GET /status` and `GET /findings`. Issued
+  separately; a run-scope token cannot call these, and a read-scope token
+  cannot call `POST /run`.
+
+#### `POST /run`
 
 The endpoint is meant to be polled by an external scheduler (e.g. every 5
 minutes) and does not start a new run on every call:
@@ -66,6 +75,31 @@ is still in progress and keep polling. The endpoint never runs the global
 Action Scheduler queue — only this plugin's own work advances. A busy
 response (advisory lock contention) or an internal failure returns an
 error instead of a 200.
+
+#### `GET /status`
+
+Requires a read-scope token. Returns `current_run` (the in-progress run, or
+`null` if none), `last_run` (the most recently completed run, or `null` if
+none yet), and `next_scheduled_at` (the next daily due time, computed from
+the Settings screen's run time regardless of which mode actually triggers
+it). Each run object includes its target-status tally (`queued`, `retry`,
+`running`, `success`, `unverifiable`, `failed`, `skipped`, `aborted`,
+`total`), `findings_total`, `scheduled_for`, `deadline_at`, and
+`last_activity_at` (the most recent target claim/finish timestamp — useful
+for spotting a run that has stopped making progress).
+
+#### `GET /findings`
+
+Requires a read-scope token. Returns findings for one run — the most
+recent one by default, or a specific `run_id` query parameter. Supports
+`dimension`, `status`, and `severity` filters (a single value or an array,
+e.g. `dimension[]=core&dimension[]=plugin`; each value must be from a fixed
+allowlist or the request returns `400`), `sort`/`order` (allowlisted
+columns only), and `page`/`per_page`
+pagination (small default, capped maximum). Suppressed and closed findings
+are excluded by default; pass `include_suppressed=1`/`include_closed=1` to
+include them. The response includes `findings`, `run_id`, `page`,
+`per_page`, `total`, and `total_pages`.
 
 ## Settings
 

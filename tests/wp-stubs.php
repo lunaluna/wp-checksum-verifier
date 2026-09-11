@@ -685,19 +685,51 @@ if ( ! function_exists( 'register_rest_route' ) ) {
 
 if ( ! class_exists( 'WP_REST_Server' ) ) {
 	/**
-	 * Minimal stub of WP_REST_Server — only the constant our controller reads.
+	 * Minimal stub of WP_REST_Server — only the constants our controllers read.
 	 */
 	class WP_REST_Server {
 		const CREATABLE = 'POST';
+		const READABLE  = 'GET';
 	}
 }
 
 if ( ! class_exists( 'WP_REST_Request' ) ) {
 	/**
-	 * Minimal stub of WP_REST_Request. v0.3 §Step8のハンドラはリクエストパラメータを
-	 * 読まないため空のマーカー型として置くだけで十分.
+	 * Minimal stub of WP_REST_Request. v0.3 §Step8のハンドラはリクエスト
+	 * パラメータを読まないため空のマーカー型で足りていたが、v0.4.0 §Step7の
+	 * `GET /status`/`GET /findings` はクエリパラメータ(dimension/status/severity/
+	 * sort/order/page/per_page/run_id/include_suppressed/include_closed)を
+	 * 読むため `get_param()` を実装する。実 WordPress の `WP_REST_Request` は
+	 * クエリ文字列・JSONボディの両方から自動でパラメータを解決するが、この
+	 * スタブは単体テストが渡した連想配列をそのまま返すだけで十分.
 	 */
 	class WP_REST_Request {
+
+		/**
+		 * パラメータ名 => 値.
+		 *
+		 * @var array<string,mixed>
+		 */
+		private $params;
+
+		/**
+		 * コンストラクタ.
+		 *
+		 * @param array<string,mixed> $params パラメータ名 => 値.
+		 */
+		public function __construct( array $params = array() ) {
+			$this->params = $params;
+		}
+
+		/**
+		 * パラメータを返す.
+		 *
+		 * @param string $name パラメータ名.
+		 * @return mixed 未指定なら `null`.
+		 */
+		public function get_param( $name ) {
+			return isset( $this->params[ $name ] ) ? $this->params[ $name ] : null;
+		}
 	}
 }
 

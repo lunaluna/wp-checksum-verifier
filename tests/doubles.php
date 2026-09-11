@@ -500,6 +500,30 @@ function wpcv_test_make_finding( array $overrides = array() ) {
 }
 
 /**
+ * `wpcv_findings` の1行分(`run_id`・`suppressed_by`・`suppression_id`・
+ * `closed_at`・`closed_reason`込み)を作る(v0.4.0 §Step7:
+ * `WPCV_Finding_Repository::query()` のテスト用。`wpcv_test_make_finding()` は
+ * `save_findings()` が挿入する列のみを持つため、`run_id` 等はここで別途持つ).
+ *
+ * @param array $overrides 上書きするフィールド.
+ * @return array
+ */
+function wpcv_test_make_finding_row( array $overrides = array() ) {
+	return array_merge(
+		wpcv_test_make_finding(),
+		array(
+			'run_id'          => 1,
+			'target_run_id'   => 1,
+			'suppressed_by'   => null,
+			'suppression_id'  => null,
+			'closed_at'       => null,
+			'closed_reason'   => null,
+		),
+		$overrides
+	);
+}
+
+/**
  * テスト用の最小 `WP_REST_Request` ダブル.
  *
  * `get_header()` はヘッダー名を渡すと値を返すだけの実装。`get_param()` は

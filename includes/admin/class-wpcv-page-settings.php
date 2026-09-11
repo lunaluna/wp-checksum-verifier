@@ -17,7 +17,10 @@ if ( ! defined( 'ABSPATH' ) ) {
  * (v0.3計画の全9ステップの最後のUI追加)。§Step8のREST時間予算はv0.3.1 §Step4で
  * 廃止した(`WPCV_Settings` のクラス docblock 参照)。v0.4.0 §Step6で、外部HTTP
  * モード専用の時間予算(`external_http_time_budget_seconds`)を実行時刻フォームの
- * 下に追加した(キー名を変えており、廃止済みの旧設定とは別物).
+ * 下に追加した(キー名を変えており、廃止済みの旧設定とは別物)。v0.4.0 §Step7で
+ * トークン発行UIを run/read の2 scope に分離した(`WPCV_Rest_Token` のクラス
+ * docblock参照。既存の発行フォームは `SCOPE_RUN` のまま、`GET /status`・
+ * `GET /findings` 用の `SCOPE_READ` トークンを発行する新しいフォームを追加した).
  */
 class WPCV_Page_Settings {
 
@@ -50,18 +53,32 @@ class WPCV_Page_Settings {
 	const RUN_NOW_NONCE_NAME = 'wpcv_run_now_nonce';
 
 	/**
-	 * トークン発行フォームの nonce action.
+	 * Run scopeトークン発行フォームの nonce action.
 	 *
 	 * @var string
 	 */
 	const TOKEN_NONCE_ACTION = 'wpcv_generate_token';
 
 	/**
-	 * トークン発行フォームの nonce name.
+	 * Run scopeトークン発行フォームの nonce name.
 	 *
 	 * @var string
 	 */
 	const TOKEN_NONCE_NAME = 'wpcv_token_nonce';
+
+	/**
+	 * Read scopeトークン発行フォームの nonce action(v0.4.0 §Step7).
+	 *
+	 * @var string
+	 */
+	const READ_TOKEN_NONCE_ACTION = 'wpcv_generate_read_token';
+
+	/**
+	 * Read scopeトークン発行フォームの nonce name(v0.4.0 §Step7).
+	 *
+	 * @var string
+	 */
+	const READ_TOKEN_NONCE_NAME = 'wpcv_read_token_nonce';
 
 	/**
 	 * 画面を描画する.
@@ -73,9 +90,10 @@ class WPCV_Page_Settings {
 			return;
 		}
 
-		$saved           = self::maybe_handle_save();
-		$run_now_result  = self::maybe_handle_run_now();
-		$generated_token = self::maybe_handle_generate_token();
+		$saved                = self::maybe_handle_save();
+		$run_now_result       = self::maybe_handle_run_now();
+		$generated_run_token  = self::maybe_handle_generate_token( self::TOKEN_NONCE_NAME, self::TOKEN_NONCE_ACTION, WPCV_Rest_Token::SCOPE_RUN );
+		$generated_read_token = self::maybe_handle_generate_token( self::READ_TOKEN_NONCE_NAME, self::READ_TOKEN_NONCE_ACTION, WPCV_Rest_Token::SCOPE_READ );
 
 		$run_time                          = WPCV_Settings::get_run_time();
 		$external_http_time_budget_seconds = WPCV_Settings::get_external_http_time_budget_seconds();
@@ -155,19 +173,19 @@ class WPCV_Page_Settings {
 				?>
 			</form>
 
-			<h2><?php echo esc_html__( 'REST API token', 'wp-checksum-verifier' ); ?></h2>
-			<?php if ( null !== $generated_token ) : ?>
+			<h2><?php echo esc_html__( 'REST API token (run)', 'wp-checksum-verifier' ); ?></h2>
+			<?php if ( null !== $generated_run_token ) : ?>
 				<div class="notice notice-success">
 					<p>
 						<strong><?php echo esc_html__( 'New token generated. Copy it now — it will not be shown again:', 'wp-checksum-verifier' ); ?></strong>
 					</p>
-					<p><code><?php echo esc_html( $generated_token ); ?></code></p>
+					<p><code><?php echo esc_html( $generated_run_token ); ?></code></p>
 				</div>
 			<?php endif; ?>
 			<p class="description">
 				<?php if ( defined( 'WPCV_REST_TOKEN' ) ) : ?>
 					<?php echo esc_html__( 'A token is defined via the WPCV_REST_TOKEN constant and takes precedence over any token generated here.', 'wp-checksum-verifier' ); ?>
-				<?php elseif ( WPCV_Rest_Token::has_stored_token() ) : ?>
+				<?php elseif ( WPCV_Rest_Token::has_stored_token( WPCV_Rest_Token::SCOPE_RUN ) ) : ?>
 					<?php echo esc_html__( 'A token has been issued. Generating a new one immediately invalidates the previous token.', 'wp-checksum-verifier' ); ?>
 				<?php else : ?>
 					<?php echo esc_html__( 'No token has been issued yet. External systems need this token to call POST /wp-json/wpcv/v1/run.', 'wp-checksum-verifier' ); ?>
@@ -176,6 +194,27 @@ class WPCV_Page_Settings {
 			<form method="post">
 				<?php wp_nonce_field( self::TOKEN_NONCE_ACTION, self::TOKEN_NONCE_NAME ); ?>
 				<?php submit_button( __( 'Generate new token', 'wp-checksum-verifier' ), 'secondary', 'wpcv_generate_token_submit' ); ?>
+			</form>
+
+			<h2><?php echo esc_html__( 'REST API token (read-only)', 'wp-checksum-verifier' ); ?></h2>
+			<?php if ( null !== $generated_read_token ) : ?>
+				<div class="notice notice-success">
+					<p>
+						<strong><?php echo esc_html__( 'New token generated. Copy it now — it will not be shown again:', 'wp-checksum-verifier' ); ?></strong>
+					</p>
+					<p><code><?php echo esc_html( $generated_read_token ); ?></code></p>
+				</div>
+			<?php endif; ?>
+			<p class="description">
+				<?php if ( WPCV_Rest_Token::has_stored_token( WPCV_Rest_Token::SCOPE_READ ) ) : ?>
+					<?php echo esc_html__( 'A read-only token has been issued. Generating a new one immediately invalidates the previous one.', 'wp-checksum-verifier' ); ?>
+				<?php else : ?>
+					<?php echo esc_html__( 'No read-only token has been issued yet. External systems need this (separate) token to call GET /wp-json/wpcv/v1/status and GET /wp-json/wpcv/v1/findings — it cannot start a run.', 'wp-checksum-verifier' ); ?>
+				<?php endif; ?>
+			</p>
+			<form method="post">
+				<?php wp_nonce_field( self::READ_TOKEN_NONCE_ACTION, self::READ_TOKEN_NONCE_NAME ); ?>
+				<?php submit_button( __( 'Generate new read-only token', 'wp-checksum-verifier' ), 'secondary', 'wpcv_generate_read_token_submit' ); ?>
 			</form>
 		</div>
 		<?php
@@ -328,23 +367,27 @@ class WPCV_Page_Settings {
 
 	/**
 	 * トークン発行フォームが POST されていれば nonce・capability を検証したうえで
-	 * 新しいトークンを生成する.
+	 * 新しいトークンを生成する(v0.4.0 §Step7: run/read 2つのフォームで共有できる
+	 * よう nonce・scope を引数化した).
 	 *
+	 * @param string $nonce_name   このフォームの nonce name(`$_POST` のキー).
+	 * @param string $nonce_action このフォームの nonce action.
+	 * @param string $scope        `WPCV_Rest_Token::SCOPE_RUN` または `SCOPE_READ`.
 	 * @return string|null 生成した平文トークン(1回だけ画面に表示するため呼び出し元が
 	 *                      保持する). POST されていない・検証に失敗した場合は `null`.
 	 */
-	private static function maybe_handle_generate_token() {
-		if ( ! isset( $_POST[ self::TOKEN_NONCE_NAME ] ) ) {
+	private static function maybe_handle_generate_token( $nonce_name, $nonce_action, $scope ) {
+		if ( ! isset( $_POST[ $nonce_name ] ) ) {
 			return null;
 		}
 
-		check_admin_referer( self::TOKEN_NONCE_ACTION, self::TOKEN_NONCE_NAME );
+		check_admin_referer( $nonce_action, $nonce_name );
 
 		if ( ! current_user_can( self::required_capability() ) ) {
 			return null;
 		}
 
-		return WPCV_Rest_Token::generate();
+		return WPCV_Rest_Token::generate( $scope );
 	}
 
 	/**

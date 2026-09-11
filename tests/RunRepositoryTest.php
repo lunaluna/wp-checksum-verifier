@@ -626,6 +626,67 @@ class RunRepositoryTest extends TestCase {
 	}
 
 	/**
+	 * `find_most_recent_terminal_run()` が terminal 状態の行が1件も無ければ
+	 * `null` を返すことを確認する(v0.4.0 §Step7).
+	 *
+	 * @return void
+	 */
+	public function test_find_most_recent_terminal_run_returns_null_when_none_terminal() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-08 03:00:00',
+				'status'      => 'running',
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$this->assertNull( $repository->find_most_recent_terminal_run() );
+	}
+
+	/**
+	 * `find_most_recent_terminal_run()` が、最新行がactiveでも、それより古い
+	 * terminal行を正しく返すことを確認する(`find_most_recent_run()` との違いの確認).
+	 *
+	 * @return void
+	 */
+	public function test_find_most_recent_terminal_run_skips_active_latest_row() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-07 03:00:00',
+				'finished_at' => '2026-09-07 03:05:00',
+				'status'      => 'success',
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+			)
+		);
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-08 03:00:00',
+				'status'      => 'running',
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$most_recent_terminal = $repository->find_most_recent_terminal_run();
+		$this->assertSame( 1, $most_recent_terminal['id'] );
+		$this->assertSame( 'success', $most_recent_terminal['status'] );
+
+		// 対照として find_most_recent_run() はactiveな2件目をそのまま返すことも確認する.
+		$this->assertSame( 2, $repository->find_most_recent_run()['id'] );
+	}
+
+	/**
 	 * `reserve_due_run()` が active run(`queued`/`running`)を返すとき、due判定を
 	 * 行わず(=まだ due でなくても)既存 run をそのまま返すことを確認する
 	 * (v0.4.0 §Step6: 5分間隔の外部cronが連打しても進行中のrunがそのまま

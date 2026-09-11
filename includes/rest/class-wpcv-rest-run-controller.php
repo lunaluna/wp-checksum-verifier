@@ -51,11 +51,16 @@ if ( ! defined( 'ABSPATH' ) ) {
  *    `next_retry_at` を返す。呼び出し元(外部cron)はこれを見て、runが終端に
  *    達していなければ次回のPOSTでそのまま続きから前進できる.
  *
- * 認証は`WPCV_Rest_Token`によるトークン専用(v0.3 §Step9)。cookie認証との併用は
- * しない(WordPressログインセッションを持たない外部システムcronから呼べる
- * ようにするための設計。`check_permission()` の docblock参照).
+ * 認証は`WPCV_Rest_Token`によるトークン専用(v0.3 §Step9、v0.4.0 §Step7で
+ * `SCOPE_RUN`として分離)。cookie認証との併用はしない(WordPressログイン
+ * セッションを持たない外部システムcronから呼べるようにするための設計。
+ * `WPCV_Rest_Token::check_permission()` の docblock参照). パーミッション
+ * コールバック・`Cache-Control: no-store` 付きレスポンス組み立ては
+ * `WPCV_Rest_Status_Controller`・`WPCV_Rest_Findings_Controller` と共有する
+ * (`WPCV_Rest_Token::check_permission()`/`WPCV_Rest_Support::response()` 参照).
  *
- * `GET /status`/`GET /findings`はv0.4.0 §Step7で追加予定(本ファイルの対象外).
+ * `GET /status`/`GET /findings`はv0.4.0 §Step7で追加した(`WPCV_Rest_Status_Controller`/
+ * `WPCV_Rest_Findings_Controller`。本ファイルの対象外).
  */
 class WPCV_Rest_Run_Controller {
 
@@ -93,56 +98,15 @@ class WPCV_Rest_Run_Controller {
 	/**
 	 * パーミッションコールバック.
 	 *
-	 * `current_user_can()` によるcapabilityチェックとは併用しない(§12.3。
-	 * WordPressログインセッションを持たない外部システムcronから呼べることが
-	 * 目的のため、cookie認証を前提にしたコールバックにはしない). 認証失敗を
-	 * `WPCV_Rest_Token` のレート制限に記録し、一定回数を超えたら
-	 * トークンの正誤に関わらず`429`で拒否する.
+	 * `WPCV_Rest_Token::check_permission()`(v0.4.0 §Step7で3コントローラー分
+	 * 共通化)に `SCOPE_RUN` を渡すだけの薄いラッパー(このエンドポイントのみが
+	 * runをトリガーできる scope. `WPCV_Rest_Token` のクラス docblock参照).
 	 *
 	 * @param WP_REST_Request $request リクエスト.
 	 * @return true|WP_Error
 	 */
 	public static function check_permission( $request ) {
-		$identifier = self::client_identifier();
-
-		if ( WPCV_Rest_Token::is_rate_limited( $identifier ) ) {
-			return new WP_Error(
-				'wpcv_rest_rate_limited',
-				__( 'Too many failed authentication attempts. Try again later.', 'wp-checksum-verifier' ),
-				array( 'status' => 429 )
-			);
-		}
-
-		$token = WPCV_Rest_Token::extract_from_request( $request );
-
-		if ( WPCV_Rest_Token::verify( $token ) ) {
-			WPCV_Rest_Token::clear_failed_attempts( $identifier );
-
-			return true;
-		}
-
-		WPCV_Rest_Token::record_failed_attempt( $identifier );
-
-		return new WP_Error(
-			'wpcv_rest_forbidden',
-			__( 'Invalid or missing REST token.', 'wp-checksum-verifier' ),
-			array( 'status' => 401 )
-		);
-	}
-
-	/**
-	 * レート制限の単位に使う呼び出し元の識別子(IPアドレス)を返す.
-	 *
-	 * `X-Forwarded-For` 等のクライアントが自由に指定できるヘッダーは信用しない
-	 * (プロキシ経由の実運用でIPアドレスが偏る可能性はあるが、v0.3では
-	 * 詐称されうる値をセキュリティ判定に使わないことを優先する).
-	 *
-	 * @return string
-	 */
-	private static function client_identifier() {
-		return isset( $_SERVER['REMOTE_ADDR'] )
-			? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) )
-			: '';
+		return WPCV_Rest_Token::check_permission( $request, WPCV_Rest_Token::SCOPE_RUN );
 	}
 
 	/**
@@ -179,7 +143,7 @@ class WPCV_Rest_Run_Controller {
 			// Active runも無く、本日分の新規runも作らなかった(未due、または
 			// 本日分は作成済み)。直近runの状態をそのまま報告する(クラス
 			// docblock「外部HTTPの『日次開始』と『前進』の条件」参照).
-			return self::response( self::describe_run( $run_repository->find_most_recent_run(), $target_run_repository ) );
+			return WPCV_Rest_Support::response( self::describe_run( $run_repository->find_most_recent_run(), $target_run_repository ) );
 		}
 
 		$run_id  = (int) $reservation['run_id'];
@@ -203,7 +167,7 @@ class WPCV_Rest_Run_Controller {
 			return self::run_failed_error();
 		}
 
-		return self::response( self::describe_run( $run_repository->find_by_id( $run_id ), $target_run_repository ) );
+		return WPCV_Rest_Support::response( self::describe_run( $run_repository->find_by_id( $run_id ), $target_run_repository ) );
 	}
 
 	/**
@@ -312,18 +276,5 @@ class WPCV_Rest_Run_Controller {
 			__( 'The verification run failed. Check the run history for details.', 'wp-checksum-verifier' ),
 			array( 'status' => 500 )
 		);
-	}
-
-	/**
-	 * `Cache-Control: no-store` を付与したレスポンスを組み立てる.
-	 *
-	 * @param array $data レスポンスボディ.
-	 * @return WP_REST_Response
-	 */
-	private static function response( array $data ) {
-		$response = new WP_REST_Response( $data );
-		$response->header( 'Cache-Control', 'no-store' );
-
-		return $response;
 	}
 }

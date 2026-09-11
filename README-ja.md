@@ -33,12 +33,22 @@ WordPress のコア・プラグイン・MU プラグインの checksum を検証
 
 ### REST API
 
-`POST /wp-json/wpcv/v1/run` には、設定画面で発行するトークンが必要
-(生成時に1回だけ画面に表示し、DBにはソルト付きハッシュのみを保存する)。
+以下のすべてのエンドポイントはbearerトークンが必要:
 `Authorization: Bearer <token>`(優先)または `X-WPCV-Token: <token>` で
-送る。クエリパラメータでの指定は意図的にサポートしていない。
-`wp-config.php` 等で `WPCV_REST_TOKEN` 定数を定義すると、設定画面で発行した
-トークンより優先される。同一IPからの認証失敗が続くとレート制限がかかる。
+送る。クエリパラメータでの指定は意図的にサポートしていない。すべての応答に
+`Cache-Control: no-store` を付与する。同一IPからの認証失敗が続くとレート
+制限がかかる。トークンは互いに独立した2つのscopeに分かれており、それぞれ
+設定画面から個別に発行する(生成時に1回だけ画面に表示し、DBにはソルト付き
+ハッシュのみを保存する):
+
+- **run** — `POST /run` に必要。`wp-config.php` 等で `WPCV_REST_TOKEN` 定数を
+  定義すると、設定画面で発行したrun scopeのトークンより優先される
+  (read scopeには適用されない)。
+- **read** — `GET /status`・`GET /findings` に必要。run scopeとは別に発行し、
+  run scopeのトークンではこれらを呼べず、read scopeのトークンでは
+  `POST /run` を呼べない。
+
+#### `POST /run`
 
 このエンドポイントは外部スケジューラーから(例: 5分間隔で)繰り返し呼ばれる
 ことを前提にしており、呼ばれるたびに新規runを作るわけではない:
@@ -57,6 +67,28 @@ WordPress のコア・プラグイン・MU プラグインの checksum を検証
 ポーリングを続けられる。このエンドポイントはグローバルなAction Scheduler
 キューを実行することは無く、あくまで自身のrunだけを前進させる。
 busy(advisory lockの競合)や内部エラーの場合は200ではなくエラー応答を返す.
+
+#### `GET /status`
+
+read scopeのトークンが必要。`current_run`(進行中のrun。無ければ `null`)・
+`last_run`(直近に完了したrun。無ければ `null`)・`next_scheduled_at`
+(設定画面の実行時刻から計算した次回の日次due時刻。実際にどのモードが
+それを起動するかは問わない)を返す。各runには、target状態別の集計
+(`queued`・`retry`・`running`・`success`・`unverifiable`・`failed`・
+`skipped`・`aborted`・`total`)・`findings_total`・`scheduled_for`・
+`deadline_at`・`last_activity_at`(最後にtargetがclaim・確定された時刻。
+進捗が止まったrunを見つけるのに使える)を含む.
+
+#### `GET /findings`
+
+read scopeのトークンが必要。1つのrun(既定は最新run。`run_id`クエリ
+パラメータで指定も可能)のfindingsを返す。`dimension`・`status`・
+`severity`(単一値または配列。例: `dimension[]=core&dimension[]=plugin`。
+それぞれ固定のallowlist外の値を渡すと`400`)・`sort`/`order`
+(allowlistされた列のみ)・`page`/`per_page`(小さい既定値・上限あり)の
+pagination に対応する。suppressed・closedなfindingは既定で除外し、
+`include_suppressed=1`/`include_closed=1` で含められる。応答には
+`findings`・`run_id`・`page`・`per_page`・`total`・`total_pages` を含む.
 
 ## 設定
 

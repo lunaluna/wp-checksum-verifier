@@ -540,8 +540,38 @@ class WPCV_Run_Repository {
 	 * @return array|null run行が1件も無ければ `null`.
 	 */
 	public function find_most_recent_run() {
-		$rows = $this->all_rows();
+		return self::most_recent_of( $this->all_rows() );
+	}
 
+	/**
+	 * Terminal状態(`WPCV_Run_Status::TERMINAL`)の run 行のうち、最も新しい
+	 * (id最大の)ものを1件返す(v0.4.0 §Step7: `WPCV_Rest_Status_Controller` が
+	 * 「直近に完了したrun」を報告するために使う。`find_most_recent_run()` は
+	 * ステータスを問わないため、activeなrunが最新の場合は区別できない).
+	 *
+	 * @return array|null 該当する run が1件も無ければ `null`.
+	 */
+	public function find_most_recent_terminal_run() {
+		$terminal_rows = array_values(
+			array_filter(
+				$this->all_rows(),
+				static function ( $row ) {
+					return WPCV_Run_Status::is_terminal( $row['status'] );
+				}
+			)
+		);
+
+		return self::most_recent_of( $terminal_rows );
+	}
+
+	/**
+	 * `find_most_recent_run()`/`find_most_recent_terminal_run()` で共有する
+	 * 「最も id が大きい行を返す」処理.
+	 *
+	 * @param array<int, array> $rows 対象の行群.
+	 * @return array|null `$rows` が空なら `null`.
+	 */
+	private static function most_recent_of( array $rows ) {
 		if ( empty( $rows ) ) {
 			return null;
 		}

@@ -184,12 +184,19 @@ register_activation_hook( __FILE__, array( 'WPCV_Scheduler', 'activate' ) );
 register_deactivation_hook( __FILE__, array( 'WPCV_Scheduler', 'deactivate' ) );
 
 /**
- * REST `POST /wp-json/wpcv/v1/run`(v0.3 §Step8. モードC・簡略版)と、その
- * 認証を担うトークン方式(v0.3 §Step9).
+ * REST `POST /wp-json/wpcv/v1/run`(v0.3 §Step8・v0.4.0 §Step6で日次due判定+
+ * 時間予算ループに書き換え)、`GET /wp-json/wpcv/v1/status`・
+ * `GET /wp-json/wpcv/v1/findings`(v0.4.0 §Step7)と、その認証を担うトークン方式
+ * (v0.3 §Step9・v0.4.0 §Step7でscope分離).
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/rest/class-wpcv-rest-token.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/rest/class-wpcv-rest-support.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/rest/class-wpcv-rest-run-controller.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/rest/class-wpcv-rest-status-controller.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/rest/class-wpcv-rest-findings-controller.php';
 add_action( 'rest_api_init', array( 'WPCV_Rest_Run_Controller', 'register_routes' ) );
+add_action( 'rest_api_init', array( 'WPCV_Rest_Status_Controller', 'register_routes' ) );
+add_action( 'rest_api_init', array( 'WPCV_Rest_Findings_Controller', 'register_routes' ) );
 
 /**
  * Public API(§10). WPMAR 連携用に後方互換を維持する契約.
