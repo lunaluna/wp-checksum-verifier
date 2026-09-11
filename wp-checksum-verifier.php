@@ -239,6 +239,7 @@ if ( is_admin() ) {
 	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-page-settings.php';
 	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-page-run-history.php';
 	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-page-findings.php';
+	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-page-suppressions.php';
 	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-admin-menu.php';
 	WPCV_Admin_Menu::register();
 }

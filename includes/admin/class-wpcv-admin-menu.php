@@ -53,6 +53,7 @@ class WPCV_Admin_Menu {
 
 		self::add_run_history_submenu( 'manage_options' );
 		self::add_findings_submenu( 'manage_options' );
+		self::add_suppressions_submenu( 'manage_options' );
 	}
 
 	/**
@@ -72,6 +73,7 @@ class WPCV_Admin_Menu {
 
 		self::add_run_history_submenu( 'manage_network_options' );
 		self::add_findings_submenu( 'manage_network_options' );
+		self::add_suppressions_submenu( 'manage_network_options' );
 	}
 
 	/**
@@ -110,6 +112,24 @@ class WPCV_Admin_Menu {
 			$capability,
 			'wpcv-findings',
 			array( 'WPCV_Page_Findings', 'render' )
+		);
+	}
+
+	/**
+	 * 抑制一覧画面(`WPCV_Page_Suppressions`. v0.4.0 §Step9)のサブメニューを追加する
+	 * (`add_run_history_submenu()`と同じ理由でcapabilityだけを引数化する).
+	 *
+	 * @param string $capability この画面に必要な capability.
+	 * @return void
+	 */
+	private static function add_suppressions_submenu( $capability ) {
+		add_submenu_page(
+			'wpcv-settings',
+			__( 'Suppressions', 'wp-checksum-verifier' ),
+			__( 'Suppressions', 'wp-checksum-verifier' ),
+			$capability,
+			'wpcv-suppressions',
+			array( 'WPCV_Page_Suppressions', 'render' )
 		);
 	}
 }
