@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  * という副作用があり、かつ「時間予算内で少しずつ前進する」という説明を保証できて
  * いなかった(1 action = 1 run 全体という v0.3.1 のモデルでは、時間予算を超えた
  * ところで安全に中断する仕組みが無いため)。v0.3.1 Step4 でこの副作用を除去し、
- * REST は常に同期実行(`WPCV_Repository::reserve_run()` → `WPCV_Run_Coordinator::run()`)
+ * REST は常に同期実行(`WPCV_Run_Repository::reserve_run()` → `WPCV_Run_Coordinator::run()`)
  * に一本化した。大規模サイトでは1リクエストで完走できる規模に限られる
  * (README参照)。ファイル単位の分割実行・resume・厳密な時間予算管理はv0.4.0以降.
  *
@@ -142,7 +142,7 @@ class WPCV_Rest_Run_Controller {
 	public static function handle_run( $request ) {
 		unset( $request );
 
-		$repository = WPCV_Plugin::repository();
+		$repository = WPCV_Plugin::run_repository();
 		$repository->sweep_stale_running( WPCV_Scheduler::STALE_THRESHOLD_MINUTES );
 
 		$reservation = $repository->reserve_run(

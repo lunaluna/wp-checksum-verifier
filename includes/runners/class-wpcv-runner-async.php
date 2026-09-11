@@ -44,7 +44,7 @@ class WPCV_Runner_Async {
 	 * Action Scheduler へ enqueue するときの group(v0.3.1 §Step2)。
 	 *
 	 * `as_enqueue_async_action()` の `unique = true` と組み合わせて使う補助防御
-	 * (主制御は `WPCV_Repository::reserve_run()` の advisory lock。クラス
+	 * (主制御は `WPCV_Run_Repository::reserve_run()` の advisory lock。クラス
 	 * docblock 参照)。group を固定することで、他プラグインの同名 hook との
 	 * 偶発的な unique 判定の混線も避けられる.
 	 *
@@ -112,11 +112,11 @@ class WPCV_Runner_Async {
 	 * @return array `enqueue_run()` の戻り値と同じ形.
 	 */
 	private static function enqueue_via_action_scheduler( $run_trigger ) {
-		$reservation = WPCV_Plugin::repository()->reserve_run(
+		$reservation = WPCV_Plugin::run_repository()->reserve_run(
 			array(
 				'run_trigger'    => $run_trigger,
 				'runner'         => 'async',
-				'initial_status' => WPCV_Repository::STATUS_QUEUED,
+				'initial_status' => WPCV_Run_Status::QUEUED,
 			)
 		);
 
@@ -136,7 +136,7 @@ class WPCV_Runner_Async {
 			// enqueue 自体の失敗(戻り値が正の整数でない)を成功扱いしない
 			// (プラン§P1「enqueue失敗を成功扱いする」への対策)。予約済みの
 			// queued run は failed として記録し、呼び出し元に受付失敗を返す.
-			WPCV_Plugin::repository()->mark_run_failed(
+			WPCV_Plugin::run_repository()->mark_run_failed(
 				$run_id,
 				sprintf( 'as_enqueue_async_action() が有効なaction_idを返しませんでした(戻り値: %d).', (int) $action_id )
 			);
@@ -164,7 +164,7 @@ class WPCV_Runner_Async {
 	 * @return array `enqueue_run()` の戻り値と同じ形.
 	 */
 	private static function run_sync_fallback( $run_trigger ) {
-		$reservation = WPCV_Plugin::repository()->reserve_run(
+		$reservation = WPCV_Plugin::run_repository()->reserve_run(
 			array(
 				'run_trigger' => $run_trigger,
 				'runner'      => 'sync',
@@ -207,7 +207,7 @@ class WPCV_Runner_Async {
 	 * @return void
 	 */
 	public static function run_async_action( $run_id, $run_trigger ) {
-		if ( ! WPCV_Plugin::repository()->mark_queued_running( (int) $run_id ) ) {
+		if ( ! WPCV_Plugin::run_repository()->mark_queued_running( (int) $run_id ) ) {
 			return;
 		}
 

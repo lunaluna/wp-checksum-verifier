@@ -20,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 済み、設定変更時の再予約(`reschedule()`)と自己連鎖時の再予約が同じ計算ロジック
  * (`next_timestamp_after()`)を共有できる.
  *
- * stale run 検知(`WPCV_Repository::sweep_stale_running()`。v0.3 §Step5)は専用の
+ * stale run 検知(`WPCV_Run_Repository::sweep_stale_running()`。v0.3 §Step5)は専用の
  * Cron を立てず、このハンドラの冒頭でオポチュニスティックに呼ぶ(WPMAR の
  * `sweep_stale_running()` と同じ「アクセスのたびに掃除する」方式).
  */
@@ -49,7 +49,7 @@ class WPCV_Scheduler {
 	const MANUAL_HOOK = 'wpcv_manual_verify';
 
 	/**
-	 * Stale 判定の閾値(分。`WPCV_Repository::sweep_stale_running()` に渡す).
+	 * Stale 判定の閾値(分。`WPCV_Run_Repository::sweep_stale_running()` に渡す).
 	 *
 	 * 【未実測】v0.3計画時点の仮値(「1アクション=1run全体」の想定所要時間より
 	 * 十分長い値、という以上の根拠は無い)。実地検証(§14)で検証サイトの
@@ -149,7 +149,7 @@ class WPCV_Scheduler {
 	 * @return void
 	 */
 	private static function run_verification( $run_trigger ) {
-		WPCV_Plugin::repository()->sweep_stale_running( self::STALE_THRESHOLD_MINUTES );
+		WPCV_Plugin::run_repository()->sweep_stale_running( self::STALE_THRESHOLD_MINUTES );
 
 		WPCV_Runner_Async::enqueue_run( $run_trigger );
 	}

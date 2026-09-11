@@ -15,7 +15,9 @@ require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-sou
 require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-source-core.php';
 require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-source-wporg-plugin.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-verifier.php';
-require_once dirname( __DIR__ ) . '/includes/class-wpcv-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-coordinator.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
 

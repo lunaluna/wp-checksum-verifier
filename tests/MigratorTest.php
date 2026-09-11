@@ -7,6 +7,7 @@
 
 require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-migrator.php';
+require_once __DIR__ . '/doubles.php';
 
 use PHPUnit\Framework\TestCase;
 
@@ -32,7 +33,8 @@ class MigratorTest extends TestCase {
 			$GLOBALS['_wpcv_test_options'],
 			$GLOBALS['_wpcv_test_site_options'],
 			$GLOBALS['_wpcv_test_update_site_option_calls'],
-			$GLOBALS['_wpcv_test_main_site_id']
+			$GLOBALS['_wpcv_test_main_site_id'],
+			$GLOBALS['wpdb']
 		);
 	}
 
@@ -96,5 +98,76 @@ class MigratorTest extends TestCase {
 		$GLOBALS['_wpcv_test_is_multisite'] = true;
 
 		$this->assertSame( 0, WPCV_Migrator::get_stored_version() );
+	}
+
+	/**
+	 * `table_definitions()`(`create_or_update_tables()` から分離した SQL 組み立て
+	 * 専用メソッド。v0.4.0 §Step1)が返す runs/target_runs/findings の CREATE TABLE
+	 * 文に、v0.4.0 §Step1 で追加した列・index がすべて含まれることを確認する。
+	 *
+	 * `create_or_update_tables()` 自体(実際の dbDelta 呼び出し)は実 DB 依存のため
+	 * 引き続きテスト対象外(クラス docblock 参照)だが、スキーマ定義の組み立てだけを
+	 * 分離したことで「列の追加漏れ」を実 DB 無しで検出できるようにしてある.
+	 *
+	 * @return void
+	 */
+	public function test_table_definitions_include_step1_columns_and_indexes() {
+		$GLOBALS['wpdb'] = new WPCV_Test_Fake_WPDB();
+
+		$method = new ReflectionMethod( WPCV_Migrator::class, 'table_definitions' );
+		$method->setAccessible( true );
+
+		list( $sql_runs, $sql_target_runs, $sql_findings, $sql_suppressions ) = $method->invoke( null );
+
+		foreach ( array( 'scheduled_for', 'heartbeat_at', 'deadline_at' ) as $column ) {
+			$this->assertStringContainsString( $column, $sql_runs, "wpcv_runs is missing column: {$column}" );
+		}
+
+		foreach ( array( 'cursor_path', 'manifest_fingerprint', 'attempt_count', 'heartbeat_at', 'lease_owner', 'lease_expires_at', 'retry_after', 'idx_run_status' ) as $needle ) {
+			$this->assertStringContainsString( $needle, $sql_target_runs, "wpcv_target_runs is missing column/index: {$needle}" );
+		}
+
+		$this->assertStringContainsString( 'suppression_id', $sql_findings );
+		$this->assertStringContainsString( 'idx_suppression_id', $sql_findings );
+
+		// 抑制テーブル自体は v0.4.0 §Step1 で変更しないため、既存の抑制3層の列が
+		// 変わらず残っていることだけ確認する(回帰防止).
+		$this->assertStringContainsString( 'type varchar(20) NOT NULL', $sql_suppressions );
+	}
+
+	/**
+	 * §Step1 で追加した列がすべて NULL 許容(または default 付き)である
+	 * ことを確認する。v0.3.1 以前に作成された既存行は新しい列の値を持たないため、
+	 * NOT NULL かつ default 無しの列を追加すると、既存行の読み取り互換
+	 * (新列を NULL として読める)が壊れる(プラン§v0.4.0「migrationの再実行性と、
+	 * v0.3.1既存runの読み取り互換をテストする」への対応).
+	 *
+	 * `attempt_count`(`NOT NULL default 0`)は default 付きのため対象外.
+	 *
+	 * @return void
+	 */
+	public function test_table_definitions_new_columns_are_nullable_for_v0_3_1_read_compat() {
+		$GLOBALS['wpdb'] = new WPCV_Test_Fake_WPDB();
+
+		$method = new ReflectionMethod( WPCV_Migrator::class, 'table_definitions' );
+		$method->setAccessible( true );
+
+		list( $sql_runs, $sql_target_runs, $sql_findings ) = $method->invoke( null );
+
+		$nullable_columns_by_sql = array(
+			$sql_runs        => array( 'scheduled_for', 'heartbeat_at', 'deadline_at' ),
+			$sql_target_runs => array( 'cursor_path', 'manifest_fingerprint', 'heartbeat_at', 'lease_owner', 'lease_expires_at', 'retry_after' ),
+			$sql_findings    => array( 'suppression_id' ),
+		);
+
+		foreach ( $nullable_columns_by_sql as $sql => $columns ) {
+			foreach ( $columns as $column ) {
+				$this->assertMatchesRegularExpression(
+					'/' . preg_quote( $column, '/' ) . '\s+[a-z]+(?:\s+unsigned)?(?:\(\d+\))?\s+NULL/',
+					$sql,
+					"{$column} must be nullable for backward compatibility with pre-v0.4.0 rows"
+				);
+			}
+		}
 	}
 }

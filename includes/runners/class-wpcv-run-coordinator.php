@@ -12,10 +12,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * 1回分の検証(run)のライフサイクルを統括する(§4.2: `runners/class-wpcv-run-coordinator.php`).
  *
- * `WPCV_Verifier`(検証ロジック)と `WPCV_Repository`(DB永続化)をつなぎ、コア・
- * 公式プラグイン・MU プラグイン領域すべてを検証して1回の run として保存する。
- * これが動くことで v0.2 がエンドツーエンド(検証サイトで同期実行が通る)になる
- * (プラン§14 の v0.2 完了条件)。
+ * `WPCV_Verifier`(検証ロジック)と DB 永続化層(`WPCV_Run_Repository`/
+ * `WPCV_Target_Run_Repository`/`WPCV_Finding_Repository`。v0.4.0 §Step1で
+ * `WPCV_Repository` から責務分割)をつなぎ、コア・公式プラグイン・MU プラグイン
+ * 領域すべてを検証して1回の run として保存する。これが動くことで v0.2 が
+ * エンドツーエンド(検証サイトで同期実行が通る)になる(プラン§14 の v0.2 完了条件)。
  *
  * `get_plugins()` / `get_mu_plugins()` / ローカルの WordPress バージョンといった
  * 実際の WordPress 環境からの読み取りはこのクラス自身では行わない。呼び出し側
@@ -44,27 +45,50 @@ class WPCV_Run_Coordinator {
 	private $verifier;
 
 	/**
-	 * DB 永続化層.
+	 * `wpcv_runs` の永続化層.
 	 *
-	 * @var WPCV_Repository
+	 * @var WPCV_Run_Repository
 	 */
-	private $repository;
+	private $run_repository;
+
+	/**
+	 * `wpcv_target_runs` の永続化層.
+	 *
+	 * @var WPCV_Target_Run_Repository
+	 */
+	private $target_run_repository;
+
+	/**
+	 * `wpcv_findings` の永続化層.
+	 *
+	 * @var WPCV_Finding_Repository
+	 */
+	private $finding_repository;
 
 	/**
 	 * コンストラクタ.
 	 *
-	 * @param WPCV_Verifier   $verifier   検証エンジン.
-	 * @param WPCV_Repository $repository DB 永続化層.
+	 * @param WPCV_Verifier              $verifier              検証エンジン.
+	 * @param WPCV_Run_Repository        $run_repository        `wpcv_runs` の永続化層.
+	 * @param WPCV_Target_Run_Repository $target_run_repository `wpcv_target_runs` の永続化層.
+	 * @param WPCV_Finding_Repository    $finding_repository    `wpcv_findings` の永続化層.
 	 */
-	public function __construct( WPCV_Verifier $verifier, WPCV_Repository $repository ) {
-		$this->verifier   = $verifier;
-		$this->repository = $repository;
+	public function __construct(
+		WPCV_Verifier $verifier,
+		WPCV_Run_Repository $run_repository,
+		WPCV_Target_Run_Repository $target_run_repository,
+		WPCV_Finding_Repository $finding_repository
+	) {
+		$this->verifier              = $verifier;
+		$this->run_repository        = $run_repository;
+		$this->target_run_repository = $target_run_repository;
+		$this->finding_repository    = $finding_repository;
 	}
 
 	/**
 	 * コア・公式プラグイン・MU プラグイン領域を検証し、1回の run として保存する.
 	 *
-	 * `$run_id` は呼び出し元が `WPCV_Repository::reserve_run()`(必要なら
+	 * `$run_id` は呼び出し元が `WPCV_Run_Repository::reserve_run()`(必要なら
 	 * `mark_queued_running()` で `queued` から引き継いで)で事前に予約した、
 	 * 既に `running` である run の id を渡すこと(v0.3.1 §Step1: run 行の作成を
 	 * 検証完了後ではなく受付時点に移した。プランP0「run行が検証完了後まで
@@ -152,17 +176,17 @@ class WPCV_Run_Coordinator {
 
 			$summary = WPCV_Verifier::summarize( $target_runs );
 
-			$target_run_ids = $this->repository->save_target_runs( $run_id, $target_runs );
+			$target_run_ids = $this->target_run_repository->save_target_runs( $run_id, $target_runs );
 
-			$this->repository->save_findings( $run_id, $target_run_ids, $findings );
-			$this->repository->finish_run( $run_id, $summary );
+			$this->finding_repository->save_findings( $run_id, $target_run_ids, $findings );
+			$this->run_repository->finish_run( $run_id, $summary );
 
 			return array(
 				'run_id'  => $run_id,
 				'summary' => $summary,
 			);
 		} catch ( Throwable $e ) {
-			$this->repository->mark_run_failed( $run_id, get_class( $e ) . ': ' . $e->getMessage() );
+			$this->run_repository->mark_run_failed( $run_id, get_class( $e ) . ': ' . $e->getMessage() );
 
 			throw $e;
 		}

@@ -116,9 +116,26 @@ class WPCV_Migrator {
 	 * @return void
 	 */
 	protected static function create_or_update_tables() {
-		global $wpdb;
-
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+
+		foreach ( self::table_definitions() as $sql ) {
+			dbDelta( $sql );
+		}
+	}
+
+	/**
+	 * 4 テーブル分の CREATE TABLE 文を組み立てて返す(`create_or_update_tables()` から分離).
+	 *
+	 * `global $wpdb` にしか依存しない純粋な文字列組み立てのため、単体テストから
+	 * `ReflectionMethod` 経由で呼び出し、`WPCV_DB_VERSION` を上げた際に必要な
+	 * 列・indexが SQL に含まれているかを実 DB 無しで検証できるようにする
+	 * (v0.4.0 §Step1: 「migrationの再実行性」の確認は実 DB が必要なため実地検証
+	 * 側の責務のままだが、「スキーマ定義に列が漏れていないか」はここで検証可能にする).
+	 *
+	 * @return string[] CREATE TABLE 文の配列(dbDelta に渡す順序).
+	 */
+	protected static function table_definitions() {
+		global $wpdb;
 
 		$charset_collate = $wpdb->get_charset_collate();
 
@@ -128,7 +145,10 @@ class WPCV_Migrator {
 		$suppressions_table = $wpdb->base_prefix . 'wpcv_suppressions';
 
 		// §5.2: run 全体の集計値. status = partial は「1 つ以上の target が
-		// unverifiable / failed だが run 自体は完走した」を意味する.
+		// unverifiable / failed だが run 自体は完走した」を意味する。
+		// scheduled_for/heartbeat_at/deadline_at は v0.4.0 §Step1 で追加(日次due判定・
+		// stale worker検知・run deadline超過sweepに使う。いずれもStep1時点では
+		// 列を用意するのみで、書き込むロジックはStep2以降で追加する).
 		// プラン§5.2は列名を trigger としているが、MySQL/MariaDB の予約語のため
 		// バッククォート無しでは CREATE TABLE が構文エラーになる(実際に CI の
 		// Plugin Check が実環境の dbDelta 実行で検出した)。DB スキーマは
@@ -140,6 +160,9 @@ class WPCV_Migrator {
 	status varchar(16) NOT NULL default 'running',
 	run_trigger varchar(16) NOT NULL default 'cron',
 	runner varchar(16) NOT NULL default 'sync',
+	scheduled_for datetime NULL,
+	heartbeat_at datetime NULL,
+	deadline_at datetime NULL,
 	targets_total int unsigned NOT NULL default 0,
 	targets_verified int unsigned NOT NULL default 0,
 	targets_unverifiable int unsigned NOT NULL default 0,
@@ -150,7 +173,12 @@ class WPCV_Migrator {
 ) {$charset_collate};";
 
 		// §5.3: target 単位の検証結果. unverifiable の理由は error_code で必ず
-		// コード化する(§5.4 の一覧は WPCV_Error_Code 側で定数として列挙する).
+		// コード化する(§5.4 の一覧は WPCV_Error_Code 側で定数として列挙する)。
+		// cursor_path/manifest_fingerprint/attempt_count/heartbeat_at/lease_owner/
+		// lease_expires_at/retry_after は v0.4.0 §Step1 で追加(chunk単位の分割実行・
+		// resume・lease制御に使う。列名の意味は §Step3・Step4 参照。Step1時点では
+		// 列を用意するのみ)。idx_run_status は claim クエリ
+		// (`status IN ('queued','retry') AND run_id = ?`)用に追加.
 		$sql_target_runs = "CREATE TABLE {$target_runs_table} (
 	id bigint unsigned NOT NULL auto_increment,
 	run_id bigint unsigned NOT NULL,
@@ -169,14 +197,25 @@ class WPCV_Migrator {
 	files_total int unsigned NOT NULL default 0,
 	files_verified int unsigned NOT NULL default 0,
 	findings_total int unsigned NOT NULL default 0,
+	cursor_path varchar(500) NULL,
+	manifest_fingerprint varchar(64) NULL,
+	attempt_count int unsigned NOT NULL default 0,
+	heartbeat_at datetime NULL,
+	lease_owner varchar(191) NULL,
+	lease_expires_at datetime NULL,
+	retry_after datetime NULL,
 	PRIMARY KEY (id),
 	KEY idx_run_id (run_id),
-	KEY idx_target_id (target_id)
+	KEY idx_target_id (target_id),
+	KEY idx_run_status (run_id, status)
 ) {$charset_collate};";
 
 		// §5.5: path 単位の検出結果. version を差分キーに含めることで、バージョン
 		// 世代ごとの比較(§8.2)を成立させる. unverifiable はここには置かない
-		// (target_runs 側の事象。§16-A 参照).
+		// (target_runs 側の事象。§16-A 参照)。suppression_id は v0.4.0 §Step1で
+		// 追加(ユーザー作成の抑制ルール `wpcv_suppressions.id` への参照。既存の
+		// `suppressed_by`(system suppressionの理由コード文字列)とは別列にし、
+		// ユーザー作成ルールを監査可能な参照として持てるようにする. §Step8参照).
 		$sql_findings = "CREATE TABLE {$findings_table} (
 	id bigint unsigned NOT NULL auto_increment,
 	run_id bigint unsigned NOT NULL,
@@ -194,6 +233,7 @@ class WPCV_Migrator {
 	actual_hash varchar(64) NULL,
 	file_size bigint unsigned NULL,
 	suppressed_by varchar(16) NULL,
+	suppression_id bigint unsigned NULL,
 	closed_at datetime NULL,
 	closed_reason varchar(24) NULL,
 	PRIMARY KEY (id),
@@ -201,7 +241,8 @@ class WPCV_Migrator {
 	KEY idx_target_version (target_id, version),
 	KEY idx_status (status),
 	KEY idx_closed_at (closed_at),
-	KEY idx_path (path(191))
+	KEY idx_path (path(191)),
+	KEY idx_suppression_id (suppression_id)
 ) {$charset_collate};";
 
 		// §7: 抑制 3 層(対象除外・パス除外・ハッシュ承認)を 1 テーブルに保持する.
@@ -224,9 +265,6 @@ class WPCV_Migrator {
 	KEY idx_type_dimension_slug (type, dimension, slug)
 ) {$charset_collate};";
 
-		dbDelta( $sql_runs );
-		dbDelta( $sql_target_runs );
-		dbDelta( $sql_findings );
-		dbDelta( $sql_suppressions );
+		return array( $sql_runs, $sql_target_runs, $sql_findings, $sql_suppressions );
 	}
 }

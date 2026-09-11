@@ -13,7 +13,9 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.p
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-unknown-file-scanner.php';
 require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-source.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-verifier.php';
-require_once dirname( __DIR__ ) . '/includes/class-wpcv-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-coordinator.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-context-builder.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
@@ -53,7 +55,7 @@ class SchedulerTest extends TestCase {
 			$GLOBALS['_wpcv_test_bloginfo'],
 			$GLOBALS['_wpcv_test_action_scheduler_initialized']
 		);
-		wpcv_test_inject_repository();
+		wpcv_test_inject_run_repository();
 	}
 
 	/**
@@ -62,7 +64,7 @@ class SchedulerTest extends TestCase {
 	 * @return void
 	 */
 	protected function tearDown(): void {
-		wpcv_test_inject_repository();
+		wpcv_test_inject_run_repository();
 		parent::tearDown();
 	}
 
@@ -176,7 +178,7 @@ class SchedulerTest extends TestCase {
 			)
 		);
 
-		wpcv_test_inject_repository( new WPCV_Repository( $wpdb, $now ) );
+		wpcv_test_inject_run_repository( new WPCV_Run_Repository( $wpdb, $now ) );
 
 		// `ActionScheduler::is_initialized()` を真にし、enqueue 経路(可用性あり)を
 		// 通す(v0.3.1 §Step2で `WPCV_Runner_Async::enqueue_run()` の既定可用性
@@ -225,7 +227,7 @@ class SchedulerTest extends TestCase {
 			}
 		};
 
-		wpcv_test_inject_repository( new WPCV_Repository( $throwing_wpdb ) );
+		wpcv_test_inject_run_repository( new WPCV_Run_Repository( $throwing_wpdb ) );
 
 		try {
 			WPCV_Scheduler::handle_event();
@@ -322,7 +324,7 @@ class SchedulerTest extends TestCase {
 	 */
 	public function test_handle_manual_event_enqueues_with_manual_trigger_and_does_not_reschedule() {
 		$wpdb = new WPCV_Test_Fake_WPDB();
-		wpcv_test_inject_repository( new WPCV_Repository( $wpdb ) );
+		wpcv_test_inject_run_repository( new WPCV_Run_Repository( $wpdb ) );
 		$GLOBALS['_wpcv_test_action_scheduler_initialized'] = true;
 
 		WPCV_Scheduler::handle_manual_event();

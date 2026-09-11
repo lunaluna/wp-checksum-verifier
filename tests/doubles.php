@@ -221,6 +221,17 @@ class WPCV_Test_Fake_WPDB {
 	}
 
 	/**
+	 * 文字セット・照合順序の句を返す(`WPCV_Migrator::table_definitions()` 専用の
+	 * 簡易フェイク). 実 `$wpdb->get_charset_collate()` と異なり固定文字列を返すだけ
+	 * (テストは列・indexの有無のみを見るため、文字セットの値自体は検証対象外).
+	 *
+	 * @return string
+	 */
+	public function get_charset_collate() {
+		return '';
+	}
+
+	/**
 	 * プレースホルダーを実引数へ置換する(実 `$wpdb->prepare()` の簡易フェイク)。
 	 * このダブルは実 SQL を実行しないため、エスケープ処理は行わず `%s`/`%d` を
 	 * `vsprintf()` で単純に置換するだけで十分(呼び出し引数の確認は
@@ -241,21 +252,29 @@ class WPCV_Test_Fake_WPDB {
 
 /**
  * コアのみ(常に成功するマニフェスト)を持つ、手書きスタブ組み立ての
- * `WPCV_Run_Coordinator` と、それが使うのと同一インスタンスの `WPCV_Repository` /
+ * `WPCV_Run_Coordinator` と、それが使うのと同一インスタンスの3つの Repository /
  * `WPCV_Test_Fake_WPDB` を組で作る.
  *
  * `CliCommandTest` と `RunnerAsyncTest` がどちらも「composition root
- * (`WPCV_Plugin::run_coordinator()` / `WPCV_Plugin::repository()`)を丸ごと
+ * (`WPCV_Plugin::run_coordinator()` / `WPCV_Plugin::run_repository()`)を丸ごと
  * 差し替えて呼び出し結果を検証する」ことを必要とするため、重複を避けてここに
  * 集約する(doubles.php の集約方針参照)。v0.3.1 §Step1で `WPCV_Run_Coordinator::run()`
  * が予約済み run id を要求するようになったため、呼び出し元は本番の
- * `WPCV_Plugin::run_coordinator()` と `WPCV_Plugin::repository()` が同じ
- * `WPCV_Repository` インスタンスを共有するのと同様に、`repository` を
- * `wpcv_test_inject_repository()` で必ず一緒に差し替えること(でなければ
+ * `WPCV_Plugin::run_coordinator()` と `WPCV_Plugin::run_repository()` が同じ
+ * `WPCV_Run_Repository` インスタンスを共有するのと同様に、`run_repository` を
+ * `wpcv_test_inject_run_repository()` で必ず一緒に差し替えること(でなければ
  * `reserve_run()` が本番の `global $wpdb` を必要とする composition root へ
- * フォールバックしてしまう).
+ * フォールバックしてしまう)。v0.4.0 §Step1で `WPCV_Repository` を3責務に分割した
+ * のに合わせ、この関数が返す配列も `run_repository`/`target_run_repository`/
+ * `finding_repository` に分割した.
  *
- * @return array{coordinator: WPCV_Run_Coordinator, repository: WPCV_Repository, wpdb: WPCV_Test_Fake_WPDB}
+ * @return array{
+ *     coordinator: WPCV_Run_Coordinator,
+ *     run_repository: WPCV_Run_Repository,
+ *     target_run_repository: WPCV_Target_Run_Repository,
+ *     finding_repository: WPCV_Finding_Repository,
+ *     wpdb: WPCV_Test_Fake_WPDB,
+ * }
  */
 function wpcv_test_make_fake_environment() {
 	$verifier = new WPCV_Verifier(
@@ -276,18 +295,22 @@ function wpcv_test_make_fake_environment() {
 		new WPCV_Unknown_File_Scanner()
 	);
 
-	$wpdb       = new WPCV_Test_Fake_WPDB();
-	$repository = new WPCV_Repository(
+	$wpdb                  = new WPCV_Test_Fake_WPDB();
+	$run_repository        = new WPCV_Run_Repository(
 		$wpdb,
 		static function () {
 			return '2026-09-08 12:00:00';
 		}
 	);
+	$target_run_repository = new WPCV_Target_Run_Repository( $wpdb );
+	$finding_repository    = new WPCV_Finding_Repository( $wpdb );
 
 	return array(
-		'coordinator' => new WPCV_Run_Coordinator( $verifier, $repository ),
-		'repository'  => $repository,
-		'wpdb'        => $wpdb,
+		'coordinator'           => new WPCV_Run_Coordinator( $verifier, $run_repository, $target_run_repository, $finding_repository ),
+		'run_repository'        => $run_repository,
+		'target_run_repository' => $target_run_repository,
+		'finding_repository'    => $finding_repository,
+		'wpdb'                  => $wpdb,
 	);
 }
 
@@ -305,17 +328,43 @@ function wpcv_test_inject_run_coordinator( $coordinator = null ) {
 }
 
 /**
- * `WPCV_Plugin::repository()` が返すインスタンスを差し替える
+ * `WPCV_Plugin::run_repository()` が返すインスタンスを差し替える
  * (private static プロパティへのリフレクション。`wpcv_test_inject_run_coordinator()`
  * と同じ手法. v0.3 §Step6の `WPCV_Scheduler::handle_event()` が
- * `WPCV_Plugin::repository()->sweep_stale_running()` を呼ぶため、実 `global $wpdb`
+ * `WPCV_Plugin::run_repository()->sweep_stale_running()` を呼ぶため、実 `global $wpdb`
  * 無しでテストするのに必要).
  *
- * @param WPCV_Repository|null $repository 差し替え先. 省略時はキャッシュを空に戻す.
+ * @param WPCV_Run_Repository|null $repository 差し替え先. 省略時はキャッシュを空に戻す.
  * @return void
  */
-function wpcv_test_inject_repository( $repository = null ) {
-	$property = new ReflectionProperty( WPCV_Plugin::class, 'repository' );
+function wpcv_test_inject_run_repository( $repository = null ) {
+	$property = new ReflectionProperty( WPCV_Plugin::class, 'run_repository' );
+	$property->setAccessible( true );
+	$property->setValue( null, $repository );
+}
+
+/**
+ * `WPCV_Plugin::target_run_repository()` が返すインスタンスを差し替える
+ * (`wpcv_test_inject_run_repository()` と同じ手法. v0.4.0 §Step1).
+ *
+ * @param WPCV_Target_Run_Repository|null $repository 差し替え先. 省略時はキャッシュを空に戻す.
+ * @return void
+ */
+function wpcv_test_inject_target_run_repository( $repository = null ) {
+	$property = new ReflectionProperty( WPCV_Plugin::class, 'target_run_repository' );
+	$property->setAccessible( true );
+	$property->setValue( null, $repository );
+}
+
+/**
+ * `WPCV_Plugin::finding_repository()` が返すインスタンスを差し替える
+ * (`wpcv_test_inject_run_repository()` と同じ手法. v0.4.0 §Step1).
+ *
+ * @param WPCV_Finding_Repository|null $repository 差し替え先. 省略時はキャッシュを空に戻す.
+ * @return void
+ */
+function wpcv_test_inject_finding_repository( $repository = null ) {
+	$property = new ReflectionProperty( WPCV_Plugin::class, 'finding_repository' );
 	$property->setAccessible( true );
 	$property->setValue( null, $repository );
 }

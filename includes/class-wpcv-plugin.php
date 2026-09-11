@@ -12,13 +12,18 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * 本番の WordPress 環境から `WPCV_Run_Coordinator` を組み立てる composition root(v0.3 §Step1).
  *
- * `WPCV_Verifier` / `WPCV_Repository` / `WPCV_Run_Coordinator` はいずれもコンストラクタ
+ * `WPCV_Verifier` / 各 Repository / `WPCV_Run_Coordinator` はいずれもコンストラクタ
  * 注入で依存(`WPCV_Manifest_Source` 実装・`$wpdb`)を受け取る設計(単体テストで
  * テストダブルに差し替えられるようにするため)にしてある。このクラスは唯一、
  * 実際の `global $wpdb` と本番用のソース実装(`WPCV_Source_Core` /
  * `WPCV_Source_Wporg_Plugin` / `WPCV_Unknown_File_Scanner`)を組み合わせて配線する
  * 場所として新設した(WP-CLI / WP-Cron / REST いずれのエントリポイントからも
- * 同じ組み立てを使い回すため、エントリポイントごとに `new` し直さない).
+ * 同じ組み立てを使い回すため、エントリポイントごとに `new` し直さない)。
+ *
+ * v0.4.0 §Step1で `WPCV_Repository` を `WPCV_Run_Repository`/
+ * `WPCV_Target_Run_Repository`/`WPCV_Finding_Repository` へ責務分割したことに
+ * 合わせ、`repository()` も3つのアクセサへ分割した(`WPCV_Run_Repository` の
+ * クラス docblock 参照).
  */
 class WPCV_Plugin {
 
@@ -30,12 +35,26 @@ class WPCV_Plugin {
 	private static $run_coordinator = null;
 
 	/**
-	 * 組み立て済みの `WPCV_Repository`(1リクエスト内で使い回す。`run_coordinator()`
+	 * 組み立て済みの `WPCV_Run_Repository`(1リクエスト内で使い回す。`run_coordinator()`
 	 * と共有する同一インスタンス).
 	 *
-	 * @var WPCV_Repository|null
+	 * @var WPCV_Run_Repository|null
 	 */
-	private static $repository = null;
+	private static $run_repository = null;
+
+	/**
+	 * 組み立て済みの `WPCV_Target_Run_Repository`(1リクエスト内で使い回す).
+	 *
+	 * @var WPCV_Target_Run_Repository|null
+	 */
+	private static $target_run_repository = null;
+
+	/**
+	 * 組み立て済みの `WPCV_Finding_Repository`(1リクエスト内で使い回す).
+	 *
+	 * @var WPCV_Finding_Repository|null
+	 */
+	private static $finding_repository = null;
 
 	/**
 	 * 本番用に配線された `WPCV_Run_Coordinator` を返す.
@@ -51,20 +70,46 @@ class WPCV_Plugin {
 	}
 
 	/**
-	 * 本番用に配線された `WPCV_Repository` を返す.
+	 * 本番用に配線された `WPCV_Run_Repository` を返す.
 	 *
 	 * `WPCV_Run_Coordinator::run()` を経由しない単発の DB 操作(v0.3 §Step5の
 	 * `sweep_stale_running()` を WP-Cron/REST ハンドラの冒頭で呼ぶ場合など)向けに、
 	 * `run_coordinator()` が内部で使うのと同じインスタンスを公開する.
 	 *
-	 * @return WPCV_Repository
+	 * @return WPCV_Run_Repository
 	 */
-	public static function repository() {
-		if ( null === self::$repository ) {
-			self::$repository = self::build_repository();
+	public static function run_repository() {
+		if ( null === self::$run_repository ) {
+			self::$run_repository = self::build_run_repository();
 		}
 
-		return self::$repository;
+		return self::$run_repository;
+	}
+
+	/**
+	 * 本番用に配線された `WPCV_Target_Run_Repository` を返す.
+	 *
+	 * @return WPCV_Target_Run_Repository
+	 */
+	public static function target_run_repository() {
+		if ( null === self::$target_run_repository ) {
+			self::$target_run_repository = self::build_target_run_repository();
+		}
+
+		return self::$target_run_repository;
+	}
+
+	/**
+	 * 本番用に配線された `WPCV_Finding_Repository` を返す.
+	 *
+	 * @return WPCV_Finding_Repository
+	 */
+	public static function finding_repository() {
+		if ( null === self::$finding_repository ) {
+			self::$finding_repository = self::build_finding_repository();
+		}
+
+		return self::$finding_repository;
 	}
 
 	/**
@@ -79,17 +124,44 @@ class WPCV_Plugin {
 			new WPCV_Unknown_File_Scanner()
 		);
 
-		return new WPCV_Run_Coordinator( $verifier, self::repository() );
+		return new WPCV_Run_Coordinator(
+			$verifier,
+			self::run_repository(),
+			self::target_run_repository(),
+			self::finding_repository()
+		);
 	}
 
 	/**
-	 * `WPCV_Repository` を実際の `global $wpdb` で組み立てる.
+	 * `WPCV_Run_Repository` を実際の `global $wpdb` で組み立てる.
 	 *
-	 * @return WPCV_Repository
+	 * @return WPCV_Run_Repository
 	 */
-	private static function build_repository() {
+	private static function build_run_repository() {
 		global $wpdb;
 
-		return new WPCV_Repository( $wpdb );
+		return new WPCV_Run_Repository( $wpdb );
+	}
+
+	/**
+	 * `WPCV_Target_Run_Repository` を実際の `global $wpdb` で組み立てる.
+	 *
+	 * @return WPCV_Target_Run_Repository
+	 */
+	private static function build_target_run_repository() {
+		global $wpdb;
+
+		return new WPCV_Target_Run_Repository( $wpdb );
+	}
+
+	/**
+	 * `WPCV_Finding_Repository` を実際の `global $wpdb` で組み立てる.
+	 *
+	 * @return WPCV_Finding_Repository
+	 */
+	private static function build_finding_repository() {
+		global $wpdb;
+
+		return new WPCV_Finding_Repository( $wpdb );
 	}
 }

@@ -1,29 +1,31 @@
 <?php
 /**
- * WPCV_Repository のテスト.
+ * WPCV_Run_Repository のテスト.
  *
  * @package WPChecksumVerifier
  */
 
 require_once __DIR__ . '/wp-stubs.php';
-require_once dirname( __DIR__ ) . '/includes/class-wpcv-repository.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once __DIR__ . '/doubles.php';
 
 use PHPUnit\Framework\TestCase;
 
 /**
- * `WPCV_Verifier` が返すデータ構造の DB 永続化(§4.2: Repository 層)のテスト.
+ * `wpcv_runs` の DB 永続化(§4.2: Repository 層。v0.4.0 §Step1で`WPCV_Repository`
+ * から分割)のテスト. 分割前の `RepositoryTest` からrun関連のテストのみを移植した.
  */
-class RepositoryTest extends TestCase {
+class RunRepositoryTest extends TestCase {
 
 	/**
 	 * 固定時刻を返す Repository を作る.
 	 *
 	 * @param WPCV_Test_Fake_WPDB $wpdb フェイク wpdb.
-	 * @return WPCV_Repository
+	 * @return WPCV_Run_Repository
 	 */
 	private function make_repository( WPCV_Test_Fake_WPDB $wpdb ) {
-		return new WPCV_Repository(
+		return new WPCV_Run_Repository(
 			$wpdb,
 			static function () {
 				return '2026-09-08 12:00:00';
@@ -237,86 +239,6 @@ class RepositoryTest extends TestCase {
 
 		$this->assertFalse( $repository->mark_run_failed( 1, 'should not apply' ) );
 		$this->assertSame( 'success', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
-	}
-
-	/**
-	 * save_target_runs() が target_runs テーブルに行を insert し、
-	 * target_id => target_run_id の対応表を返すことを確認する.
-	 *
-	 * @return void
-	 */
-	public function test_save_target_runs_inserts_rows_and_returns_id_map() {
-		$wpdb       = new WPCV_Test_Fake_WPDB();
-		$repository = $this->make_repository( $wpdb );
-
-		$target_run_ids = $repository->save_target_runs(
-			42,
-			array(
-				wpcv_test_make_target_run( array( 'target_id' => 'core' ) ),
-				wpcv_test_make_target_run(
-					array(
-						'target_id' => 'plugin:akismet',
-						'dimension' => 'plugin',
-						'slug'      => 'akismet',
-					)
-				),
-			)
-		);
-
-		$this->assertSame(
-			array(
-				'core'           => 1,
-				'plugin:akismet' => 2,
-			),
-			$target_run_ids
-		);
-
-		$row = $wpdb->rows['wp_wpcv_target_runs'][2];
-		$this->assertSame( 42, $row['run_id'] );
-		$this->assertSame( 'plugin:akismet', $row['target_id'] );
-		$this->assertSame( 'akismet', $row['slug'] );
-	}
-
-	/**
-	 * save_findings() が target_run_ids から target_run_id を解決して
-	 * findings テーブルに insert することを確認する.
-	 *
-	 * @return void
-	 */
-	public function test_save_findings_resolves_target_run_id() {
-		$wpdb       = new WPCV_Test_Fake_WPDB();
-		$repository = $this->make_repository( $wpdb );
-
-		$repository->save_findings(
-			42,
-			array( 'core' => 7 ),
-			array( wpcv_test_make_finding( array( 'target_id' => 'core' ) ) )
-		);
-
-		$row = $wpdb->rows['wp_wpcv_findings'][1];
-		$this->assertSame( 42, $row['run_id'] );
-		$this->assertSame( 7, $row['target_run_id'] );
-		$this->assertSame( 'core', $row['target_id'] );
-		$this->assertSame( 'wp-admin/index.php', $row['path'] );
-	}
-
-	/**
-	 * 対応する target_run_id が無い finding を渡すと例外を投げることを確認する
-	 * (target_runs と findings の target_id は同一バッチ内で必ず一致している前提のため).
-	 *
-	 * @return void
-	 */
-	public function test_save_findings_throws_when_target_run_id_missing() {
-		$this->expectException( InvalidArgumentException::class );
-
-		$wpdb       = new WPCV_Test_Fake_WPDB();
-		$repository = $this->make_repository( $wpdb );
-
-		$repository->save_findings(
-			42,
-			array(),
-			array( wpcv_test_make_finding( array( 'target_id' => 'core' ) ) )
-		);
 	}
 
 	/**

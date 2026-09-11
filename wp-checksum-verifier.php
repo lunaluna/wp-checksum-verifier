@@ -24,8 +24,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 /**
  * DB スキーマの内部バージョン. migration の判定に使う(§5.1: 自由に上げてよい).
+ *
+ * チャンク分割実行・run deadline・抑制ルール参照のための列を runs/target_runs/
+ * findingsへ追加したため、v0.4.0 §Step1で2へ更新した(`WPCV_Migrator::table_definitions()` 参照).
  */
-define( 'WPCV_DB_VERSION', 1 );
+define( 'WPCV_DB_VERSION', 2 );
 
 /**
  * Public API contract のバージョン. 後方互換を維持する契約(§10).
@@ -85,6 +88,13 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-error-cod
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-target-resolver.php';
 
 /**
+ * Run/target の状態定数と遷移検証(v0.4.0 §Step1). Repository群より前に
+ * 読み込む必要がある(`WPCV_Run_Repository` 等が参照するため).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-run-status.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-target-status.php';
+
+/**
  * ファイルハッシュ算出とパス正規化(検証エンジンの土台).
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-file-hasher.php';
@@ -104,9 +114,12 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-unknown-f
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-verifier.php';
 
 /**
- * DB 永続化層(§4.2)と、1回分の run のライフサイクルを統括する Coordinator.
+ * DB 永続化層(§4.2. v0.4.0 §Step1でrun/target_run/findingの3責務に分割)と、
+ * 1回分の run のライフサイクルを統括する Coordinator.
  */
-require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-repository.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-run-repository.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-target-run-repository.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-finding-repository.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-run-coordinator.php';
 
 /**

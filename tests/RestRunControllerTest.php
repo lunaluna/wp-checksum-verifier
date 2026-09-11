@@ -13,7 +13,9 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.p
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-unknown-file-scanner.php';
 require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-source.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-verifier.php';
-require_once dirname( __DIR__ ) . '/includes/class-wpcv-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-coordinator.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-context-builder.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
@@ -54,7 +56,7 @@ class RestRunControllerTest extends TestCase {
 			$GLOBALS['_wpcv_test_mu_plugins'],
 			$_SERVER['REMOTE_ADDR']
 		);
-		wpcv_test_inject_repository();
+		wpcv_test_inject_run_repository();
 		wpcv_test_inject_run_coordinator();
 	}
 
@@ -64,7 +66,7 @@ class RestRunControllerTest extends TestCase {
 	 * @return void
 	 */
 	protected function tearDown(): void {
-		wpcv_test_inject_repository();
+		wpcv_test_inject_run_repository();
 		wpcv_test_inject_run_coordinator();
 		unset( $_SERVER['REMOTE_ADDR'] );
 		parent::tearDown();
@@ -177,8 +179,8 @@ class RestRunControllerTest extends TestCase {
 				'runner'      => 'async',
 			)
 		);
-		wpcv_test_inject_repository(
-			new WPCV_Repository(
+		wpcv_test_inject_run_repository(
+			new WPCV_Run_Repository(
 				$wpdb,
 				static function () {
 					return '2026-09-09 12:05:00';
@@ -208,7 +210,7 @@ class RestRunControllerTest extends TestCase {
 		$GLOBALS['_wpcv_test_bloginfo'] = array( 'version' => '6.8' );
 		$made                           = wpcv_test_make_fake_environment();
 		wpcv_test_inject_run_coordinator( $made['coordinator'] );
-		wpcv_test_inject_repository( $made['repository'] );
+		wpcv_test_inject_run_repository( $made['run_repository'] );
 
 		$response = WPCV_Rest_Run_Controller::handle_run( new WP_REST_Request() );
 
@@ -234,7 +236,7 @@ class RestRunControllerTest extends TestCase {
 	public function test_handle_run_returns_busy_error_when_lock_fails() {
 		$wpdb                 = new WPCV_Test_Fake_WPDB();
 		$wpdb->get_var_return = '0';
-		wpcv_test_inject_repository( new WPCV_Repository( $wpdb ) );
+		wpcv_test_inject_run_repository( new WPCV_Run_Repository( $wpdb ) );
 
 		$response = WPCV_Rest_Run_Controller::handle_run( new WP_REST_Request() );
 
@@ -256,7 +258,7 @@ class RestRunControllerTest extends TestCase {
 	public function test_handle_run_returns_error_when_verification_throws() {
 		$made = wpcv_test_make_fake_environment();
 		wpcv_test_inject_run_coordinator( $made['coordinator'] );
-		wpcv_test_inject_repository( $made['repository'] );
+		wpcv_test_inject_run_repository( $made['run_repository'] );
 
 		// $GLOBALS['_wpcv_test_bloginfo'] を設定しないことで version が空文字になり、
 		// WPCV_Run_Coordinator::run() がバリデーション例外を投げる.

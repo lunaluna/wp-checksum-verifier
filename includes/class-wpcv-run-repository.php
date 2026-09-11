@@ -1,6 +1,6 @@
 <?php
 /**
- * WPCV_Repository クラスファイル.
+ * WPCV_Run_Repository クラスファイル.
  *
  * @package WPChecksumVerifier
  */
@@ -10,41 +10,22 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * `WPCV_Verifier` が返す target_run / finding のデータ構造を DB に永続化する層.
+ * `wpcv_runs` テーブルの永続化を担当する(v0.4.0 §Step1でWPCV_Repositoryから分割).
  *
- * 検証ロジック(`WPCV_Verifier`)と DB アクセスを分離する(§4.2: `class-wpcv-verifier.php`
- * と `class-wpcv-repository.php` は別ファイル)。findings がどの target_run に
- * 属するかは `target_id` で相関させる設計(`WPCV_Verifier` の docblock参照)のため、
- * `save_target_runs()` が返す `target_id => target_run_id` の対応表を
- * `save_findings()` にそのまま渡すこと.
+ * これまでは`WPCV_Repository`がrun/target_run/findingの3責務をまとめて
+ * 持っていたが、v0.4.0のchunk分割実行(dispatcher・lease・retry)でrun単位の
+ * 操作がさらに増えることを見越し、責務ごとに`WPCV_Run_Repository`/
+ * `WPCV_Target_Run_Repository`/`WPCV_Finding_Repository`へ分割した(プラン
+ * §v0.4.0確定スコープ「Repositoryをrun、target、findingの責務に分割する」)。
+ * `WPCV_Run_Coordinator`は3つすべてを注入で受け取る.
  *
- * 既存の `WPCV_API` / `WPCV_Migrator` は `global $wpdb;` を直接参照するが、この
- * クラスは単体テストで実 DB を使わずに検証したいため、コンストラクタで
- * `$wpdb` 相当のオブジェクトを注入できるようにする(既存クラスとの意図的な差異).
+ * 状態文字列は`WPCV_Run_Status`に集約する(このクラス自身は定数を持たない).
+ *
+ * 既存の`WPCV_API`/`WPCV_Migrator`は`global $wpdb;`を直接参照するが、この
+ * クラスは単体テストで実DBを使わずに検証したいため、コンストラクタで
+ * `$wpdb`相当のオブジェクトを注入できるようにする(既存クラスとの意図的な差異).
  */
-class WPCV_Repository {
-
-	/**
-	 * 「キュー投入済み・実行待ち」を表す run 行の状態(v0.3.1 §Step1: `queued`/`running` を
-	 * 「実行権(active lease)」として扱う。`reserve_run()` の docblock 参照).
-	 *
-	 * @var string
-	 */
-	const STATUS_QUEUED = 'queued';
-
-	/**
-	 * 「検証処理中」を表す run 行の状態.
-	 *
-	 * @var string
-	 */
-	const STATUS_RUNNING = 'running';
-
-	/**
-	 * 実行権(active lease)を保持しているとみなす状態の一覧.
-	 *
-	 * @var string[]
-	 */
-	const ACTIVE_STATUSES = array( self::STATUS_QUEUED, self::STATUS_RUNNING );
+class WPCV_Run_Repository {
 
 	/**
 	 * `reserve_run()` が `GET_LOCK()` に渡すタイムアウト秒数.
@@ -109,12 +90,11 @@ class WPCV_Repository {
 	 *                                  実行したか」を表すだけで、下記
 	 *                                  `initial_status` の決定には使わない). 既定 'sync'.
 	 *     @type string $initial_status active run が無い場合に新規作成する run の
-	 *                                  初期状態. `self::STATUS_RUNNING`(既定。
+	 *                                  初期状態. `WPCV_Run_Status::RUNNING`(既定。
 	 *                                  即座に検証を始める同期系の呼び出し元向け)
-	 *                                  または `self::STATUS_QUEUED`(Action Scheduler
+	 *                                  または `WPCV_Run_Status::QUEUED`(Action Scheduler
 	 *                                  へ enqueue してから実際の実行までに間が
-	 *                                  空く呼び出し元向け。v0.3.1 Step2 で
-	 *                                  enqueue 側から使う想定).
+	 *                                  空く呼び出し元向け).
 	 * }
 	 * @return array{
 	 *     run_id: int|null,
@@ -131,7 +111,7 @@ class WPCV_Repository {
 	public function reserve_run( array $args = array() ) {
 		$run_trigger    = isset( $args['run_trigger'] ) ? (string) $args['run_trigger'] : 'manual';
 		$runner         = isset( $args['runner'] ) ? (string) $args['runner'] : 'sync';
-		$initial_status = isset( $args['initial_status'] ) ? (string) $args['initial_status'] : self::STATUS_RUNNING;
+		$initial_status = isset( $args['initial_status'] ) ? (string) $args['initial_status'] : WPCV_Run_Status::RUNNING;
 
 		// ローカル変数名を `$wpdb` にするのは WPCS の PreparedSQL sniff 対策
 		// (`$this->wpdb->prepare()` のように `$wpdb` 直書きでない形だと
@@ -185,10 +165,10 @@ class WPCV_Repository {
 	 * `queued` の run 行を `running` へ条件付きで更新する(v0.3.1 §Step1).
 	 *
 	 * Action Scheduler ワーカーが、enqueue 時に予約しておいた `queued` run を
-	 * 実際の検証開始時点で引き継ぐために使う(v0.3.1 Step2 で配線する想定)。
-	 * `status = 'queued'` を WHERE に含めるため、stale sweep に先を越されて
-	 * 既に `failed` にされていた場合は更新されず、戻り値で呼び出し元に伝わる
-	 * (プラン§P1「stale化後に旧ワーカーが成功で上書きできる」への対策).
+	 * 実際の検証開始時点で引き継ぐために使う。`status = 'queued'` を WHERE に
+	 * 含めるため、stale sweep に先を越されて既に `failed` にされていた場合は
+	 * 更新されず、戻り値で呼び出し元に伝わる(プラン§P1「stale化後に旧ワーカーが
+	 * 成功で上書きできる」への対策).
 	 *
 	 * @param int $run_id 対象の run の id.
 	 * @return bool 更新できたら true(呼び出し元は検証を続行してよい)。false は
@@ -200,10 +180,10 @@ class WPCV_Repository {
 
 		$updated = $this->wpdb->update(
 			$table,
-			array( 'status' => self::STATUS_RUNNING ),
+			array( 'status' => WPCV_Run_Status::RUNNING ),
 			array(
 				'id'     => (int) $run_id,
-				'status' => self::STATUS_QUEUED,
+				'status' => WPCV_Run_Status::QUEUED,
 			),
 			array( '%s' ),
 			array( '%d', '%s' )
@@ -221,8 +201,8 @@ class WPCV_Repository {
 	 *    run は必ず `running`。`reserve_run()` が直接 `running` で作った行、または
 	 *    `mark_queued_running()` で `running` へ遷移させた行のいずれか).
 	 * 2. `queued` で予約した直後に Action Scheduler への enqueue 自体が失敗した
-	 *    場合(v0.3.1 §Step2。この時点で run はまだ `queued` のまま。ワーカーは
-	 *    一度も起動していないため、他プロセスとの競合は起こらない).
+	 *    場合(この時点で run はまだ `queued` のまま。ワーカーは一度も起動して
+	 *    いないため、他プロセスとの競合は起こらない).
 	 *
 	 * `status = 'running'` を条件に更新を試み、対象行が見つからなければ
 	 * `status = 'queued'` を条件に再試行する(2段階。実 `$wpdb` の `update()` は
@@ -239,7 +219,7 @@ class WPCV_Repository {
 		$table  = $this->wpdb->base_prefix . 'wpcv_runs';
 		$data   = array(
 			'finished_at' => call_user_func( $this->now ),
-			'status'      => 'failed',
+			'status'      => WPCV_Run_Status::FAILED,
 			'notes'       => (string) $notes,
 		);
 		$format = array( '%s', '%s', '%s' );
@@ -249,7 +229,7 @@ class WPCV_Repository {
 			$data,
 			array(
 				'id'     => (int) $run_id,
-				'status' => self::STATUS_RUNNING,
+				'status' => WPCV_Run_Status::RUNNING,
 			),
 			$format,
 			array( '%d', '%s' )
@@ -264,7 +244,7 @@ class WPCV_Repository {
 			$data,
 			array(
 				'id'     => (int) $run_id,
-				'status' => self::STATUS_QUEUED,
+				'status' => WPCV_Run_Status::QUEUED,
 			),
 			$format,
 			array( '%d', '%s' )
@@ -276,8 +256,8 @@ class WPCV_Repository {
 	/**
 	 * 実行(run)行を新規 insert する(`reserve_run()` からのみ呼ぶ内部ヘルパー).
 	 *
-	 * @param string $status      insert する `status`(`self::STATUS_RUNNING` または
-	 *                            `self::STATUS_QUEUED`).
+	 * @param string $status      insert する `status`(`WPCV_Run_Status::RUNNING` または
+	 *                            `WPCV_Run_Status::QUEUED`).
 	 * @param string $run_trigger cron|manual|cli|rest.
 	 * @param string $runner      sync|async.
 	 * @return int 作成した run の id.
@@ -314,97 +294,6 @@ class WPCV_Repository {
 	}
 
 	/**
-	 * 検証対象(target_run)群を保存する.
-	 *
-	 * @param int   $run_id      `reserve_run()` が返した run の id.
-	 * @param array $target_runs `WPCV_Verifier` の各 `verify_*()` が返す target_run の配列
-	 *                           (id/run_id 無し。§5.3 のスキーマに準拠).
-	 * @return array `target_id => target_run_id` の対応表(`save_findings()` に渡す).
-	 */
-	public function save_target_runs( $run_id, array $target_runs ) {
-		$table          = $this->wpdb->base_prefix . 'wpcv_target_runs';
-		$target_run_ids = array();
-
-		foreach ( $target_runs as $target_run ) {
-			$this->wpdb->insert(
-				$table,
-				array(
-					'run_id'          => $run_id,
-					'target_id'       => $target_run['target_id'],
-					'dimension'       => $target_run['dimension'],
-					'slug'            => $target_run['slug'],
-					'version'         => $target_run['version'],
-					'source'          => $target_run['source'],
-					'source_ref'      => $target_run['source_ref'],
-					'manifest_status' => $target_run['manifest_status'],
-					'status'          => $target_run['status'],
-					'error_code'      => $target_run['error_code'],
-					'error_message'   => $target_run['error_message'],
-					'files_total'     => $target_run['files_total'],
-					'files_verified'  => $target_run['files_verified'],
-					'findings_total'  => $target_run['findings_total'],
-				),
-				array( '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%d' )
-			);
-
-			$target_run_ids[ $target_run['target_id'] ] = (int) $this->wpdb->insert_id;
-		}
-
-		return $target_run_ids;
-	}
-
-	/**
-	 * 検出結果(finding)群を保存する.
-	 *
-	 * @param int   $run_id         `reserve_run()` が返した run の id.
-	 * @param array $target_run_ids `save_target_runs()` が返した `target_id => target_run_id` の対応表.
-	 * @param array $findings       `WPCV_Verifier` の各 `verify_*()` が返す findings の配列
-	 *                              (id/run_id/target_run_id 無し。§5.5 のスキーマに準拠).
-	 * @return void
-	 *
-	 * @throws InvalidArgumentException 対応する target_run_id が `$target_run_ids` に無い場合(同一バッチの
-	 *                                   target_runs と findings の target_id は必ず
-	 *                                   一致している前提が崩れている、呼び出し側の実装ミス).
-	 */
-	public function save_findings( $run_id, array $target_run_ids, array $findings ) {
-		$table = $this->wpdb->base_prefix . 'wpcv_findings';
-
-		foreach ( $findings as $finding ) {
-			if ( ! isset( $target_run_ids[ $finding['target_id'] ] ) ) {
-				throw new InvalidArgumentException(
-					esc_html(
-						sprintf(
-							'WPCV_Repository::save_findings() has no matching target_run_id for target_id: %s',
-							$finding['target_id']
-						)
-					)
-				);
-			}
-
-			$this->wpdb->insert(
-				$table,
-				array(
-					'run_id'         => $run_id,
-					'target_run_id'  => $target_run_ids[ $finding['target_id'] ],
-					'target_id'      => $finding['target_id'],
-					'dimension'      => $finding['dimension'],
-					'slug'           => $finding['slug'],
-					'version'        => $finding['version'],
-					'source'         => $finding['source'],
-					'path'           => $finding['path'],
-					'status'         => $finding['status'],
-					'severity'       => $finding['severity'],
-					'hash_algorithm' => $finding['hash_algorithm'],
-					'expected_hash'  => $finding['expected_hash'],
-					'actual_hash'    => $finding['actual_hash'],
-					'file_size'      => $finding['file_size'],
-				),
-				array( '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d' )
-			);
-		}
-	}
-
-	/**
 	 * 実行(run)行を完了状態にする(status・finished_at・集計値を更新する).
 	 *
 	 * `status = 'running'` を WHERE に含める(v0.3.1 §Step1: `mark_run_failed()` と
@@ -433,7 +322,7 @@ class WPCV_Repository {
 			),
 			array(
 				'id'     => (int) $run_id,
-				'status' => self::STATUS_RUNNING,
+				'status' => WPCV_Run_Status::RUNNING,
 			),
 			array( '%s', '%s', '%d', '%d', '%d', '%d', '%d' ),
 			array( '%d', '%s' )
@@ -446,13 +335,13 @@ class WPCV_Repository {
 	 * 一定時間より古い `queued`/`running` の run を `failed` に更新する
 	 * (v0.3 §Step5、v0.3.1 §Step1で `queued` も対象に拡張).
 	 *
-	 * 「1アクション=1run全体」の簡略化(v0.3のスコープ縮小。実装セッションへの
-	 * 申し送り参照)のトレードオフとして、途中で強制終了し `queued`/`running` の
-	 * まま残留した run が次の run を永久にブロックし続ける事態を避けるための、
-	 * WPMAR流の軽量なハートビート途絶検知(WPMARの `sweep_stale_running()` と
-	 * 同じ「アクセスのたびに掃除する」方式。専用の Cron は立てない)。`queued` も
-	 * 対象にするのは、enqueue はできたが Action Scheduler ワーカーが何らかの理由で
-	 * 拾わなかった run も同様に永久ブロック要因になり得るため.
+	 * 「1アクション=1run全体」の簡略化(v0.3のスコープ縮小)のトレードオフとして、
+	 * 途中で強制終了し `queued`/`running` のまま残留した run が次の run を永久に
+	 * ブロックし続ける事態を避けるための、WPMAR流の軽量なハートビート途絶検知
+	 * (WPMARの `sweep_stale_running()` と同じ「アクセスのたびに掃除する」方式。
+	 * 専用の Cron は立てない)。`queued` も対象にするのは、enqueue はできたが
+	 * Action Scheduler ワーカーが何らかの理由で拾わなかった run も同様に
+	 * 永久ブロック要因になり得るため.
 	 *
 	 * 判定基準は `started_at` のみを使う(`updated_at` 相当の列は追加しない):
 	 * このプラグインの run は実行途中で行を更新しない(target_runs・findings は
@@ -461,8 +350,9 @@ class WPCV_Repository {
 	 * そもそも存在しない。WPMAR の `updated_at`(セグメント単位で進捗を刻む
 	 * 設計だからこそ意味を持つハートビート)とは前提が異なる.
 	 *
-	 * v0.3 では専用の `aborted` 状態は導入せず、既存の `failed` を流用する
-	 * (§14 のv0.4以降のスコープとした本格的なタイムアウト状態機械とは区別する).
+	 * v0.3〜v0.3.1では専用の `aborted` 状態は導入せず、既存の `failed` を流用する
+	 * (v0.4.0 §Step4で導入するrun deadline sweepとは別物。それまではこの
+	 * stale sweepが唯一の「詰まったrunを終端へ倒す」手段であり続ける).
 	 *
 	 * 更新時も `status = $row['status']`(SELECT 時点で読んだ状態そのもの)を
 	 * WHERE に含める(v0.3.1 §Step1: SELECT と UPDATE の間に別プロセスが
@@ -488,7 +378,7 @@ class WPCV_Repository {
 			// status も改めて確認する(SQL の WHERE 句と重複するが、テストダブル
 			// (`WPCV_Test_Fake_WPDB::get_results()`)が WHERE 句を解釈せず
 			// テーブルの全行を返す簡易実装のための保険でもある).
-			if ( ! in_array( $row['status'], self::ACTIVE_STATUSES, true ) ) {
+			if ( ! WPCV_Run_Status::is_active( $row['status'] ) ) {
 				continue;
 			}
 
@@ -499,7 +389,7 @@ class WPCV_Repository {
 			$updated = $this->wpdb->update(
 				$table,
 				array(
-					'status'      => 'failed',
+					'status'      => WPCV_Run_Status::FAILED,
 					'finished_at' => call_user_func( $this->now ),
 					'notes'       => 'sweep_stale_running() により stale な run として検知し failed 化しました.',
 				),
@@ -562,7 +452,7 @@ class WPCV_Repository {
 		foreach ( $active_rows as $row ) {
 			// `sweep_stale_running()` と同じ理由(テストダブルの WHERE 句非対応)で
 			// status を改めて確認する.
-			if ( in_array( $row['status'], self::ACTIVE_STATUSES, true ) ) {
+			if ( WPCV_Run_Status::is_active( $row['status'] ) ) {
 				return array(
 					'id'     => (int) $row['id'],
 					'status' => (string) $row['status'],

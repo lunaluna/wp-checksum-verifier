@@ -12,7 +12,9 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-path-normalizer.p
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-unknown-file-scanner.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-verifier.php';
-require_once dirname( __DIR__ ) . '/includes/class-wpcv-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-coordinator.php';
 require_once __DIR__ . '/doubles.php';
 
@@ -20,8 +22,9 @@ use PHPUnit\Framework\TestCase;
 
 /**
  * §4.2(runners/class-wpcv-run-coordinator.php)、`WPCV_Verifier` と
- * `WPCV_Repository` を結び付けて1回分の run を成立させるオーケストレーションの
- * テスト.
+ * 各 Repository(`WPCV_Run_Repository`/`WPCV_Target_Run_Repository`/
+ * `WPCV_Finding_Repository`)を結び付けて1回分の run を成立させる
+ * オーケストレーションのテスト.
  *
  * ABSPATH(tests/fixtures/fake-root/)配下に実ファイルを作って検証する。
  * 掃除は「ABSPATH 直下を .gitkeep 以外すべて削除」方式(VerifierTest 等と同じ).
@@ -110,7 +113,13 @@ class RunCoordinatorTest extends TestCase {
 	 * 未知ファイル走査に拾われないようにするため。UnknownFileScannerTest 等と同じ対策).
 	 *
 	 * @param WPCV_Manifest_Source|null $plugin_source 省略時は空マニフェストの fake.
-	 * @return array{coordinator: WPCV_Run_Coordinator, repository: WPCV_Repository, wpdb: WPCV_Test_Fake_WPDB}
+	 * @return array{
+	 *     coordinator: WPCV_Run_Coordinator,
+	 *     run_repository: WPCV_Run_Repository,
+	 *     target_run_repository: WPCV_Target_Run_Repository,
+	 *     finding_repository: WPCV_Finding_Repository,
+	 *     wpdb: WPCV_Test_Fake_WPDB,
+	 * }
 	 */
 	private function make_coordinator( $plugin_source = null ) {
 		$core_source = new WPCV_Test_Fake_Manifest_Source(
@@ -133,18 +142,22 @@ class RunCoordinatorTest extends TestCase {
 			new WPCV_Unknown_File_Scanner()
 		);
 
-		$wpdb       = new WPCV_Test_Fake_WPDB();
-		$repository = new WPCV_Repository(
+		$wpdb                  = new WPCV_Test_Fake_WPDB();
+		$run_repository        = new WPCV_Run_Repository(
 			$wpdb,
 			static function () {
 				return '2026-09-08 12:00:00';
 			}
 		);
+		$target_run_repository = new WPCV_Target_Run_Repository( $wpdb );
+		$finding_repository    = new WPCV_Finding_Repository( $wpdb );
 
 		return array(
-			'coordinator' => new WPCV_Run_Coordinator( $verifier, $repository ),
-			'repository'  => $repository,
-			'wpdb'        => $wpdb,
+			'coordinator'           => new WPCV_Run_Coordinator( $verifier, $run_repository, $target_run_repository, $finding_repository ),
+			'run_repository'        => $run_repository,
+			'target_run_repository' => $target_run_repository,
+			'finding_repository'    => $finding_repository,
+			'wpdb'                  => $wpdb,
 		);
 	}
 
@@ -159,7 +172,7 @@ class RunCoordinatorTest extends TestCase {
 	 * @return int
 	 */
 	private function reserve( array $made ) {
-		return $made['repository']->reserve_run()['run_id'];
+		return $made['run_repository']->reserve_run()['run_id'];
 	}
 
 	/**
@@ -427,16 +440,21 @@ class RunCoordinatorTest extends TestCase {
 			new WPCV_Unknown_File_Scanner()
 		);
 
-		$wpdb       = new WPCV_Test_Fake_WPDB();
-		$repository = new WPCV_Repository(
+		$wpdb           = new WPCV_Test_Fake_WPDB();
+		$run_repository = new WPCV_Run_Repository(
 			$wpdb,
 			static function () {
 				return '2026-09-08 12:00:00';
 			}
 		);
 
-		$coordinator = new WPCV_Run_Coordinator( $verifier, $repository );
-		$run_id      = $repository->reserve_run()['run_id'];
+		$coordinator = new WPCV_Run_Coordinator(
+			$verifier,
+			$run_repository,
+			new WPCV_Target_Run_Repository( $wpdb ),
+			new WPCV_Finding_Repository( $wpdb )
+		);
+		$run_id      = $run_repository->reserve_run()['run_id'];
 
 		$this->expectException( RuntimeException::class );
 		$this->expectExceptionMessage( 'checksums API unreachable' );
