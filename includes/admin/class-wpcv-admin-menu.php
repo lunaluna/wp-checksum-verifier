@@ -50,6 +50,8 @@ class WPCV_Admin_Menu {
 			array( 'WPCV_Page_Settings', 'render' ),
 			'dashicons-shield'
 		);
+
+		self::add_run_history_submenu( 'manage_options' );
 	}
 
 	/**
@@ -65,6 +67,29 @@ class WPCV_Admin_Menu {
 			'wpcv-settings',
 			array( 'WPCV_Page_Settings', 'render' ),
 			'dashicons-shield'
+		);
+
+		self::add_run_history_submenu( 'manage_network_options' );
+	}
+
+	/**
+	 * 実行履歴画面(`WPCV_Page_Run_History`. v0.4.0 §Step9)のサブメニューを追加する.
+	 *
+	 * 単一サイト・ネットワーク管理画面のどちらからも同じ形で登録するため、
+	 * capability だけを引数化して共通化した(`add_menu_page()`本体は単一サイト/
+	 * ネットワークでtitleが同じで差異が無いため、あえて共通化していない).
+	 *
+	 * @param string $capability この画面に必要な capability.
+	 * @return void
+	 */
+	private static function add_run_history_submenu( $capability ) {
+		add_submenu_page(
+			'wpcv-settings',
+			__( 'Run History', 'wp-checksum-verifier' ),
+			__( 'Run History', 'wp-checksum-verifier' ),
+			$capability,
+			'wpcv-runs',
+			array( 'WPCV_Page_Run_History', 'render' )
 		);
 	}
 }

@@ -816,4 +816,102 @@ class RunRepositoryTest extends TestCase {
 		$this->assertNull( $reservation['run_id'] );
 		$this->assertArrayNotHasKey( 'wp_wpcv_runs', $wpdb->rows );
 	}
+
+	/**
+	 * `find_all()` が新しい(id最大の)行から順に返すことを確認する(v0.4.0 §Step9:
+	 * `WPCV_Page_Run_History` の実行履歴一覧画面向け).
+	 *
+	 * @return void
+	 */
+	public function test_find_all_returns_rows_newest_first() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-07 03:00:00',
+				'status'      => 'success',
+				'run_trigger' => 'cron',
+				'runner'      => 'sync',
+			)
+		);
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-08 03:00:00',
+				'status'      => 'failed',
+				'run_trigger' => 'cron',
+				'runner'      => 'sync',
+			)
+		);
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-09 03:00:00',
+				'status'      => 'partial',
+				'run_trigger' => 'cron',
+				'runner'      => 'sync',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$result = $repository->find_all();
+
+		$this->assertSame( 3, $result['total'] );
+		$this->assertSame( array( 3, 2, 1 ), array_column( $result['rows'], 'id' ) );
+	}
+
+	/**
+	 * `find_all()` の `page`/`per_page` がpaginationとして機能することを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_find_all_paginates() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		for ( $i = 0; $i < 5; $i++ ) {
+			$wpdb->insert(
+				'wp_wpcv_runs',
+				array(
+					'started_at'  => '2026-09-07 03:00:00',
+					'status'      => 'success',
+					'run_trigger' => 'cron',
+					'runner'      => 'sync',
+				)
+			);
+		}
+
+		$repository = $this->make_repository( $wpdb );
+
+		$page1 = $repository->find_all(
+			array(
+				'page'     => 1,
+				'per_page' => 2,
+			)
+		);
+		$page2 = $repository->find_all(
+			array(
+				'page'     => 2,
+				'per_page' => 2,
+			)
+		);
+
+		$this->assertSame( 5, $page1['total'] );
+		$this->assertSame( array( 5, 4 ), array_column( $page1['rows'], 'id' ) );
+		$this->assertSame( array( 3, 2 ), array_column( $page2['rows'], 'id' ) );
+	}
+
+	/**
+	 * `find_all()` が run が1件も無ければ空配列と total 0 を返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_find_all_returns_empty_when_no_runs() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$result = $repository->find_all();
+
+		$this->assertSame( 0, $result['total'] );
+		$this->assertSame( array(), $result['rows'] );
+	}
 }

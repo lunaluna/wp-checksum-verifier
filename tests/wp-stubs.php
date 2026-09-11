@@ -402,6 +402,19 @@ if ( ! function_exists( 'wp_parse_args' ) ) {
 	}
 }
 
+if ( ! function_exists( 'absint' ) ) {
+	/**
+	 * Stub absint() — 本物と同じく `abs( (int) $value )` を返す
+	 * (`WPCV_Page_Run_History::current_page_from_request()` 等が依存する).
+	 *
+	 * @param mixed $value 変換対象.
+	 * @return int
+	 */
+	function absint( $value ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return abs( (int) $value );
+	}
+}
+
 if ( ! function_exists( 'get_option' ) ) {
 	/**
 	 * Stub get_option() — $GLOBALS['_wpcv_test_options'][$name] を返す(無ければ $default).

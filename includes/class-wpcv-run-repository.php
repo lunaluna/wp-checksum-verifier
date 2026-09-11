@@ -29,8 +29,27 @@ if ( ! defined( 'ABSPATH' ) ) {
  * `find_most_recent_run()` を追加した。`reserve_run()` は「呼ばれた時点で
  * 常に即座に予約する」同期系エントリポイント(CLI・手動・cron)向けのままとし、
  * 外部HTTP専用の日次due判定ロジックを混在させないよう別メソッドとして分離した.
+ *
+ * v0.4.0 §Step9で `find_all()`(実行履歴一覧画面向けのpagination付き全件取得)を
+ * 追加した。既存の `find_most_recent_run()`/`find_most_recent_terminal_run()` は
+ * 「1件だけ」を返す前提のため、一覧表示には使えない.
  */
 class WPCV_Run_Repository {
+
+	/**
+	 * `find_all()` の `per_page` 既定値(`WPCV_Finding_Repository::DEFAULT_PER_PAGE` と
+	 * 同じ理由・同じ値. クラス docblock参照).
+	 *
+	 * @var int
+	 */
+	const DEFAULT_PER_PAGE = 20;
+
+	/**
+	 * `find_all()` の `per_page` 上限値.
+	 *
+	 * @var int
+	 */
+	const MAX_PER_PAGE = 100;
 
 	/**
 	 * `reserve_run()` が `GET_LOCK()` に渡すタイムアウト秒数.
@@ -541,6 +560,52 @@ class WPCV_Run_Repository {
 	 */
 	public function find_most_recent_run() {
 		return self::most_recent_of( $this->all_rows() );
+	}
+
+	/**
+	 * 全run行を、新しい(id最大の)ものから順にpagination付きで返す(v0.4.0 §Step9:
+	 * `WPCV_Page_Run_History` の実行履歴一覧画面から使う).
+	 *
+	 * `WPCV_Finding_Repository::query()` と同じ理由(テストダブルがWHERE句を
+	 * 解釈しないため)で、sort・paginationはPHP側で行う。v1では絞り込み条件を
+	 * 設けない(運用開始直後はrun件数が少なく、必要になった時点でstatus等の
+	 * 絞り込みを追加する).
+	 *
+	 * @param array $args {
+	 *     省略可能なpagination条件.
+	 *
+	 *     @type int $page     既定1(1未満は1にclampする).
+	 *     @type int $per_page 既定`DEFAULT_PER_PAGE`(1-`MAX_PER_PAGE`にclampする).
+	 * }
+	 * @return array{rows: array, total: int} `total` はpagination前の全件数.
+	 */
+	public function find_all( array $args = array() ) {
+		$args = wp_parse_args(
+			$args,
+			array(
+				'page'     => 1,
+				'per_page' => self::DEFAULT_PER_PAGE,
+			)
+		);
+
+		$rows = $this->all_rows();
+
+		usort(
+			$rows,
+			static function ( $a, $b ) {
+				return (int) $b['id'] <=> (int) $a['id'];
+			}
+		);
+
+		$total    = count( $rows );
+		$per_page = min( self::MAX_PER_PAGE, max( 1, (int) $args['per_page'] ) );
+		$page     = max( 1, (int) $args['page'] );
+		$offset   = ( $page - 1 ) * $per_page;
+
+		return array(
+			'rows'  => array_slice( $rows, $offset, $per_page ),
+			'total' => $total,
+		);
 	}
 
 	/**
