@@ -914,4 +914,70 @@ class RunRepositoryTest extends TestCase {
 		$this->assertSame( 0, $result['total'] );
 		$this->assertSame( array(), $result['rows'] );
 	}
+
+	/**
+	 * `find_most_recent_by_trigger()` が指定した run_trigger のうち最も新しい行を
+	 * 返すことを確認する(v0.4.0 §Step10: 状態パネルの「最後にCLIで実行した時刻」).
+	 *
+	 * @return void
+	 */
+	public function test_find_most_recent_by_trigger_returns_highest_id_matching_row() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-07 03:00:00',
+				'status'      => 'success',
+				'run_trigger' => 'cli',
+				'runner'      => 'sync',
+			)
+		);
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-08 03:00:00',
+				'status'      => 'success',
+				'run_trigger' => 'cron',
+				'runner'      => 'sync',
+			)
+		);
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-09 03:00:00',
+				'status'      => 'success',
+				'run_trigger' => 'cli',
+				'runner'      => 'sync',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$run = $repository->find_most_recent_by_trigger( 'cli' );
+
+		$this->assertSame( 3, $run['id'] );
+	}
+
+	/**
+	 * `find_most_recent_by_trigger()` が該当する run が無ければ `null` を返す
+	 * ことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_find_most_recent_by_trigger_returns_null_when_none_match() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-07 03:00:00',
+				'status'      => 'success',
+				'run_trigger' => 'cron',
+				'runner'      => 'sync',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$this->assertNull( $repository->find_most_recent_by_trigger( 'cli' ) );
+	}
 }

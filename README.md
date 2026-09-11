@@ -37,6 +37,52 @@ manifest.
 Every run sweeps and fails any previous run stuck in `running` state
 (e.g. after a fatal error mid-run) before starting.
 
+### Execution model
+
+A run does not verify every target in one pass. It first enumerates every
+target (core, each official plugin, must-use plugins) into per-target rows
+tracked in the database, then processes them one file-chunk at a time:
+
+- Each chunk verifies a bounded batch of files (bounded by count, elapsed
+  time, and memory headroom) and saves a cursor (the last verified path,
+  plus a fingerprint of the manifest and the target's version) before
+  yielding. The next chunk resumes from that cursor.
+- If the manifest fingerprint or the target's version changed since the
+  cursor was saved (e.g. the plugin was updated mid-run), the target is
+  reset and retried from scratch rather than silently continuing with
+  possibly-mismatched data.
+- WP-Cron, CLI `--async`, and `POST /run` all drive the same dispatcher via
+  Action Scheduler actions (or the caller's next poll, for the REST case) —
+  there is no separate "async" verification logic to keep in sync.
+- WP-CLI (sync) and the admin "Run now" button also use the same
+  chunk-by-chunk dispatcher, just looped synchronously in-process until the
+  run reaches a terminal state, so results are identical across every mode.
+
+This means a run for a large site is not one long-blocking operation (except
+for the synchronous CLI/admin-button modes, which intentionally block by
+looping the dispatcher themselves) — progress survives across separate HTTP
+requests, Action Scheduler actions, or process restarts.
+
+### Timeouts and stale state
+
+Three distinct time-related concepts are involved, and it's easy to
+conflate them:
+
+- **Chunk time budget** — how long a single chunk is allowed to run before
+  it must save its cursor and yield (e.g. the External HTTP time budget
+  setting, default 20s, for `POST /run`). Reaching this is normal operation,
+  not an error: the target's status becomes `retry` and the next chunk
+  picks up where it left off.
+- **Stale lease / worker** — each claimed (`running`) target holds a
+  time-limited lease. If the worker that claimed it never reports back
+  before the lease expires (crash, kill -9, PHP fatal, etc.), the target is
+  reclaimed and retried, up to a maximum attempt count, after which it is
+  marked `failed` with error code `lease_expired`.
+- **Run deadline** — the run as a whole has a hard ceiling (default 6
+  hours). If a run has not reached a terminal state by then, it and any of
+  its still-non-terminal targets are marked `aborted`, so a stuck run can
+  never block the next scheduled run indefinitely.
+
 ### REST API
 
 Every endpoint below requires a bearer token: send it as
@@ -76,6 +122,26 @@ Action Scheduler queue — only this plugin's own work advances. A busy
 response (advisory lock contention) or an internal failure returns an
 error instead of a 200.
 
+For a host without a working WP-Cron (e.g. `DISABLE_WP_CRON` set, or no
+traffic to trigger it), point an external scheduler at this endpoint every
+5 minutes, for example a crontab entry:
+
+```cron
+*/5 * * * * curl -s -X POST -H "Authorization: Bearer <run-scope token>" https://example.com/wp-json/wpcv/v1/run >/dev/null
+```
+
+Example response while a run is progressing:
+
+```json
+{
+  "run_id": 42,
+  "status": "running",
+  "pending_targets": 3,
+  "retry_targets": 1,
+  "next_retry_at": "2026-09-11T13:05:00+00:00"
+}
+```
+
 #### `GET /status`
 
 Requires a read-scope token. Returns `current_run` (the in-progress run, or
@@ -87,6 +153,30 @@ it). Each run object includes its target-status tally (`queued`, `retry`,
 `total`), `findings_total`, `scheduled_for`, `deadline_at`, and
 `last_activity_at` (the most recent target claim/finish timestamp — useful
 for spotting a run that has stopped making progress).
+
+Example response:
+
+```json
+{
+  "current_run": null,
+  "last_run": {
+    "run_id": 37,
+    "status": "partial",
+    "run_trigger": "cli",
+    "started_at": "2026-09-11T05:45:00+00:00",
+    "finished_at": "2026-09-11T05:46:12+00:00",
+    "scheduled_for": "2026-09-11T05:45:00+00:00",
+    "deadline_at": "2026-09-11T11:45:00+00:00",
+    "last_activity_at": "2026-09-11T05:46:10+00:00",
+    "findings_total": 7,
+    "targets": {
+      "queued": 0, "retry": 0, "running": 0, "success": 36,
+      "unverifiable": 7, "failed": 0, "skipped": 0, "aborted": 0, "total": 43
+    }
+  },
+  "next_scheduled_at": "2026-09-12T05:45:00+00:00"
+}
+```
 
 #### `GET /findings`
 
@@ -101,12 +191,67 @@ are excluded by default; pass `include_suppressed=1`/`include_closed=1` to
 include them. The response includes `findings`, `run_id`, `page`,
 `per_page`, `total`, and `total_pages`.
 
+Example response:
+
+```json
+{
+  "findings": [
+    {
+      "id": 101, "run_id": 37, "target_id": "plugin:hello-dolly",
+      "dimension": "plugin", "slug": "hello-dolly", "version": "1.7.2",
+      "path": "readme.txt", "status": "modified", "severity": "low",
+      "hash_algorithm": "sha256", "expected_hash": "...", "actual_hash": "...",
+      "suppressed_by": "soft_change", "suppression_id": null
+    }
+  ],
+  "run_id": 37,
+  "page": 1,
+  "per_page": 20,
+  "total": 1,
+  "total_pages": 1
+}
+```
+
+## Admin screens
+
+Alongside the Settings screen (see below), the plugin adds three read/write
+screens under the same top-level "Checksum Verifier" menu (network admin
+menu on multisite):
+
+- **Findings** — the findings for the most recent run (or a specific
+  `run_id`), with the same `dimension`/`status`/`severity`/suppressed/closed
+  filters as `GET /findings`. Each row offers three one-click actions, each
+  requiring a reason: **Exclude this path** (creates an `exclude_path`
+  suppression rule scoped to that target and path), **Approve this hash**
+  (creates an `allowlist_hash` rule for the exact hash/version shown — only
+  offered for `added`/`modified` findings, which are the ones that actually
+  have a hash to approve), and **Exclude entire target** (creates an
+  `exclude_target` rule, skipping verification of that plugin/core/MU-plugin
+  entirely from the next run onward). None of these retroactively change
+  the findings currently on screen — the rule takes effect starting with
+  the next run.
+- **Suppressions** — every suppression rule ever created (all three types),
+  with its target, reason, creator, creation time, and (for `allowlist_hash`
+  rules) the approved version and hash prefix. Active rules can be revoked
+  (also requiring a reason), which is recorded and shown alongside the rule
+  rather than deleting it.
+- **Run History** — every run, newest first, with a detail view per run
+  showing each target's status, `error_code` (translated to a human-readable
+  reason for `unverifiable`/`retry`/`aborted`/`skipped` targets), file
+  counts, and attempt count.
+
 ## Settings
 
-The plugin's settings screen (network admin menu on multisite) lets you
-configure: the daily run time (UTC, shared by WP-Cron and the REST
-endpoint's due check), the REST endpoint's per-request time budget, and
-REST token issuance.
+The plugin's settings screen (network admin menu on multisite) opens with a
+**status panel**: the current run and last completed run (with their target
+tallies and last-activity timestamp), the next scheduled run time, whether
+WP-Cron is enabled, whether Action Scheduler is available (async runs
+silently fall back to synchronous execution when it isn't), and the most
+recent WP-CLI-triggered run recorded on this site (this only reflects runs
+actually recorded here — it cannot detect whether WP-CLI itself is
+installed on the server). Below that, you can configure: the daily run time
+(UTC, shared by WP-Cron and the REST endpoint's due check), the REST
+endpoint's per-request time budget, and REST token issuance.
 
 ## Distribution
 

@@ -609,6 +609,29 @@ class WPCV_Run_Repository {
 	}
 
 	/**
+	 * 指定した `run_trigger`(`cron`/`manual`/`cli`/`rest`)の run 行のうち、最も新しい
+	 * (id最大の)ものを1件返す(v0.4.0 §Step10: 状態パネルの「最後にCLIで実行した
+	 * 時刻」表示向け。Web PHPのプロセスからは「WP-CLIが今インストールされているか」
+	 * 自体を確実に判定できないため、代わりに観測可能な事実 ―― 過去にCLI経由の run が
+	 * 記録されているか・いつか ―― を表示する設計〔プラン§Step10〕).
+	 *
+	 * @param string $run_trigger `cron`|`manual`|`cli`|`rest`.
+	 * @return array|null 該当する run が1件も無ければ `null`.
+	 */
+	public function find_most_recent_by_trigger( $run_trigger ) {
+		$matching_rows = array_values(
+			array_filter(
+				$this->all_rows(),
+				static function ( $row ) use ( $run_trigger ) {
+					return isset( $row['run_trigger'] ) && (string) $row['run_trigger'] === (string) $run_trigger;
+				}
+			)
+		);
+
+		return self::most_recent_of( $matching_rows );
+	}
+
+	/**
 	 * Terminal状態(`WPCV_Run_Status::TERMINAL`)の run 行のうち、最も新しい
 	 * (id最大の)ものを1件返す(v0.4.0 §Step7: `WPCV_Rest_Status_Controller` が
 	 * 「直近に完了したrun」を報告するために使う。`find_most_recent_run()` は

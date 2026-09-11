@@ -20,7 +20,11 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 下に追加した(キー名を変えており、廃止済みの旧設定とは別物)。v0.4.0 §Step7で
  * トークン発行UIを run/read の2 scope に分離した(`WPCV_Rest_Token` のクラス
  * docblock参照。既存の発行フォームは `SCOPE_RUN` のまま、`GET /status`・
- * `GET /findings` 用の `SCOPE_READ` トークンを発行する新しいフォームを追加した).
+ * `GET /findings` 用の `SCOPE_READ` トークンを発行する新しいフォームを追加した)。
+ * v0.4.0 §Step10で状態パネル(`render_status_panel()`)を追加した。current_run/
+ * last_run/next_scheduled_atは`WPCV_Rest_Status_Controller::handle_status()`を
+ * 直接呼び出して再利用し(REST側とロジックを重複させない)、WP-Cron状態・
+ * Action Scheduler可用性・最後にWP-CLIで実行した時刻はこのクラス自身で判定する.
  */
 class WPCV_Page_Settings {
 
@@ -121,6 +125,8 @@ class WPCV_Page_Settings {
 					<p><?php echo esc_html( $run_now_result->get_error_message() ); ?></p>
 				</div>
 			<?php endif; ?>
+
+			<?php self::render_status_panel(); ?>
 
 			<form method="post">
 				<?php wp_nonce_field( self::NONCE_ACTION, self::NONCE_NAME ); ?>
@@ -388,6 +394,112 @@ class WPCV_Page_Settings {
 		}
 
 		return WPCV_Rest_Token::generate( $scope );
+	}
+
+	/**
+	 * 状態パネル(v0.4.0 §Step10)を描画する.
+	 *
+	 * `GET /wp-json/wpcv/v1/status`(`WPCV_Rest_Status_Controller`)が計算する
+	 * current_run/last_run/next_scheduled_at を、実際にHTTPを経由せず
+	 * `handle_status()` を直接呼び出して再利用する(引数は内部で使われないため
+	 * 空の `WP_REST_Request` を渡すだけでよい。target集計・heartbeat・deadlineの
+	 * 計算ロジックをこのクラスへ複製せずに済む。認証はREST側の`SCOPE_READ`
+	 * トークンではなく、この画面自体の`current_user_can()`チェック〔`render()`
+	 * 冒頭〕がすでに担っているため、権限確認は二重に不要).
+	 *
+	 * @return void
+	 */
+	private static function render_status_panel() {
+		$status = WPCV_Rest_Status_Controller::handle_status( new WP_REST_Request() )->get_data();
+
+		$as_available  = self::action_scheduler_available();
+		$wp_cron_state = ( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON )
+			? __( 'Disabled (DISABLE_WP_CRON)', 'wp-checksum-verifier' )
+			: __( 'Enabled', 'wp-checksum-verifier' );
+
+		$last_cli_run = WPCV_Plugin::run_repository()->find_most_recent_by_trigger( 'cli' );
+		?>
+		<h2><?php echo esc_html__( 'Status', 'wp-checksum-verifier' ); ?></h2>
+		<table class="widefat" style="max-width: 640px;">
+			<tbody>
+				<tr>
+					<th scope="row"><?php echo esc_html__( 'Current run', 'wp-checksum-verifier' ); ?></th>
+					<td><?php echo esc_html( self::format_run_summary( $status['current_run'] ) ); ?></td>
+				</tr>
+				<tr>
+					<th scope="row"><?php echo esc_html__( 'Last completed run', 'wp-checksum-verifier' ); ?></th>
+					<td><?php echo esc_html( self::format_run_summary( $status['last_run'] ) ); ?></td>
+				</tr>
+				<tr>
+					<th scope="row"><?php echo esc_html__( 'Next scheduled run', 'wp-checksum-verifier' ); ?></th>
+					<td><?php echo esc_html( (string) $status['next_scheduled_at'] ); ?></td>
+				</tr>
+				<tr>
+					<th scope="row"><?php echo esc_html__( 'WP-Cron', 'wp-checksum-verifier' ); ?></th>
+					<td><?php echo esc_html( $wp_cron_state ); ?></td>
+				</tr>
+				<tr>
+					<th scope="row"><?php echo esc_html__( 'Action Scheduler', 'wp-checksum-verifier' ); ?></th>
+					<td>
+						<?php echo esc_html( $as_available ? __( 'Available', 'wp-checksum-verifier' ) : __( 'Not available (async run falls back to a synchronous run)', 'wp-checksum-verifier' ) ); ?>
+					</td>
+				</tr>
+				<tr>
+					<th scope="row"><?php echo esc_html__( 'Last WP-CLI run', 'wp-checksum-verifier' ); ?></th>
+					<td>
+						<?php
+						echo esc_html(
+							null === $last_cli_run
+								? __( 'Never observed on this site (this only reflects runs recorded here, not whether WP-CLI is installed).', 'wp-checksum-verifier' )
+								: (string) $last_cli_run['started_at']
+						);
+						?>
+					</td>
+				</tr>
+			</tbody>
+		</table>
+		<?php
+	}
+
+	/**
+	 * `render_status_panel()`用に、1件のrun(`WPCV_Rest_Status_Controller::handle_status()`
+	 * が返す`current_run`/`last_run`の形)を1行の表示文字列へ整形する
+	 * (`render()`から分離してテスト可能にする).
+	 *
+	 * @param array|null $run `null`・`current_run`・`last_run`のいずれか.
+	 * @return string
+	 */
+	public static function format_run_summary( $run ) {
+		if ( null === $run ) {
+			return __( 'None', 'wp-checksum-verifier' );
+		}
+
+		$targets = $run['targets'];
+
+		return sprintf(
+			/* translators: 1: run id, 2: status, 3: pending (queued) target count, 4: retry target count, 5: findings count, 6: last activity timestamp or dash. */
+			__( '#%1$d (%2$s) — pending: %3$d, retry: %4$d, findings: %5$d, last activity: %6$s', 'wp-checksum-verifier' ),
+			(int) $run['run_id'],
+			(string) $run['status'],
+			(int) $targets['queued'],
+			(int) $targets['retry'],
+			(int) $run['findings_total'],
+			null === $run['last_activity_at'] ? '—' : (string) $run['last_activity_at']
+		);
+	}
+
+	/**
+	 * Action Schedulerが利用可能かどうかを判定する(`WPCV_Runner_Async::enqueue_run()`
+	 * の既定の可用性チェックと同じ条件。あちらはテストでのプロセス内関数再定義の
+	 * 制約から`callable`注入にしているが、この状態パネルは表示のみで注入の必要が
+	 * 無いため、同じ判定をここでも直接書く).
+	 *
+	 * @return bool
+	 */
+	private static function action_scheduler_available() {
+		return function_exists( 'as_enqueue_async_action' )
+			&& class_exists( 'ActionScheduler' )
+			&& ActionScheduler::is_initialized();
 	}
 
 	/**
