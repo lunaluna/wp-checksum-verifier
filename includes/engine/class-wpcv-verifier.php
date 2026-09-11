@@ -385,30 +385,71 @@ class WPCV_Verifier {
 
 			++$target_run['files_total'];
 
-			$absolute_path   = $base_dir . '/' . $relative_path;
-			$finding_path    = WPCV_Path_Normalizer::to_relative( $absolute_path );
-			$algorithm       = $spec['algorithm'];
-			$expected_hashes = (array) $spec['hashes'];
-			$expected_hash   = isset( $expected_hashes[0] ) ? $expected_hashes[0] : null;
+			$result = self::compare_one_file( $target_id, $dimension, $slug, $version, $source, $base_dir, $relative_path, $spec );
 
-			if ( ! file_exists( $absolute_path ) ) {
-				$findings[] = self::make_finding( $target_id, $dimension, $slug, $version, $source, $finding_path, 'missing', 'medium', $algorithm, $expected_hash, null, null );
-				continue;
-			}
-
-			$actual_hash = WPCV_File_Hasher::hash( $absolute_path, $algorithm );
-
-			if ( null === $actual_hash ) {
-				$findings[] = self::make_finding( $target_id, $dimension, $slug, $version, $source, $finding_path, 'unreadable', 'medium', $algorithm, $expected_hash, null, null );
-				continue;
-			}
-
-			if ( in_array( $actual_hash, $expected_hashes, true ) ) {
+			if ( $result['verified'] ) {
 				++$target_run['files_verified'];
-				continue;
 			}
 
-			$findings[] = self::make_finding(
+			if ( null !== $result['finding'] ) {
+				$findings[] = $result['finding'];
+			}
+		}
+
+		return $findings;
+	}
+
+	/**
+	 * マニフェスト1件(1ファイル分)とローカルファイルを比較する(§3.2/§3.4 共通).
+	 *
+	 * `compare_files()` の1ループ分を抽出したもの(v0.4.0 §Step3: chunk分割実行の
+	 * `WPCV_Chunk_Verifier` が1ファイルずつ処理する際にも同じ比較ロジックを
+	 * 再利用するため public 化した。呼び出し元が `WPCV_Path_Normalizer::is_safe_relative_path()`
+	 * によるパス検証と `files_total` の加算を行う前提(このメソッド自身は行わない).
+	 *
+	 * @param string $target_id     target_id.
+	 * @param string $dimension     dimension.
+	 * @param string $slug          slug.
+	 * @param string $version       version(この時点では既に確定している非空文字列).
+	 * @param string $source        source.
+	 * @param string $base_dir      マニフェストの相対パスを解決する基準ディレクトリの絶対パス
+	 *                              (末尾スラッシュ無し・スラッシュ区切り済み).
+	 * @param string $relative_path マニフェストのキー(相対パス。安全性は呼び出し元で検証済みの前提).
+	 * @param array  $spec          マニフェストの値(`algorithm`/`hashes`).
+	 * @return array{finding: array|null, verified: bool} `finding` は一致した場合 null.
+	 */
+	public static function compare_one_file( $target_id, $dimension, $slug, $version, $source, $base_dir, $relative_path, array $spec ) {
+		$absolute_path   = $base_dir . '/' . $relative_path;
+		$finding_path    = WPCV_Path_Normalizer::to_relative( $absolute_path );
+		$algorithm       = $spec['algorithm'];
+		$expected_hashes = (array) $spec['hashes'];
+		$expected_hash   = isset( $expected_hashes[0] ) ? $expected_hashes[0] : null;
+
+		if ( ! file_exists( $absolute_path ) ) {
+			return array(
+				'finding'  => self::make_finding( $target_id, $dimension, $slug, $version, $source, $finding_path, 'missing', 'medium', $algorithm, $expected_hash, null, null ),
+				'verified' => false,
+			);
+		}
+
+		$actual_hash = WPCV_File_Hasher::hash( $absolute_path, $algorithm );
+
+		if ( null === $actual_hash ) {
+			return array(
+				'finding'  => self::make_finding( $target_id, $dimension, $slug, $version, $source, $finding_path, 'unreadable', 'medium', $algorithm, $expected_hash, null, null ),
+				'verified' => false,
+			);
+		}
+
+		if ( in_array( $actual_hash, $expected_hashes, true ) ) {
+			return array(
+				'finding'  => null,
+				'verified' => true,
+			);
+		}
+
+		return array(
+			'finding'  => self::make_finding(
 				$target_id,
 				$dimension,
 				$slug,
@@ -421,10 +462,9 @@ class WPCV_Verifier {
 				$expected_hash,
 				$actual_hash,
 				WPCV_File_Hasher::size( $absolute_path )
-			);
-		}
-
-		return $findings;
+			),
+			'verified' => false,
+		);
 	}
 
 	/**
@@ -481,6 +521,9 @@ class WPCV_Verifier {
 	/**
 	 * 未知ファイル走査(`added`)の1件を finding に変換する(実ファイルの hash を計算する).
 	 *
+	 * `WPCV_Chunk_Verifier`(v0.4.0 §Step3)が未知ファイル走査の chunk 処理でも
+	 * 同じ変換ロジックを使うため public 化した.
+	 *
 	 * @param string $target_id     target_id.
 	 * @param string $dimension     dimension.
 	 * @param string $slug          slug.
@@ -490,7 +533,7 @@ class WPCV_Verifier {
 	 * @param string $severity      severity.
 	 * @return array finding.
 	 */
-	private static function make_finding_for_unknown_file( $target_id, $dimension, $slug, $version, $source, $relative_path, $severity ) {
+	public static function make_finding_for_unknown_file( $target_id, $dimension, $slug, $version, $source, $relative_path, $severity ) {
 		$absolute_path = ABSPATH . $relative_path;
 
 		return self::make_finding(

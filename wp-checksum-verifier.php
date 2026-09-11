@@ -114,12 +114,26 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-unknown-f
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-verifier.php';
 
 /**
+ * Chunk分割実行のための決定的な順序付け・fingerprint計算とchunk単位の検証本体
+ * (v0.4.0 §Step3). まだ実際の呼び出し経路(dispatcher。§Step4)は無いが、
+ * クラス定義自体は常に読み込んでおく.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-chunk-cursor.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-chunk-verifier.php';
+
+/**
  * DB 永続化層(§4.2. v0.4.0 §Step1でrun/target_run/findingの3責務に分割)と、
  * 1回分の run のライフサイクルを統括する Coordinator.
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-run-repository.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-target-run-repository.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-finding-repository.php';
+
+/**
+ * Chunk結果(cursor更新とfindings保存)をtransactionで確定する調整役(v0.4.0 §Step3).
+ * `WPCV_Target_Run_Repository`/`WPCV_Finding_Repository` より後に読み込む必要がある.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-chunk-result-repository.php';
 
 /**
  * Run 開始時点でのtarget列挙(v0.4.0 §Step2). `WPCV_Run_Coordinator` が列挙
