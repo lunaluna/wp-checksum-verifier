@@ -157,6 +157,13 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-plugin.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-runner-async.php';
 
 /**
+ * Chunk分割実行のdispatcher(v0.4.0 §Step4)。現時点ではAction Scheduler
+ * 経由でのみ到達可能で、CLI/REST/WP-Cronからの呼び出しはまだ無い
+ * (Step5・6で繋ぎ替える。`WPCV_Chunk_Dispatcher` のクラス docblock 参照).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-chunk-dispatcher.php';
+
+/**
  * 設定値の保存機構(実行時刻)と、既定の自動実行経路である WP-Cron の
  * 自己連鎖(v0.3 §Step6).
  */

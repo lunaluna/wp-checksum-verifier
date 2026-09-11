@@ -347,6 +347,10 @@ if ( ! defined( 'DAY_IN_SECONDS' ) ) {
 	define( 'DAY_IN_SECONDS', 86400 );
 }
 
+if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
+	define( 'HOUR_IN_SECONDS', 3600 );
+}
+
 if ( ! function_exists( 'is_multisite' ) ) {
 	/**
 	 * Stub is_multisite() — returns $GLOBALS['_wpcv_test_is_multisite'](既定 false).

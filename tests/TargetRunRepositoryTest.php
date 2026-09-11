@@ -58,7 +58,10 @@ class TargetRunRepositoryTest extends TestCase {
 
 	/**
 	 * `update_chunk_progress()`(v0.4.0 §Step3)が cursor_path/manifest_fingerprint/
-	 * files_total を上書きし、files_verified/findings_total は既存値に加算することを確認する.
+	 * files_total を上書きし、files_verified/findings_total は既存値に加算することを確認する。
+	 * `completed:false` のとき `status` を `RETRY` へ進めlease列をクリアすることも
+	 * あわせて確認する(v0.4.0 §Step4。Step3時点では `status` を変更しないままで、
+	 * claim済みの `running` に留まり続けてしまう欠落があった).
 	 *
 	 * @return void
 	 */
@@ -107,8 +110,12 @@ class TargetRunRepositoryTest extends TestCase {
 		$this->assertSame( 5, $row['files_verified'] );
 		// 既存値1 + 今回のfindings件数1 = 2.
 		$this->assertSame( 2, $row['findings_total'] );
-		// completed:false のときは status/finished_at を変更しない.
-		$this->assertSame( 'success', $row['status'] );
+		// completed:false のときは status を RETRY へ進め、lease列をクリアする
+		// (v0.4.0 §Step4。`claim_next()` が次回すぐschedulableと判定できるように).
+		$this->assertSame( WPCV_Target_Status::RETRY, $row['status'] );
+		$this->assertNull( $row['lease_owner'] );
+		$this->assertNull( $row['lease_expires_at'] );
+		$this->assertNull( $row['retry_after'] );
 	}
 
 	/**

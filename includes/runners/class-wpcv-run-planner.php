@@ -36,6 +36,13 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 検出によるrun延期は、実際に使う呼び出し元(それぞれ§Step6の外部HTTP due判定、
  * §Step4以降のdispatcher)が無い状態で先取り実装すると設計の手戻りリスクが
  * 大きいため、Step2では実装しない(ユーザー確認済み。該当Stepで実装する).
+ *
+ * Step4(v0.4.0)で `core:_scan`(コアの未知ファイル走査専用の合成target。
+ * `WPCV_Target_Resolver::build_id()` のdocblock参照)を追加した。これにより
+ * `plan()` が返す target_run の件数が、Step2時点(coreは1件)から1件増えている
+ * (core本体 + core:_scan の2件)。既存の一括実行(`WPCV_Run_Coordinator`)は
+ * この合成targetを消費しないため無害だが、`plan()` の戻り値件数に依存する
+ * テスト・呼び出し元は影響を受ける.
  */
 class WPCV_Run_Planner {
 
@@ -92,6 +99,23 @@ class WPCV_Run_Planner {
 			'wordpress', // phpcs:ignore WordPress.WP.CapitalPDangit.MisspelledInText -- WPCV_Verifier::verify_core() と同じ理由.
 			(string) $context['version'],
 			'wporg'
+		);
+
+		// Step4(v0.4.0)のchunk分割dispatcher向け合成target。コアの未知ファイル走査
+		// (wp-admin/wp-includes/ABSPATH直下の3領域。`WPCV_Verifier::core_unknown_file_areas()`
+		// 参照)は「1 target_run = 1直列cursor」というchunk実行の前提上、manifest比較
+		// (上記の素の `core`)とは別のtarget_runにする必要がある。`muplugin:_scan`と
+		// 対称的な設計(`WPCV_Target_Resolver::build_id()` のdocblock参照)。
+		// 既存の一括実行(`WPCV_Verifier::verify_core()`)はこの合成targetを使わず、
+		// 従来どおり `core` target_run 1件の中で未知ファイル走査まで行う(この
+		// target_run自体はStep5でdispatcher経由に繋ぎ替えるまでの間、一括実行側からは
+		// 参照されない).
+		$target_runs[] = self::queued_target_run(
+			WPCV_Target_Resolver::build_id( WPCV_Target_Resolver::DIMENSION_CORE, '_scan' ),
+			WPCV_Target_Resolver::DIMENSION_CORE,
+			'_scan',
+			null,
+			null
 		);
 
 		foreach ( $plugins as $plugin_file => $plugin_data ) {

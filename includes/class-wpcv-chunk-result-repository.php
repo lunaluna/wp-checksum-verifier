@@ -69,17 +69,23 @@ class WPCV_Chunk_Result_Repository {
 	 * 「resume時にversion/fingerprintが変わっていたらchunk結果を確定せず
 	 * retryへ戻す」)。偽の場合は findings を保存してから cursor・集計値を更新する.
 	 *
-	 * @param int    $run_id        findings.run_id に使う run の id.
-	 * @param int    $target_run_id 対象の target_run の id.
-	 * @param string $target_id     対象の target_id(`save_findings()` の
-	 *                              `target_id => target_run_id` 対応表の組み立てに使う).
-	 * @param array  $chunk_result  `WPCV_Chunk_Verifier::verify_manifest_chunk()`/
-	 *                              `verify_unknown_files_chunk()` の戻り値.
+	 * @param int          $run_id        findings.run_id に使う run の id.
+	 * @param int          $target_run_id 対象の target_run の id.
+	 * @param string       $target_id     対象の target_id(`save_findings()` の
+	 *                                    `target_id => target_run_id` 対応表の組み立てに使う).
+	 * @param array        $chunk_result  `WPCV_Chunk_Verifier::verify_manifest_chunk()`/
+	 *                                    `verify_unknown_files_chunk()` の戻り値.
+	 * @param string|false $new_version   `needs_retry: true` のとき
+	 *                                    `WPCV_Target_Run_Repository::reset_for_retry()` へ
+	 *                                    そのまま渡す新しい version(v0.4.0 §Step4:
+	 *                                    dispatcherが今回のchunk処理で観測した「現在の」
+	 *                                    version。`reset_for_retry()` のdocblock参照。
+	 *                                    `false`(既定)は「version列を変更しない」).
 	 * @return void
 	 *
 	 * @throws Throwable DB操作中に発生した例外(ROLLBACK後に再送出).
 	 */
-	public function commit_chunk( $run_id, $target_run_id, $target_id, array $chunk_result ) {
+	public function commit_chunk( $run_id, $target_run_id, $target_id, array $chunk_result, $new_version = false ) {
 		$wpdb = $this->wpdb;
 
 		// transaction制御自体は動的な値を含まない固定リテラルのため prepare 不要.
@@ -88,7 +94,7 @@ class WPCV_Chunk_Result_Repository {
 
 		try {
 			if ( $chunk_result['needs_retry'] ) {
-				$this->target_run_repository->reset_for_retry( $target_run_id, $chunk_result['manifest_fingerprint'] );
+				$this->target_run_repository->reset_for_retry( $target_run_id, $chunk_result['manifest_fingerprint'], $new_version );
 			} else {
 				if ( ! empty( $chunk_result['findings'] ) ) {
 					$this->finding_repository->save_findings(

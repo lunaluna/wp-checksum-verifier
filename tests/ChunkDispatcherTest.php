@@ -1,0 +1,663 @@
+<?php
+/**
+ * WPCV_Chunk_Dispatcher のテスト.
+ *
+ * @package WPChecksumVerifier
+ */
+
+require_once __DIR__ . '/wp-stubs.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-error-code.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-file-hasher.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-path-normalizer.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-unknown-file-scanner.php';
+require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-source.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-verifier.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-cursor.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-verifier.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-chunk-result-repository.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-planner.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
+require_once __DIR__ . '/doubles.php';
+
+use PHPUnit\Framework\TestCase;
+
+/**
+ * `scan()` を呼び出しごとに事前登録したキューから返す、走査結果固定のフェイク
+ * (`WPCV_Chunk_Dispatcher::process_core_scan()` が3領域分 `scan()` を順に呼ぶため、
+ * 呼び出し順に異なる結果を返せる必要がある).
+ */
+class WPCV_Test_Fake_Scanner_Queue extends WPCV_Unknown_File_Scanner {
+
+	/**
+	 * @var array<int, array>
+	 */
+	private $queue;
+
+	/**
+	 * @param array<int, array> $queue `scan()` が呼ばれるたびに先頭から1つ返す.
+	 */
+	public function __construct( array $queue ) {
+		$this->queue = $queue;
+	}
+
+	/**
+	 * @param string $base_dir    無視する.
+	 * @param array  $known_files 無視する.
+	 * @param array  $args        無視する.
+	 * @return array
+	 */
+	public function scan( $base_dir, array $known_files, array $args = array() ) {
+		unset( $base_dir, $known_files, $args );
+
+		return array_shift( $this->queue ) ?? array();
+	}
+}
+
+/**
+ * `WPCV_Chunk_Dispatcher`(v0.4.0 §Step4)のテスト.
+ *
+ * `$continuation_scheduler` を注入したフェイクで記録するだけにし、実際の
+ * Action Scheduler 関数には依存しない(クラス docblock 参照)。
+ */
+class ChunkDispatcherTest extends TestCase {
+
+	/**
+	 * 固定時刻でRun/Target_Run Repositoryを組み立てる.
+	 *
+	 * @param WPCV_Test_Fake_WPDB $wpdb フェイク wpdb.
+	 * @return array{run_repository: WPCV_Run_Repository, target_run_repository: WPCV_Target_Run_Repository, finding_repository: WPCV_Finding_Repository}
+	 */
+	private function make_repositories( WPCV_Test_Fake_WPDB $wpdb ) {
+		$now = static function () {
+			return '2026-09-11 12:00:00';
+		};
+
+		return array(
+			'run_repository'        => new WPCV_Run_Repository( $wpdb, $now ),
+			'target_run_repository' => new WPCV_Target_Run_Repository( $wpdb, $now ),
+			'finding_repository'    => new WPCV_Finding_Repository( $wpdb ),
+		);
+	}
+
+	/**
+	 * Dispatcherを組み立てる.
+	 *
+	 * @param array         $repositories `make_repositories()` の戻り値.
+	 * @param WPCV_Test_Fake_WPDB $wpdb フェイク wpdb.
+	 * @param array         $overrides {
+	 *     @type WPCV_Manifest_Source      $core_source
+	 *     @type WPCV_Manifest_Source      $plugin_source
+	 *     @type WPCV_Unknown_File_Scanner $scanner
+	 * }
+	 * @param array         $continuation_calls `$continuation_scheduler` の呼び出しを
+	 *                                          記録する配列(参照渡し).
+	 * @return WPCV_Chunk_Dispatcher
+	 */
+	private function make_dispatcher( array $repositories, WPCV_Test_Fake_WPDB $wpdb, array $overrides, array &$continuation_calls ) {
+		$chunk_result_repository = new WPCV_Chunk_Result_Repository( $wpdb, $repositories['target_run_repository'], $repositories['finding_repository'] );
+
+		return new WPCV_Chunk_Dispatcher(
+			$repositories['run_repository'],
+			$repositories['target_run_repository'],
+			$chunk_result_repository,
+			new WPCV_Chunk_Verifier(),
+			$overrides['core_source'] ?? new WPCV_Test_Fake_Manifest_Source(
+				array(
+					'manifest_status' => 'ok',
+					'error_code'      => null,
+					'files'           => array(),
+				)
+			),
+			$overrides['plugin_source'] ?? new WPCV_Test_Fake_Manifest_Source(
+				array(
+					'manifest_status' => 'ok',
+					'error_code'      => null,
+					'files'           => array(),
+				)
+			),
+			$overrides['scanner'] ?? new WPCV_Unknown_File_Scanner(),
+			static function () {
+				return 'lease-owner-fixed';
+			},
+			static function ( $run_id, $delay_seconds ) use ( &$continuation_calls ) {
+				$continuation_calls[] = array(
+					'run_id'        => $run_id,
+					'delay_seconds' => $delay_seconds,
+				);
+			}
+		);
+	}
+
+	/**
+	 * 存在しない run_id を渡すと `run_not_found` を返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_returns_run_not_found_for_unknown_run() {
+		$wpdb              = new WPCV_Test_Fake_WPDB();
+		$repositories      = $this->make_repositories( $wpdb );
+		$continuation_calls = array();
+		$dispatcher        = $this->make_dispatcher( $repositories, $wpdb, array(), $continuation_calls );
+
+		$result = $dispatcher->dispatch( 999, array( 'version' => '6.8' ) );
+
+		$this->assertSame( 'run_not_found', $result['action'] );
+		$this->assertSame( array(), $continuation_calls );
+	}
+
+	/**
+	 * 既に終端状態(success等)のrunに対しては何もせず `run_already_terminal` を
+	 * 返すことを確認する(重複配送されたAS actionのno-op).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_returns_already_terminal_for_finished_run() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $repositories['run_repository']->reserve_run();
+		$repositories['run_repository']->finish_run(
+			$reservation['run_id'],
+			array(
+				'status'               => 'success',
+				'targets_total'        => 0,
+				'targets_verified'     => 0,
+				'targets_unverifiable' => 0,
+				'targets_failed'       => 0,
+				'findings_total'       => 0,
+			)
+		);
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array(), $continuation_calls );
+
+		$result = $dispatcher->dispatch( $reservation['run_id'], array( 'version' => '6.8' ) );
+
+		$this->assertSame( 'run_already_terminal', $result['action'] );
+		$this->assertSame( 'success', $result['status'] );
+		$this->assertSame( array(), $continuation_calls );
+	}
+
+	/**
+	 * `deadline_at` を過去にすると、runと非終端のtarget_runがすべて `aborted` に
+	 * なることを確認する(v0.4.0 §Step4「run deadline超過sweep」).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_aborts_run_and_non_terminal_targets_when_deadline_passed() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $repositories['run_repository']->reserve_run();
+		$run_id       = $reservation['run_id'];
+
+		// deadline_at を過去に書き換える(`reserve_run()` は未来の値しか作れないため直接操作).
+		$wpdb->rows['wp_wpcv_runs'][ $run_id ]['deadline_at'] = '2000-01-01 00:00:00';
+
+		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
+			$run_id,
+			array( wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::QUEUED ) ) )
+		);
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array(), $continuation_calls );
+
+		$result = $dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$this->assertSame( 'aborted', $result['action'] );
+		$this->assertSame( WPCV_Run_Status::ABORTED, $wpdb->rows['wp_wpcv_runs'][ $run_id ]['status'] );
+		$this->assertSame( WPCV_Target_Status::ABORTED, $wpdb->rows['wp_wpcv_target_runs'][ $target_run_ids['core'] ]['status'] );
+		// deadline超過時は継続をenqueueしない(runは既に終端に達したため).
+		$this->assertSame( array(), $continuation_calls );
+	}
+
+	/**
+	 * Claim可能なtargetが無く、全target_runが終端状態ならrunを確定させることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_finalizes_run_when_all_targets_terminal() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $repositories['run_repository']->reserve_run();
+		$run_id       = $reservation['run_id'];
+
+		$repositories['target_run_repository']->save_target_runs(
+			$run_id,
+			array(
+				wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::SUCCESS ) ),
+				wpcv_test_make_target_run(
+					array(
+						'target_id' => 'plugin:foo',
+						'dimension' => 'plugin',
+						'slug'      => 'foo',
+						'status'    => WPCV_Target_Status::UNVERIFIABLE,
+					)
+				),
+			)
+		);
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array(), $continuation_calls );
+
+		$result = $dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$this->assertSame( 'run_finalized', $result['action'] );
+		$this->assertSame( 'partial', $result['summary']['status'] );
+		$this->assertSame( 'partial', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['status'] );
+		$this->assertSame( array(), $continuation_calls );
+	}
+
+	/**
+	 * Claim可能なtargetが無く、まだ非終端(他workerが処理中)のtargetが残っている
+	 * 場合、runは確定させず、lease有効期間相当の遅延で継続をenqueueすることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_schedules_delayed_recheck_when_waiting_for_other_worker() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $repositories['run_repository']->reserve_run();
+		$run_id       = $reservation['run_id'];
+
+		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
+			$run_id,
+			array( wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::RUNNING ) ) )
+		);
+		// lease未失効(retry_afterが未来ではないが、statusがrunningのままなので
+		// claim_next()の候補にはならない).
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_ids['core'] ]['lease_expires_at'] = '2099-01-01 00:00:00';
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array(), $continuation_calls );
+
+		$result = $dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$this->assertSame( 'waiting', $result['action'] );
+		$this->assertSame( WPCV_Run_Status::RUNNING, $wpdb->rows['wp_wpcv_runs'][ $run_id ]['status'] );
+		$this->assertCount( 1, $continuation_calls );
+		$this->assertSame( $run_id, $continuation_calls[0]['run_id'] );
+		$this->assertSame( WPCV_Target_Run_Repository::DEFAULT_LEASE_SECONDS, $continuation_calls[0]['delay_seconds'] );
+	}
+
+	/**
+	 * Coreのmanifest比較(素の `core` target)が空manifestで即座に完了し、
+	 * `SUCCESS` へ進み、即時継続(delay 0)がenqueueされることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_completes_core_manifest_target_and_schedules_immediate_continuation() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $repositories['run_repository']->reserve_run();
+		$run_id       = $reservation['run_id'];
+
+		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
+			$run_id,
+			array( wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::QUEUED ) ) )
+		);
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array(), $continuation_calls );
+
+		$result = $dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$this->assertSame( 'processed', $result['action'] );
+		$this->assertSame( 'core', $result['target_id'] );
+
+		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_ids['core'] ];
+		$this->assertSame( WPCV_Target_Status::SUCCESS, $row['status'] );
+
+		$this->assertCount( 1, $continuation_calls );
+		$this->assertSame( 0, $continuation_calls[0]['delay_seconds'] );
+	}
+
+	/**
+	 * Coreのmanifest取得が失敗した場合、`unverifiable` かつ manifest source の
+	 * `error_code` がそのまま記録されることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_marks_core_unverifiable_when_manifest_fetch_fails() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $repositories['run_repository']->reserve_run();
+		$run_id       = $reservation['run_id'];
+
+		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
+			$run_id,
+			array( wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::QUEUED ) ) )
+		);
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher(
+			$repositories,
+			$wpdb,
+			array(
+				'core_source' => new WPCV_Test_Fake_Manifest_Source(
+					array(
+						'manifest_status' => 'missing',
+						'error_code'      => WPCV_Error_Code::MANIFEST_NOT_FOUND,
+						'files'           => array(),
+					)
+				),
+			),
+			$continuation_calls
+		);
+
+		$dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_ids['core'] ];
+		$this->assertSame( WPCV_Target_Status::UNVERIFIABLE, $row['status'] );
+		$this->assertSame( WPCV_Error_Code::MANIFEST_NOT_FOUND, $row['error_code'] );
+	}
+
+	/**
+	 * `core:_scan` は、coreのmanifest取得自体が失敗した場合、走査を行わず
+	 * `unverifiable` になることを確認する(§16-D: 既知ファイルの集合を確定
+	 * できないため、未知ファイル走査そのものを行わないという既存の一括実行と
+	 * 同じ判断).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_marks_core_scan_unverifiable_when_manifest_fetch_fails() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $repositories['run_repository']->reserve_run();
+		$run_id       = $reservation['run_id'];
+
+		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
+			$run_id,
+			array(
+				wpcv_test_make_target_run(
+					array(
+						'target_id' => 'core:_scan',
+						'slug'      => '_scan',
+						'status'    => WPCV_Target_Status::QUEUED,
+					)
+				),
+			)
+		);
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher(
+			$repositories,
+			$wpdb,
+			array(
+				'core_source' => new WPCV_Test_Fake_Manifest_Source(
+					array(
+						'manifest_status' => 'missing',
+						'error_code'      => WPCV_Error_Code::MANIFEST_NOT_FOUND,
+						'files'           => array(),
+					)
+				),
+			),
+			$continuation_calls
+		);
+
+		$dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_ids['core:_scan'] ];
+		$this->assertSame( WPCV_Target_Status::UNVERIFIABLE, $row['status'] );
+		$this->assertSame( WPCV_Error_Code::MANIFEST_NOT_FOUND, $row['error_code'] );
+	}
+
+	/**
+	 * `core:_scan` は、coreのmanifestが取得できれば3領域分 `scan()` を呼び、
+	 * 検出したfindingsを保存して完了することを確認する(フェイクscannerで
+	 * 実ファイルシステムに依存せず検証する).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_completes_core_scan_target_with_findings_from_all_areas() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $repositories['run_repository']->reserve_run();
+		$run_id       = $reservation['run_id'];
+
+		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
+			$run_id,
+			array(
+				wpcv_test_make_target_run(
+					array(
+						'target_id' => 'core:_scan',
+						'slug'      => '_scan',
+						'status'    => WPCV_Target_Status::QUEUED,
+					)
+				),
+			)
+		);
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher(
+			$repositories,
+			$wpdb,
+			array(
+				'scanner' => new WPCV_Test_Fake_Scanner_Queue(
+					array(
+						array( array( 'path' => 'wp-admin/evil.php', 'severity' => 'high' ) ),
+						array(),
+						array(),
+					)
+				),
+			),
+			$continuation_calls
+		);
+
+		$dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_ids['core:_scan'] ];
+		$this->assertSame( WPCV_Target_Status::SUCCESS, $row['status'] );
+		$this->assertSame( 1, $row['findings_total'] );
+
+		$findings = array_values( $wpdb->rows['wp_wpcv_findings'] );
+		$this->assertCount( 1, $findings );
+		$this->assertSame( 'wporg', $findings[0]['source'] );
+		$this->assertSame( 'added', $findings[0]['status'] );
+	}
+
+	/**
+	 * Plugin targetは、`$context['plugins']` から現在のslug/versionを再解決して
+	 * 処理することを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_completes_plugin_target_by_resolving_current_context() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $repositories['run_repository']->reserve_run();
+		$run_id       = $reservation['run_id'];
+
+		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
+			$run_id,
+			array(
+				wpcv_test_make_target_run(
+					array(
+						'target_id' => 'plugin:akismet',
+						'dimension' => 'plugin',
+						'slug'      => 'akismet',
+						'version'   => '5.3',
+						'status'    => WPCV_Target_Status::QUEUED,
+					)
+				),
+			)
+		);
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array(), $continuation_calls );
+
+		$context = array(
+			'version'    => '6.8',
+			'plugins'    => array(
+				'akismet/akismet.php' => array( 'Version' => '5.3' ),
+			),
+			'plugin_dir' => '/var/www/wp-content/plugins',
+		);
+
+		$dispatcher->dispatch( $run_id, $context );
+
+		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_ids['plugin:akismet'] ];
+		$this->assertSame( WPCV_Target_Status::SUCCESS, $row['status'] );
+	}
+
+	/**
+	 * Plan時点では存在したプラグインが、実行時点の `$context['plugins']` から
+	 * 見つからない場合、`unverifiable`/`target_missing` になることを確認する
+	 * (v0.4.0 §Step4で新設した状態。分割実行特有のケース).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_marks_plugin_target_missing_when_no_longer_present() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $repositories['run_repository']->reserve_run();
+		$run_id       = $reservation['run_id'];
+
+		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
+			$run_id,
+			array(
+				wpcv_test_make_target_run(
+					array(
+						'target_id' => 'plugin:removed-plugin',
+						'dimension' => 'plugin',
+						'slug'      => 'removed-plugin',
+						'status'    => WPCV_Target_Status::QUEUED,
+					)
+				),
+			)
+		);
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array(), $continuation_calls );
+
+		$dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_ids['plugin:removed-plugin'] ];
+		$this->assertSame( WPCV_Target_Status::UNVERIFIABLE, $row['status'] );
+		$this->assertSame( WPCV_Error_Code::TARGET_MISSING, $row['error_code'] );
+	}
+
+	/**
+	 * Muplugin loaderは、chunk処理を伴わず即座に `unverifiable`/`unknown_source`
+	 * になることを確認する(§3.6。wp.org/GitHubマッピング未実装の既定挙動).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_marks_muplugin_loader_unverifiable_immediately() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $repositories['run_repository']->reserve_run();
+		$run_id       = $reservation['run_id'];
+
+		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
+			$run_id,
+			array(
+				wpcv_test_make_target_run(
+					array(
+						'target_id' => 'muplugin:loader.php',
+						'dimension' => 'muplugin',
+						'slug'      => 'loader.php',
+						'status'    => WPCV_Target_Status::QUEUED,
+					)
+				),
+			)
+		);
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array(), $continuation_calls );
+
+		$dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_ids['muplugin:loader.php'] ];
+		$this->assertSame( WPCV_Target_Status::UNVERIFIABLE, $row['status'] );
+		$this->assertSame( WPCV_Error_Code::UNKNOWN_SOURCE, $row['error_code'] );
+	}
+
+	/**
+	 * `muplugin:_scan` は `mu_plugin_dir` が `$context` に無い場合、走査を行わず
+	 * 差分ゼロの成功として終端化することを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_completes_muplugin_scan_as_success_when_dir_absent_from_context() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $repositories['run_repository']->reserve_run();
+		$run_id       = $reservation['run_id'];
+
+		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
+			$run_id,
+			array(
+				wpcv_test_make_target_run(
+					array(
+						'target_id' => 'muplugin:_scan',
+						'dimension' => 'muplugin',
+						'slug'      => '_scan',
+						'status'    => WPCV_Target_Status::QUEUED,
+					)
+				),
+			)
+		);
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array(), $continuation_calls );
+
+		$dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_ids['muplugin:_scan'] ];
+		$this->assertSame( WPCV_Target_Status::SUCCESS, $row['status'] );
+	}
+
+	/**
+	 * Claim済みtargetの処理中に例外が発生した場合、run全体は止めず、
+	 * そのtarget_runのみ `failed` にして継続をenqueueすることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_marks_only_the_claimed_target_failed_on_exception() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $repositories['run_repository']->reserve_run();
+		$run_id       = $reservation['run_id'];
+
+		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
+			$run_id,
+			array( wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::QUEUED ) ) )
+		);
+
+		$throwing_source = new class() implements WPCV_Manifest_Source {
+			/**
+			 * @param array $context 無視する.
+			 * @return never
+			 */
+			public function get_manifest( array $context ) {
+				unset( $context );
+				throw new RuntimeException( 'boom' );
+			}
+		};
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher(
+			$repositories,
+			$wpdb,
+			array( 'core_source' => $throwing_source ),
+			$continuation_calls
+		);
+
+		$result = $dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$this->assertSame( 'processed', $result['action'] );
+
+		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_ids['core'] ];
+		$this->assertSame( WPCV_Target_Status::FAILED, $row['status'] );
+		$this->assertStringContainsString( 'boom', $row['error_message'] );
+		$this->assertSame( WPCV_Run_Status::RUNNING, $wpdb->rows['wp_wpcv_runs'][ $run_id ]['status'] );
+
+		$this->assertCount( 1, $continuation_calls );
+		$this->assertSame( 0, $continuation_calls[0]['delay_seconds'] );
+	}
+}

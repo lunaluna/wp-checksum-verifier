@@ -40,6 +40,16 @@ class WPCV_Run_Repository {
 	const LOCK_TIMEOUT_SECONDS = 5;
 
 	/**
+	 * `reserve_run()` が新規作成時に設定する `deadline_at`(§6.3「run のタイムアウト」)
+	 * までの時間(時間単位)。プラン本体§6.3で既定6時間と明記済みの値であり、
+	 * 他の定数(`LOCK_TIMEOUT_SECONDS`等)と異なり「未実測の仮値」ではない
+	 * (v0.4.0 §Step4で実装。Step1〜3時点では列を用意するのみだった).
+	 *
+	 * @var int
+	 */
+	const DEFAULT_DEADLINE_HOURS = 6;
+
+	/**
 	 * `$wpdb` 相当のオブジェクト(`insert()` / `update()` / `get_results()` / `get_var()` /
 	 * `query()` / `prepare()` / `base_prefix` / `insert_id` を持つもの).
 	 *
@@ -254,6 +264,57 @@ class WPCV_Run_Repository {
 	}
 
 	/**
+	 * 実行(run)行を `WPCV_Run_Status::ABORTED` にする(v0.4.0 §Step4: run
+	 * deadline超過sweep。`WPCV_Chunk_Dispatcher` から呼ぶ).
+	 *
+	 * `mark_run_failed()` と同じ2段階CAS(`running`→ダメなら`queued`)を使う理由も
+	 * 同じ(`mark_run_failed()` の docblock 参照。ここでは「deadline超過」という
+	 * 別の終端理由のため専用メソッドとして分離した).
+	 *
+	 * @param int    $run_id 対象の run の id.
+	 * @param string $notes  終了理由. 省略可.
+	 * @return bool 更新できたら true。false は対象行が `running`/`queued` の
+	 *              いずれでもない(既に終端状態だった等)ことを意味する.
+	 */
+	public function mark_run_aborted( $run_id, $notes = '' ) {
+		$table  = $this->wpdb->base_prefix . 'wpcv_runs';
+		$data   = array(
+			'finished_at' => call_user_func( $this->now ),
+			'status'      => WPCV_Run_Status::ABORTED,
+			'notes'       => (string) $notes,
+		);
+		$format = array( '%s', '%s', '%s' );
+
+		$updated = $this->wpdb->update(
+			$table,
+			$data,
+			array(
+				'id'     => (int) $run_id,
+				'status' => WPCV_Run_Status::RUNNING,
+			),
+			$format,
+			array( '%d', '%s' )
+		);
+
+		if ( $updated > 0 ) {
+			return true;
+		}
+
+		$updated = $this->wpdb->update(
+			$table,
+			$data,
+			array(
+				'id'     => (int) $run_id,
+				'status' => WPCV_Run_Status::QUEUED,
+			),
+			$format,
+			array( '%d', '%s' )
+		);
+
+		return $updated > 0;
+	}
+
+	/**
 	 * 実行(run)行を新規 insert する(`reserve_run()` からのみ呼ぶ内部ヘルパー).
 	 *
 	 * @param string $status      insert する `status`(`WPCV_Run_Status::RUNNING` または
@@ -263,17 +324,23 @@ class WPCV_Run_Repository {
 	 * @return int 作成した run の id.
 	 */
 	private function insert_run_row( $status, $run_trigger, $runner ) {
-		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+		$table      = $this->wpdb->base_prefix . 'wpcv_runs';
+		$now_string = call_user_func( $this->now );
 
 		$this->wpdb->insert(
 			$table,
 			array(
-				'started_at'  => call_user_func( $this->now ),
+				'started_at'  => $now_string,
 				'status'      => $status,
 				'run_trigger' => $run_trigger,
 				'runner'      => $runner,
+				// v0.4.0 §Step4: `WPCV_Chunk_Dispatcher` が deadline超過を検知して
+				// `aborted` へ倒すためのしきい値(`DEFAULT_DEADLINE_HOURS` のdocblock参照)。
+				// 一括実行(`WPCV_Run_Coordinator`)はこの列を読まないため、
+				// 書き込むだけで既存の同期実行系の挙動には影響しない.
+				'deadline_at' => gmdate( 'Y-m-d H:i:s', strtotime( $now_string ) + self::DEFAULT_DEADLINE_HOURS * HOUR_IN_SECONDS ),
 			),
-			array( '%s', '%s', '%s', '%s' )
+			array( '%s', '%s', '%s', '%s', '%s' )
 		);
 
 		return (int) $this->wpdb->insert_id;
@@ -429,6 +496,33 @@ class WPCV_Run_Repository {
 		$active = $this->find_active_run();
 
 		return null === $active ? null : $active['id'];
+	}
+
+	/**
+	 * Run行を1件、全カラム込みで読み取る(v0.4.0 §Step4: `WPCV_Chunk_Dispatcher` が
+	 * `deadline_at`・`status` を確認するために使う。`find_active_run()` は
+	 * `id`/`status` のみを読む軽量版のため、`deadline_at` 等が必要なここでは
+	 * 別メソッドにした).
+	 *
+	 * @param int $run_id 対象の run の id.
+	 * @return array|null 見つからなければ `null`.
+	 */
+	public function find_by_id( $run_id ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+
+		// find_active_run() と同じ方針(動的な値を含まない固定リテラルのみのクエリ.
+		// id の絞り込みは下の PHP 側で行う).
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static table literal, no user input.
+		$rows = $this->wpdb->get_results( "SELECT * FROM {$table}", ARRAY_A );
+		$rows = is_array( $rows ) ? $rows : array();
+
+		foreach ( $rows as $row ) {
+			if ( (int) $row['id'] === (int) $run_id ) {
+				return $row;
+			}
+		}
+
+		return null;
 	}
 
 	/**

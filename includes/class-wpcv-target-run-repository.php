@@ -14,9 +14,58 @@ if ( ! defined( 'ABSPATH' ) ) {
  *
  * 分割の経緯は `WPCV_Run_Repository` のクラス docblock 参照。v0.4.0 §Step3で
  * `WPCV_Chunk_Verifier` の結果(cursor/manifest_fingerprint等)を書き込む
- * `update_chunk_progress()`/`reset_for_retry()` を追加した.
+ * `update_chunk_progress()`/`reset_for_retry()` を追加した。v0.4.0 §Step4で
+ * `claim_next()`(atomic claim)・`sweep_expired_leases()`(stale worker検知+
+ * backoff)・`abort_non_terminal_for_run()`(run deadline超過sweep)・
+ * `finalize_immediate()`(chunk処理を伴わない即時終端化。muplugin loader等)・
+ * `find_all_by_run()`(run完了判定・summary再計算用)を追加した.
  */
 class WPCV_Target_Run_Repository {
+
+	/**
+	 * `claim_next()` が設定するlease有効期間の既定値(秒).
+	 *
+	 * 未実測: 暫定値。実測の上で見直すこと(§数値を決める前に実測するルール)。
+	 * chunk1回分の処理時間(§Step3の `WPCV_Chunk_Verifier` の時間予算。既定20秒
+	 * 〔`WPCV_Chunk_Dispatcher::DEFAULT_BUDGET_MAX_SECONDS`〕)に、manifest取得の
+	 * ネットワーク往復・DB操作のオーバーヘッドを見込んだ安全率を掛けた値として
+	 * 120秒を仮置きする.
+	 *
+	 * @var int
+	 */
+	const DEFAULT_LEASE_SECONDS = 120;
+
+	/**
+	 * `sweep_expired_leases()` がlease切れとみなして再試行させる最大回数の既定値.
+	 *
+	 * 未実測: 暫定値。この回数を超えたら `WPCV_Target_Status::FAILED` へ倒す
+	 * (§Step4「最大retry回数」)。chunkが正常にyieldして継続する分(§Step3の
+	 * `completed:false`)はこのカウントを消費しない(`update_chunk_progress()` 参照)。
+	 * ここでカウントするのは「lease期限が切れるまで応答が無かった」= workerが
+	 * 停止・クラッシュした疑いのある試行のみ.
+	 *
+	 * @var int
+	 */
+	const DEFAULT_MAX_ATTEMPTS = 5;
+
+	/**
+	 * `sweep_expired_leases()` のbackoff基準秒数の既定値.
+	 *
+	 * 未実測: 暫定値。`$base * 2^(attempt_count-1)`(上限 `DEFAULT_BACKOFF_MAX_SECONDS`)
+	 * で指数backoffを計算する既定の `backoff` callable が使う.
+	 *
+	 * @var int
+	 */
+	const DEFAULT_BACKOFF_BASE_SECONDS = 30;
+
+	/**
+	 * `sweep_expired_leases()` のbackoff秒数の上限値の既定値.
+	 *
+	 * 未実測: 暫定値.
+	 *
+	 * @var int
+	 */
+	const DEFAULT_BACKOFF_MAX_SECONDS = 3600;
 
 	/**
 	 * `$wpdb` 相当のオブジェクト(`insert()` / `update()` / `get_results()` /
@@ -107,6 +156,16 @@ class WPCV_Target_Run_Repository {
 	 * 進め `finished_at` を記録する(manifest取得自体の成功可否は呼び出し元が
 	 * chunk verifier を呼ぶ前提条件のため、ここでは判定しない).
 	 *
+	 * `completed: false`(時間・件数・メモリ予算に達して yield した。異常ではない
+	 * 正常系)の場合、v0.4.0 §Step4で `status` を `WPCV_Target_Status::RETRY` へ
+	 * 進めるようにした(Step3時点では `status` を変更しないままだったため、claim
+	 * 済みの `running` のまま残り、`WPCV_Target_Status::SCHEDULABLE`
+	 * (`queued`/`retry`)に含まれず二度と claim されなくなっていた)。この経路は
+	 * `attempt_count` を加算しない(§Step4「chunkが正常にyieldする分は最大retry
+	 * 回数を消費しない」。`sweep_expired_leases()` の docblock 参照)。lease関連
+	 * 列もあわせてクリアし、次回の `claim_next()` がすぐにこの target_run を
+	 * schedulable と判定できるようにする.
+	 *
 	 * @param int   $target_run_id 対象の target_run の id.
 	 * @param array $chunk_result  `WPCV_Chunk_Verifier::verify_*_chunk()` の戻り値
 	 *                             (`needs_retry: false` のもの).
@@ -137,6 +196,15 @@ class WPCV_Target_Run_Repository {
 			$data['finished_at'] = call_user_func( $this->now );
 			$format[]            = '%s';
 			$format[]            = '%s';
+		} else {
+			$data['status']           = WPCV_Target_Status::RETRY;
+			$data['lease_owner']      = null;
+			$data['lease_expires_at'] = null;
+			$data['retry_after']      = null;
+			$format[]                 = '%s';
+			$format[]                 = '%s';
+			$format[]                 = '%s';
+			$format[]                 = '%s';
 		}
 
 		$updated = $this->wpdb->update(
@@ -160,30 +228,360 @@ class WPCV_Target_Run_Repository {
 	 * chunk呼び出しは、この target_run を最初から(`cursor_path = null` として)
 	 * 再検証する.
 	 *
-	 * @param int         $target_run_id        対象の target_run の id.
-	 * @param string|null $manifest_fingerprint 今回計算し直した fingerprint
-	 *                                          (次回の照合基準として保存しておく).
+	 * v0.4.0 §Step4: 第3引数 `$version` を追加した。プラグイン等の対象は
+	 * dispatcherが毎回「現在の」バージョンを解決し直す設計(§Step4 dispatcher
+	 * docblock参照。enqueue時点の状態を持ち回らず実行時点の最新状態を使う既存方針
+	 * の延長)のため、version変動を検知して retry へ戻す際に `version` 列を
+	 * 更新しないままだと、次回 chunk 実行時も「保存済み version(古いまま)」対
+	 * 「今回解決した version(新しい)」の不一致を検知し続け、いつまで経っても
+	 * `needs_retry` から抜けられなくなる(検知の基準そのものが古いままのため)。
+	 * `$version` に `false`(既定値)以外を渡すことで、この呼び出し時点で
+	 * dispatcherが観測した最新の version を新しい基準として保存できるようにした。
+	 * `false` は「呼び出し元がversionを解決していない(または対象にversionの
+	 * 概念が無い。未知ファイル走査target等)ため列を変更しない」を表す
+	 * (`null` は「versionが不明であることを明示的に記録する」という別の意味に
+	 * 使うため、区別する必要がある).
+	 *
+	 * @param int          $target_run_id        対象の target_run の id.
+	 * @param string|null  $manifest_fingerprint 今回計算し直した fingerprint
+	 *                                           (次回の照合基準として保存しておく).
+	 * @param string|false $version              新しい基準として保存する version。
+	 *                                           `false`(既定)なら version 列は
+	 *                                           変更しない.
 	 * @return bool 更新できたら true。false は対象行が見つからなかったことを意味する.
 	 */
-	public function reset_for_retry( $target_run_id, $manifest_fingerprint ) {
+	public function reset_for_retry( $target_run_id, $manifest_fingerprint, $version = false ) {
 		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
+
+		$data   = array(
+			'status'               => WPCV_Target_Status::RETRY,
+			'cursor_path'          => null,
+			'manifest_fingerprint' => $manifest_fingerprint,
+			'files_total'          => 0,
+			'files_verified'       => 0,
+			'findings_total'       => 0,
+			'lease_owner'          => null,
+			'lease_expires_at'     => null,
+			'retry_after'          => null,
+		);
+		$format = array( '%s', '%s', '%s', '%d', '%d', '%d', '%s', '%s', '%s' );
+
+		if ( false !== $version ) {
+			$data['version'] = $version;
+			$format[]        = '%s';
+		}
 
 		$updated = $this->wpdb->update(
 			$table,
-			array(
-				'status'               => WPCV_Target_Status::RETRY,
-				'cursor_path'          => null,
-				'manifest_fingerprint' => $manifest_fingerprint,
-				'files_total'          => 0,
-				'files_verified'       => 0,
-				'findings_total'       => 0,
-			),
+			$data,
 			array( 'id' => (int) $target_run_id ),
-			array( '%s', '%s', '%s', '%d', '%d', '%d' ),
+			$format,
 			array( '%d' )
 		);
 
 		return $updated > 0;
+	}
+
+	/**
+	 * 指定 run に属する、claim可能(`WPCV_Target_Status::SCHEDULABLE`。かつ
+	 * `retry_after` が未来でない)な target_run を1件、原子的に claim する
+	 * (v0.4.0 §Step4: `WPCV_Chunk_Dispatcher` から呼ぶ).
+	 *
+	 * 実際の排他は `$wpdb->update()` の `WHERE id = ? AND status = ?`(読み取り時点の
+	 * 状態を条件に含む Compare-And-Swap)が担う。これは `WPCV_Run_Repository::mark_queued_running()`
+	 * と同じパターンで、MySQL の `UPDATE ... WHERE` は単一の原子的な文であるため、
+	 * 2つの worker が同じ行を同時に claim しようとしても、先に成功した側だけが
+	 * 影響行数1を得て、後発は影響行数0(=claim失敗。呼び出し元は次の候補を
+	 * 探すのではなく `null` を返し、次の dispatch 呼び出しに委ねる)を得る。
+	 * 候補の選定(SELECT)自体は原子的ではない(`ORDER BY ... LIMIT 1` 相当を
+	 * 使わず、`WPCV_Run_Repository::find_active_run()` と同じ「全行取得してPHPで
+	 * 絞り込む」方式。テストダブル `WPCV_Test_Fake_WPDB::get_results()` がWHERE句を
+	 * 解釈しないため)が、claim の安全性は上記のCASのみに依存しており、候補選定の
+	 * 非原子性は「同じ行を2 workerが同時に選ぶ」ことはあっても「2 workerが両方とも
+	 * claimに成功する」ことは無い、という性質を壊さない.
+	 *
+	 * @param int    $run_id        対象の run の id.
+	 * @param string $lease_owner   claim した worker を識別する一意な文字列
+	 *                              (`WPCV_Chunk_Dispatcher` が呼び出しごとに生成する).
+	 * @param int    $lease_seconds lease有効期間(秒). 省略時は `DEFAULT_LEASE_SECONDS`.
+	 * @return array|null claim できた target_run 行(更新後の値を反映済み)。
+	 *                     claim対象が無い、またはCASに敗れた場合は `null`.
+	 */
+	public function claim_next( $run_id, $lease_owner, $lease_seconds = self::DEFAULT_LEASE_SECONDS ) {
+		$table      = $this->wpdb->base_prefix . 'wpcv_target_runs';
+		$now_string = call_user_func( $this->now );
+
+		$candidates = array();
+		foreach ( $this->all_rows() as $row ) {
+			if ( (int) $row['run_id'] !== (int) $run_id ) {
+				continue;
+			}
+
+			if ( ! WPCV_Target_Status::is_schedulable( $row['status'] ) ) {
+				continue;
+			}
+
+			if ( ! empty( $row['retry_after'] ) && (string) $row['retry_after'] > $now_string ) {
+				continue;
+			}
+
+			$candidates[] = $row;
+		}
+
+		if ( empty( $candidates ) ) {
+			return null;
+		}
+
+		usort(
+			$candidates,
+			static function ( $a, $b ) {
+				return (int) $a['id'] <=> (int) $b['id'];
+			}
+		);
+
+		$target           = $candidates[0];
+		$lease_expires_at = gmdate( 'Y-m-d H:i:s', strtotime( $now_string ) + (int) $lease_seconds );
+		$new_fields       = array(
+			'status'           => WPCV_Target_Status::RUNNING,
+			'lease_owner'      => (string) $lease_owner,
+			'lease_expires_at' => $lease_expires_at,
+			'heartbeat_at'     => $now_string,
+			'started_at'       => empty( $target['started_at'] ) ? $now_string : $target['started_at'],
+		);
+
+		$updated = $this->wpdb->update(
+			$table,
+			$new_fields,
+			array(
+				'id'     => (int) $target['id'],
+				'status' => $target['status'],
+			),
+			array( '%s', '%s', '%s', '%s', '%s' ),
+			array( '%d', '%s' )
+		);
+
+		if ( $updated <= 0 ) {
+			// 他 worker が先に claim した(CAS敗北)。呼び出し元は次の
+			// dispatch 呼び出しに委ねる(このメソッド自身は再試行しない).
+			return null;
+		}
+
+		return array_merge( $target, $new_fields );
+	}
+
+	/**
+	 * Lease期限(`lease_expires_at`)が切れているのに `running` のまま残っている
+	 * target_run を検知し、`WPCV_Target_Status::RETRY`(backoff付きで再試行可能)
+	 * または `WPCV_Target_Status::FAILED`(最大試行回数超過)へ倒す
+	 * (v0.4.0 §Step4: worker のクラッシュ・強制終了・タイムアウトからの回復).
+	 *
+	 * `attempt_count` を加算するのはこのメソッドのみ(§Step4「最大retry回数」は
+	 * 「lease切れで検知した失敗」の回数であって「chunkを何回処理したか」ではない。
+	 * `update_chunk_progress()` の docblock 参照。正常な yield による継続は
+	 * このメソッドの対象にならない ―― `update_chunk_progress()` が既に
+	 * `retry`/`success` へ進めているため、`running` のままlease切れを迎えることが
+	 * ない).
+	 *
+	 * @param int   $run_id 対象の run の id.
+	 * @param array $options {
+	 *     省略可能なオプション.
+	 *
+	 *     @type int      $max_attempts 最大試行回数. 省略時は `DEFAULT_MAX_ATTEMPTS`.
+	 *     @type callable $backoff      `function( int $attempt_count ): int`
+	 *                                  (backoff秒数を返す). 省略時は
+	 *                                  `DEFAULT_BACKOFF_BASE_SECONDS * 2^(attempt-1)`を
+	 *                                  `DEFAULT_BACKOFF_MAX_SECONDS` で頭打ちにする.
+	 * }
+	 * @return int 検知して更新した target_run の件数.
+	 */
+	public function sweep_expired_leases( $run_id, array $options = array() ) {
+		$table        = $this->wpdb->base_prefix . 'wpcv_target_runs';
+		$max_attempts = isset( $options['max_attempts'] ) ? (int) $options['max_attempts'] : self::DEFAULT_MAX_ATTEMPTS;
+		$backoff      = isset( $options['backoff'] ) ? $options['backoff'] : array( __CLASS__, 'default_backoff_seconds' );
+		$now_string   = call_user_func( $this->now );
+		$swept        = 0;
+
+		foreach ( $this->all_rows() as $row ) {
+			if ( (int) $row['run_id'] !== (int) $run_id ) {
+				continue;
+			}
+
+			if ( WPCV_Target_Status::RUNNING !== $row['status'] ) {
+				continue;
+			}
+
+			if ( empty( $row['lease_expires_at'] ) || (string) $row['lease_expires_at'] > $now_string ) {
+				continue;
+			}
+
+			$new_attempt_count = (int) $row['attempt_count'] + 1;
+
+			if ( $new_attempt_count > $max_attempts ) {
+				$updated = $this->wpdb->update(
+					$table,
+					array(
+						'status'           => WPCV_Target_Status::FAILED,
+						'error_code'       => WPCV_Error_Code::LEASE_EXPIRED,
+						'error_message'    => 'lease有効期限切れが最大試行回数を超えたため failed にしました.',
+						'attempt_count'    => $new_attempt_count,
+						'lease_owner'      => null,
+						'lease_expires_at' => null,
+						'finished_at'      => $now_string,
+					),
+					array(
+						'id'     => (int) $row['id'],
+						'status' => WPCV_Target_Status::RUNNING,
+					),
+					array( '%s', '%s', '%s', '%d', '%s', '%s', '%s' ),
+					array( '%d', '%s' )
+				);
+			} else {
+				$retry_after = gmdate( 'Y-m-d H:i:s', strtotime( $now_string ) + (int) call_user_func( $backoff, $new_attempt_count ) );
+
+				$updated = $this->wpdb->update(
+					$table,
+					array(
+						'status'           => WPCV_Target_Status::RETRY,
+						'attempt_count'    => $new_attempt_count,
+						'lease_owner'      => null,
+						'lease_expires_at' => null,
+						'retry_after'      => $retry_after,
+					),
+					array(
+						'id'     => (int) $row['id'],
+						'status' => WPCV_Target_Status::RUNNING,
+					),
+					array( '%s', '%d', '%s', '%s', '%s' ),
+					array( '%d', '%s' )
+				);
+			}
+
+			if ( $updated > 0 ) {
+				++$swept;
+			}
+		}
+
+		return $swept;
+	}
+
+	/**
+	 * `sweep_expired_leases()` の既定backoff計算(指数backoff、上限あり).
+	 *
+	 * @param int $attempt_count 今回の(加算後の)試行回数.
+	 * @return int backoff秒数.
+	 */
+	public static function default_backoff_seconds( $attempt_count ) {
+		$seconds = self::DEFAULT_BACKOFF_BASE_SECONDS * ( 2 ** max( 0, (int) $attempt_count - 1 ) );
+
+		return (int) min( self::DEFAULT_BACKOFF_MAX_SECONDS, $seconds );
+	}
+
+	/**
+	 * 指定 run に属する target_run をすべて読み取る(v0.4.0 §Step4: run完了判定・
+	 * summary再計算〔`WPCV_Verifier::summarize()` にそのまま渡せる形〕に使う).
+	 *
+	 * @param int $run_id 対象の run の id.
+	 * @return array<int, array>
+	 */
+	public function find_all_by_run( $run_id ) {
+		$rows = array();
+
+		foreach ( $this->all_rows() as $row ) {
+			if ( (int) $row['run_id'] === (int) $run_id ) {
+				$rows[] = $row;
+			}
+		}
+
+		return $rows;
+	}
+
+	/**
+	 * 指定 run に属する、まだ終端状態(`WPCV_Target_Status::TERMINAL`)に達していない
+	 * target_run をすべて `WPCV_Target_Status::ABORTED` にする(v0.4.0 §Step4:
+	 * run deadline超過sweep。`WPCV_Chunk_Dispatcher` から呼ぶ).
+	 *
+	 * @param int $run_id 対象の run の id.
+	 * @return int 更新した件数.
+	 */
+	public function abort_non_terminal_for_run( $run_id ) {
+		$table      = $this->wpdb->base_prefix . 'wpcv_target_runs';
+		$now_string = call_user_func( $this->now );
+		$aborted    = 0;
+
+		foreach ( $this->find_all_by_run( $run_id ) as $row ) {
+			if ( WPCV_Target_Status::is_terminal( $row['status'] ) ) {
+				continue;
+			}
+
+			$updated = $this->wpdb->update(
+				$table,
+				array(
+					'status'           => WPCV_Target_Status::ABORTED,
+					'finished_at'      => $now_string,
+					'lease_owner'      => null,
+					'lease_expires_at' => null,
+				),
+				array(
+					'id'     => (int) $row['id'],
+					'status' => $row['status'],
+				),
+				array( '%s', '%s', '%s', '%s' ),
+				array( '%d', '%s' )
+			);
+
+			if ( $updated > 0 ) {
+				++$aborted;
+			}
+		}
+
+		return $aborted;
+	}
+
+	/**
+	 * Chunk処理(manifest取得・ファイル比較)を伴わずに、target_run を直接
+	 * 終端状態へ更新する(v0.4.0 §Step4: muplugin loader(§3.6。常に
+	 * `unverifiable`/`unknown_source`)や、claim時点で対象が消えていた場合
+	 * (`WPCV_Error_Code::TARGET_MISSING`)のように、そもそもファイル単位の比較を
+	 * 行わない target 向け。findings を伴わないため `WPCV_Chunk_Result_Repository`
+	 * のtransactionは経由しない).
+	 *
+	 * @param int   $target_run_id 対象の target_run の id.
+	 * @param array $fields        更新するカラム => 値(すべて文字列として扱う。
+	 *                             `status`/`error_code`/`error_message`/
+	 *                             `manifest_status` 等を想定).
+	 * @return bool 更新できたら true。false は対象行が見つからなかったことを意味する.
+	 */
+	public function finalize_immediate( $target_run_id, array $fields ) {
+		$table  = $this->wpdb->base_prefix . 'wpcv_target_runs';
+		$data   = array_merge( array( 'finished_at' => call_user_func( $this->now ) ), $fields );
+		$format = array_fill( 0, count( $data ), '%s' );
+
+		$updated = $this->wpdb->update(
+			$table,
+			$data,
+			array( 'id' => (int) $target_run_id ),
+			$format,
+			array( '%d' )
+		);
+
+		return $updated > 0;
+	}
+
+	/**
+	 * `find_by_id()`/`claim_next()`/`sweep_expired_leases()`/`find_all_by_run()`で
+	 * 共有する「テーブルの全行を読み取る」処理(v0.4.0 §Step4で `find_by_id()` から
+	 * 抽出).テストダブル(`WPCV_Test_Fake_WPDB::get_results()`)がWHERE句を
+	 * 解釈しないための設計は `find_by_id()` の docblock と同じ理由.
+	 *
+	 * @return array<int, array>
+	 */
+	private function all_rows() {
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static table literal, no user input.
+		$rows = $this->wpdb->get_results( "SELECT * FROM {$table}", ARRAY_A );
+
+		return is_array( $rows ) ? $rows : array();
 	}
 
 	/**
@@ -193,15 +591,7 @@ class WPCV_Target_Run_Repository {
 	 * @return array|null 見つからなければ null.
 	 */
 	private function find_by_id( $target_run_id ) {
-		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
-
-		// 動的な値を含まない固定リテラルのみのクエリ(id の絞り込みは下の PHP 側で行う。
-		// `WPCV_Run_Repository::find_active_run()` と同じ理由でのignore).
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static table literal, no user input.
-		$rows = $this->wpdb->get_results( "SELECT * FROM {$table}", ARRAY_A );
-		$rows = is_array( $rows ) ? $rows : array();
-
-		foreach ( $rows as $row ) {
+		foreach ( $this->all_rows() as $row ) {
 			if ( (int) $row['id'] === (int) $target_run_id ) {
 				return $row;
 			}

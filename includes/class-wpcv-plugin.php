@@ -24,6 +24,11 @@ if ( ! defined( 'ABSPATH' ) ) {
  * `WPCV_Target_Run_Repository`/`WPCV_Finding_Repository` へ責務分割したことに
  * 合わせ、`repository()` も3つのアクセサへ分割した(`WPCV_Run_Repository` の
  * クラス docblock 参照).
+ *
+ * v0.4.0 §Step4で `chunk_result_repository()`/`chunk_dispatcher()` を追加し、
+ * `dispatch_chunk()`(`WPCV_Chunk_Dispatcher::HOOK` のフックハンドラ)を新設した。
+ * `run_coordinator()`(一括実行)と `chunk_dispatcher()`(chunk分割実行)は
+ * Step5でCLI/REST/WP-Cronの繋ぎ替えが完了するまでの間、並行して存在する.
  */
 class WPCV_Plugin {
 
@@ -55,6 +60,22 @@ class WPCV_Plugin {
 	 * @var WPCV_Finding_Repository|null
 	 */
 	private static $finding_repository = null;
+
+	/**
+	 * 組み立て済みの `WPCV_Chunk_Result_Repository`(1リクエスト内で使い回す。
+	 * v0.4.0 §Step4で追加).
+	 *
+	 * @var WPCV_Chunk_Result_Repository|null
+	 */
+	private static $chunk_result_repository = null;
+
+	/**
+	 * 組み立て済みの `WPCV_Chunk_Dispatcher`(1リクエスト内で使い回す。
+	 * v0.4.0 §Step4で追加).
+	 *
+	 * @var WPCV_Chunk_Dispatcher|null
+	 */
+	private static $chunk_dispatcher = null;
 
 	/**
 	 * 本番用に配線された `WPCV_Run_Coordinator` を返す.
@@ -110,6 +131,61 @@ class WPCV_Plugin {
 		}
 
 		return self::$finding_repository;
+	}
+
+	/**
+	 * 本番用に配線された `WPCV_Chunk_Result_Repository` を返す(v0.4.0 §Step4).
+	 *
+	 * @return WPCV_Chunk_Result_Repository
+	 */
+	public static function chunk_result_repository() {
+		if ( null === self::$chunk_result_repository ) {
+			global $wpdb;
+
+			self::$chunk_result_repository = new WPCV_Chunk_Result_Repository( $wpdb, self::target_run_repository(), self::finding_repository() );
+		}
+
+		return self::$chunk_result_repository;
+	}
+
+	/**
+	 * 本番用に配線された `WPCV_Chunk_Dispatcher` を返す(v0.4.0 §Step4).
+	 *
+	 * @return WPCV_Chunk_Dispatcher
+	 */
+	public static function chunk_dispatcher() {
+		if ( null === self::$chunk_dispatcher ) {
+			self::$chunk_dispatcher = new WPCV_Chunk_Dispatcher(
+				self::run_repository(),
+				self::target_run_repository(),
+				self::chunk_result_repository(),
+				new WPCV_Chunk_Verifier(),
+				new WPCV_Source_Core(),
+				new WPCV_Source_Wporg_Plugin(),
+				new WPCV_Unknown_File_Scanner()
+			);
+		}
+
+		return self::$chunk_dispatcher;
+	}
+
+	/**
+	 * `WPCV_Chunk_Dispatcher::HOOK` のフックハンドラ. Action Scheduler の
+	 * ワーカーから呼ばれる(v0.4.0 §Step4).
+	 *
+	 * `$context` は `WPCV_Runner_Async::run_async_action()` と同じ理由(AS の
+	 * args 8,000文字制限)で、enqueue時点の値を保持せず毎回組み立て直す。
+	 * 既存run(既に受付済み)に対する継続実行のため `run_trigger` は不要
+	 * (`WPCV_Chunk_Dispatcher::dispatch()` は `$context['run_trigger']` を
+	 * 読まない).
+	 *
+	 * @param int $run_id `WPCV_Chunk_Dispatcher::dispatch()` に渡す run の id.
+	 * @return void
+	 */
+	public static function dispatch_chunk( $run_id ) {
+		$context = WPCV_Context_Builder::build();
+
+		self::chunk_dispatcher()->dispatch( (int) $run_id, $context );
 	}
 
 	/**

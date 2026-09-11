@@ -24,7 +24,9 @@ use PHPUnit\Framework\TestCase;
 class RunPlannerTest extends TestCase {
 
 	/**
-	 * コアのみの `$context` から、`queued` 状態のコア1件だけが列挙されることを確認する.
+	 * コアのみの `$context` から、`queued` 状態のコア(manifest比較)と
+	 * `core:_scan`(未知ファイル走査の合成target。Step4)の2件だけが列挙される
+	 * ことを確認する.
 	 *
 	 * @return void
 	 */
@@ -32,7 +34,7 @@ class RunPlannerTest extends TestCase {
 		$planner     = new WPCV_Run_Planner();
 		$target_runs = $planner->plan( array( 'version' => '6.8' ) );
 
-		$this->assertCount( 1, $target_runs );
+		$this->assertCount( 2, $target_runs );
 		$this->assertSame( 'core', $target_runs[0]['target_id'] );
 		$this->assertSame( 'core', $target_runs[0]['dimension'] );
 		$this->assertSame( 'wordpress', $target_runs[0]['slug'] );
@@ -41,6 +43,13 @@ class RunPlannerTest extends TestCase {
 		$this->assertSame( 'queued', $target_runs[0]['status'] );
 		$this->assertNull( $target_runs[0]['error_code'] );
 		$this->assertSame( 0, $target_runs[0]['files_total'] );
+
+		$this->assertSame( 'core:_scan', $target_runs[1]['target_id'] );
+		$this->assertSame( 'core', $target_runs[1]['dimension'] );
+		$this->assertSame( '_scan', $target_runs[1]['slug'] );
+		$this->assertNull( $target_runs[1]['version'] );
+		$this->assertNull( $target_runs[1]['source'] );
+		$this->assertSame( 'queued', $target_runs[1]['status'] );
 	}
 
 	/**
@@ -61,7 +70,7 @@ class RunPlannerTest extends TestCase {
 			)
 		);
 
-		$this->assertCount( 2, $target_runs );
+		$this->assertCount( 3, $target_runs );
 
 		$plugin_row = null;
 		foreach ( $target_runs as $row ) {
@@ -155,8 +164,8 @@ class RunPlannerTest extends TestCase {
 			)
 		);
 
-		// core のみ(hello.php 分の target_run は増えない)ことを確認する.
-		$this->assertCount( 1, $target_runs );
+		// core + core:_scan のみ(hello.php 分の target_run は増えない)ことを確認する.
+		$this->assertCount( 2, $target_runs );
 	}
 
 	/**
@@ -175,8 +184,8 @@ class RunPlannerTest extends TestCase {
 			)
 		);
 
-		// core + loader + muplugin:_scan の3件.
-		$this->assertCount( 3, $target_runs );
+		// core + core:_scan + loader + muplugin:_scan の4件.
+		$this->assertCount( 4, $target_runs );
 
 		$target_ids = array_column( $target_runs, 'target_id' );
 		$this->assertContains( 'muplugin:loader.php', $target_ids );
@@ -201,7 +210,7 @@ class RunPlannerTest extends TestCase {
 		$planner     = new WPCV_Run_Planner();
 		$target_runs = $planner->plan( array( 'version' => '6.8' ) );
 
-		$this->assertCount( 1, $target_runs );
+		$this->assertCount( 2, $target_runs );
 	}
 
 	/**
@@ -257,7 +266,7 @@ class RunPlannerTest extends TestCase {
 
 		$target_run_ids = $repository->save_target_runs( 1, $target_runs );
 
-		$this->assertCount( 2, $target_run_ids );
+		$this->assertCount( 3, $target_run_ids );
 		foreach ( $wpdb->rows['wp_wpcv_target_runs'] as $row ) {
 			$this->assertSame( 'queued', $row['status'] );
 			$this->assertSame( 'missing', $row['manifest_status'] );

@@ -22,6 +22,11 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.ph
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-planner.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-coordinator.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-cursor.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-verifier.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-chunk-result-repository.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-context-builder.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
 
 use PHPUnit\Framework\TestCase;
@@ -52,5 +57,26 @@ class PluginTest extends TestCase {
 	 */
 	public function test_run_coordinator_returns_same_instance_on_repeated_calls() {
 		$this->assertSame( WPCV_Plugin::run_coordinator(), WPCV_Plugin::run_coordinator() );
+	}
+
+	/**
+	 * `chunk_dispatcher()`(v0.4.0 §Step4)が `WPCV_Chunk_Dispatcher` のインスタンスを
+	 * 返し、複数回呼び出しても同一インスタンスが返ることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_chunk_dispatcher_returns_same_instance_on_repeated_calls() {
+		$this->assertInstanceOf( WPCV_Chunk_Dispatcher::class, WPCV_Plugin::chunk_dispatcher() );
+		$this->assertSame( WPCV_Plugin::chunk_dispatcher(), WPCV_Plugin::chunk_dispatcher() );
+	}
+
+	/**
+	 * `chunk_result_repository()`(v0.4.0 §Step4)が `WPCV_Chunk_Result_Repository` の
+	 * インスタンスを返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_chunk_result_repository_returns_chunk_result_repository_instance() {
+		$this->assertInstanceOf( WPCV_Chunk_Result_Repository::class, WPCV_Plugin::chunk_result_repository() );
 	}
 }

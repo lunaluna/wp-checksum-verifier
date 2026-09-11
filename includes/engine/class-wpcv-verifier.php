@@ -208,15 +208,11 @@ class WPCV_Verifier {
 		$loaders       = isset( $context['loaders'] ) ? (array) $context['loaders'] : array();
 		$dimension     = WPCV_Target_Resolver::DIMENSION_MUPLUGIN;
 
-		$mu_plugin_relative = WPCV_Path_Normalizer::to_relative( $mu_plugin_dir );
-
+		$known_files        = self::known_muplugin_loader_files( $mu_plugin_dir, $loaders );
 		$loader_target_runs = array();
-		$known_files        = array();
 
 		foreach ( $loaders as $basename ) {
-			$basename = (string) $basename;
-			$known_files[ '' === $mu_plugin_relative ? $basename : $mu_plugin_relative . '/' . $basename ] = true;
-
+			$basename             = (string) $basename;
 			$loader_target_runs[] = array(
 				'target_id'       => WPCV_Target_Resolver::build_id( $dimension, $basename ),
 				'dimension'       => $dimension,
@@ -468,18 +464,49 @@ class WPCV_Verifier {
 	}
 
 	/**
-	 * コア領域(wp-admin/wp-includes/ABSPATH 直下)の未知ファイルを走査する(§3.3).
+	 * MU プラグインの loader(`WPMU_PLUGIN_DIR` 直下の相対ファイル名)を、
+	 * `WPCV_Unknown_File_Scanner::scan()` が受け取る形式(ABSPATH相対パスをキーにした
+	 * 既知パス集合)へ変換する(§3.6).
 	 *
-	 * @param array  $known_files コアマニフェストの `files`(3領域すべてで同じものを渡してよい。
-	 *                            走査範囲外のキーが混ざっていても実害は無い).
-	 * @param string $target_id   findings に持たせる target_id(常に `core`).
-	 * @param string $dimension   dimension(常に `core`).
-	 * @param string $slug        slug(常に `wordpress`).
-	 * @param string $version     version.
-	 * @return array findings の配列(`added`).
+	 * `verify_muplugin_area()`(一括実行)に加え、v0.4.0 §Step4の
+	 * `WPCV_Chunk_Dispatcher` が `muplugin:_scan` target を chunk 処理する際にも
+	 * 同じ変換が必要になったため public static で共有する(定義の重複による
+	 * ドリフトを避けるため。`core_unknown_file_areas()` と同じ理由).
+	 *
+	 * @param string $mu_plugin_dir `WPMU_PLUGIN_DIR` の絶対パス.
+	 * @param array  $loaders       `get_mu_plugins()` が返すキー(WPMU_PLUGIN_DIR
+	 *                              直下の相対ファイル名)の一覧.
+	 * @return array ABSPATH相対パスをキーにした連想配列(値は常に `true`。
+	 *               `WPCV_Unknown_File_Scanner::scan()` の `$known_files` にそのまま渡せる).
 	 */
-	private function scan_core_unknown_areas( array $known_files, $target_id, $dimension, $slug, $version ) {
-		$areas = array(
+	public static function known_muplugin_loader_files( $mu_plugin_dir, array $loaders ) {
+		$mu_plugin_dir      = rtrim( WPCV_Path_Normalizer::to_forward_slashes( (string) $mu_plugin_dir ), '/' );
+		$mu_plugin_relative = WPCV_Path_Normalizer::to_relative( $mu_plugin_dir );
+		$known_files        = array();
+
+		foreach ( $loaders as $basename ) {
+			$basename = (string) $basename;
+
+			$known_files[ '' === $mu_plugin_relative ? $basename : $mu_plugin_relative . '/' . $basename ] = true;
+		}
+
+		return $known_files;
+	}
+
+	/**
+	 * コア領域(wp-admin/wp-includes/ABSPATH 直下)の未知ファイル走査対象(§3.3)を返す.
+	 *
+	 * Step4(v0.4.0)のchunk分割dispatcherが、この一括版(`verify_core()` 内の
+	 * `scan_core_unknown_areas()`)とは別に、3領域を1つの合成target(`core:_scan`)の
+	 * chunk処理としてまとめて走査するために、領域定義(ディレクトリ+走査オプション)
+	 * だけを public static で共有する(定義の重複によるドリフトを避けるため。
+	 * `WPCV_Verifier::core_unknown_file_areas()` 参照元は
+	 * `WPCV_Chunk_Dispatcher` を想定).
+	 *
+	 * @return array `array( array( 'dir' => string, 'args' => array ), ... )`.
+	 */
+	public static function core_unknown_file_areas() {
+		return array(
 			array(
 				'dir'  => ABSPATH . 'wp-admin',
 				'args' => array(
@@ -506,10 +533,23 @@ class WPCV_Verifier {
 				),
 			),
 		);
+	}
 
+	/**
+	 * コア領域(wp-admin/wp-includes/ABSPATH 直下)の未知ファイルを走査する(§3.3).
+	 *
+	 * @param array  $known_files コアマニフェストの `files`(3領域すべてで同じものを渡してよい。
+	 *                            走査範囲外のキーが混ざっていても実害は無い).
+	 * @param string $target_id   findings に持たせる target_id(常に `core`).
+	 * @param string $dimension   dimension(常に `core`).
+	 * @param string $slug        slug(常に `wordpress`).
+	 * @param string $version     version.
+	 * @return array findings の配列(`added`).
+	 */
+	private function scan_core_unknown_areas( array $known_files, $target_id, $dimension, $slug, $version ) {
 		$findings = array();
 
-		foreach ( $areas as $area ) {
+		foreach ( self::core_unknown_file_areas() as $area ) {
 			foreach ( $this->scanner->scan( $area['dir'], $known_files, $area['args'] ) as $item ) {
 				$findings[] = self::make_finding_for_unknown_file( $target_id, $dimension, $slug, $version, 'wporg', $item['path'], $item['severity'] );
 			}
