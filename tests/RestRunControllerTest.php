@@ -14,11 +14,16 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-unknown-file-scanner.php';
 require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-source.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-verifier.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-cursor.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-verifier.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-chunk-result-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-planner.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-starter.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-coordinator.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-context-builder.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';

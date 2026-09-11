@@ -90,6 +90,10 @@ class WPCV_Page_Settings {
 				<div class="notice notice-success is-dismissible">
 					<p><?php echo esc_html__( 'A verification run has been scheduled.', 'wp-checksum-verifier' ); ?></p>
 				</div>
+			<?php elseif ( is_array( $run_now_result ) ) : ?>
+				<div class="notice notice-info is-dismissible">
+					<p><?php echo esc_html( self::format_active_run_notice( $run_now_result['run_id'] ) ); ?></p>
+				</div>
 			<?php elseif ( is_wp_error( $run_now_result ) ) : ?>
 				<div class="notice notice-error is-dismissible">
 					<p><?php echo esc_html( $run_now_result->get_error_message() ); ?></p>
@@ -235,10 +239,19 @@ class WPCV_Page_Settings {
 	 * (v0.3.1 §Step3。プラン§P1「「今すぐ実行」が定時イベントと衝突する」
 	 * 「予約結果を検査しないため、失敗しても成功noticeを出す」への対策).
 	 *
-	 * @return true|WP_Error|null 予約に成功すれば `true`、失敗すれば `WP_Error`。
-	 *                            POST されていない・capability検証に失敗した・
-	 *                            `DISABLE_WP_CRON` で無効化されている場合は `null`
-	 *                            (何もnoticeを表示しない).
+	 * v0.4.0 §Step5: 予約の前に active な run(`queued`/`running`)が無いかを確認する
+	 * ようにした。以前は無条件に `MANUAL_HOOK` を予約していたため、既に実行中の
+	 * runがある状態でクリックすると、後から`WPCV_Run_Repository::reserve_run()`の
+	 * advisory lock内で黙って弾かれるだけで、管理画面には「予約しました」としか
+	 * 出ない不整合があった(プラン§Step5「active runがあれば既存runを表示する」)。
+	 * `sweep_stale_running()` を先に呼ぶのは、stale化した run を active と
+	 * 誤判定して新規実行をブロックし続けないため(他の同期系エントリポイントと
+	 * 同じ手順).
+	 *
+	 * @return true|array{run_id: int}|WP_Error|null 予約に成功すれば `true`、
+	 *         既にactiveなrunがあれば`{run_id}`、予約自体が失敗すれば `WP_Error`。
+	 *         POST されていない・capability検証に失敗した・`DISABLE_WP_CRON` で
+	 *         無効化されている場合は `null`(何もnoticeを表示しない).
 	 */
 	private static function maybe_handle_run_now() {
 		if ( ! isset( $_POST[ self::RUN_NOW_NONCE_NAME ] ) ) {
@@ -255,6 +268,18 @@ class WPCV_Page_Settings {
 			return null;
 		}
 
+		$run_repository = WPCV_Plugin::run_repository();
+		$run_repository->sweep_stale_running( WPCV_Scheduler::STALE_THRESHOLD_MINUTES );
+
+		$active_run = $run_repository->find_active_run_id();
+
+		if ( null !== $active_run ) {
+			// find_active_run_id() は id のみ返す(実際の status(queued|running)までは
+			// 分からない)。利用者にとって重要なのは「もう1つ動いている」という
+			// 事実であり内部状態の区別ではないため、案内文もidのみで組み立てる.
+			return array( 'run_id' => $active_run );
+		}
+
 		$scheduled = wp_schedule_single_event( time(), WPCV_Scheduler::MANUAL_HOOK, array(), true );
 
 		if ( is_wp_error( $scheduled ) ) {
@@ -264,6 +289,20 @@ class WPCV_Page_Settings {
 		spawn_cron();
 
 		return true;
+	}
+
+	/**
+	 * Active runの案内文を組み立てる(`maybe_handle_run_now()` から分離してテスト可能にする).
+	 *
+	 * @param int $run_id 対象の run の id.
+	 * @return string
+	 */
+	public static function format_active_run_notice( $run_id ) {
+		return sprintf(
+			/* translators: %d: run id. */
+			__( 'A verification run (#%d) is already in progress. Please wait for it to finish.', 'wp-checksum-verifier' ),
+			(int) $run_id
+		);
 	}
 
 	/**

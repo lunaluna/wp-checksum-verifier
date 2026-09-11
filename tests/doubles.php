@@ -252,8 +252,8 @@ class WPCV_Test_Fake_WPDB {
 
 /**
  * コアのみ(常に成功するマニフェスト)を持つ、手書きスタブ組み立ての
- * `WPCV_Run_Coordinator` と、それが使うのと同一インスタンスの3つの Repository /
- * `WPCV_Test_Fake_WPDB` を組で作る.
+ * `WPCV_Run_Coordinator`・`WPCV_Chunk_Dispatcher` と、それが使うのと同一インスタンスの
+ * 各 Repository / `WPCV_Test_Fake_WPDB` を組で作る.
  *
  * `CliCommandTest` と `RunnerAsyncTest` がどちらも「composition root
  * (`WPCV_Plugin::run_coordinator()` / `WPCV_Plugin::run_repository()`)を丸ごと
@@ -268,49 +268,83 @@ class WPCV_Test_Fake_WPDB {
  * のに合わせ、この関数が返す配列も `run_repository`/`target_run_repository`/
  * `finding_repository` に分割した.
  *
+ * v0.4.0 §Step5で `WPCV_Run_Coordinator` がchunk dispatcherベースへ書き換わった
+ * ことに合わせ、`dispatcher`/`chunk_result_repository` も返すようにした
+ * (`WPCV_Runner_Async::run_async_action()` が `WPCV_Plugin::chunk_dispatcher()` を
+ * 直接呼ぶため、それをテストする場合は `wpcv_test_inject_chunk_dispatcher()`/
+ * `wpcv_test_inject_chunk_result_repository()`/`wpcv_test_inject_target_run_repository()`/
+ * `wpcv_test_inject_finding_repository()` も一緒に差し替えること)。dispatcherの
+ * continuation schedulerは既定でno-op(テストが明示的に検証する場合のみ
+ * `$continuation_scheduler` 引数で差し替える)。
+ *
+ * @param WPCV_Manifest_Source|null $core_source            省略時は常に成功する空マニフェストのfake.
+ * @param WPCV_Manifest_Source|null $plugin_source          省略時は `manifest_not_found` を返すfake.
+ * @param callable|null             $continuation_scheduler 省略時はno-op(`WPCV_Chunk_Dispatcher`
+ *                                                          のクラス docblock 参照).
  * @return array{
  *     coordinator: WPCV_Run_Coordinator,
+ *     dispatcher: WPCV_Chunk_Dispatcher,
  *     run_repository: WPCV_Run_Repository,
  *     target_run_repository: WPCV_Target_Run_Repository,
  *     finding_repository: WPCV_Finding_Repository,
+ *     chunk_result_repository: WPCV_Chunk_Result_Repository,
  *     wpdb: WPCV_Test_Fake_WPDB,
  * }
  */
-function wpcv_test_make_fake_environment() {
-	$verifier = new WPCV_Verifier(
-		new WPCV_Test_Fake_Manifest_Source(
-			array(
-				'manifest_status' => 'ok',
-				'error_code'      => null,
-				'files'           => array(),
-			)
-		),
-		new WPCV_Test_Fake_Manifest_Source(
-			array(
-				'manifest_status' => 'missing',
-				'error_code'      => WPCV_Error_Code::MANIFEST_NOT_FOUND,
-				'files'           => array(),
-			)
-		),
-		new WPCV_Unknown_File_Scanner()
+function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = null, $continuation_scheduler = null ) {
+	$core_source   = $core_source ?? new WPCV_Test_Fake_Manifest_Source(
+		array(
+			'manifest_status' => 'ok',
+			'error_code'      => null,
+			'files'           => array(),
+		)
+	);
+	$plugin_source = $plugin_source ?? new WPCV_Test_Fake_Manifest_Source(
+		array(
+			'manifest_status' => 'missing',
+			'error_code'      => WPCV_Error_Code::MANIFEST_NOT_FOUND,
+			'files'           => array(),
+		)
 	);
 
-	$wpdb                  = new WPCV_Test_Fake_WPDB();
-	$run_repository        = new WPCV_Run_Repository(
-		$wpdb,
-		static function () {
-			return '2026-09-08 12:00:00';
+	$wpdb                    = new WPCV_Test_Fake_WPDB();
+	$now                     = static function () {
+		return '2026-09-08 12:00:00';
+	};
+	$run_repository          = new WPCV_Run_Repository( $wpdb, $now );
+	$target_run_repository   = new WPCV_Target_Run_Repository( $wpdb, $now );
+	$finding_repository      = new WPCV_Finding_Repository( $wpdb );
+	$chunk_result_repository = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, $finding_repository );
+
+	$dispatcher = new WPCV_Chunk_Dispatcher(
+		$run_repository,
+		$target_run_repository,
+		$chunk_result_repository,
+		new WPCV_Chunk_Verifier(),
+		$core_source,
+		$plugin_source,
+		new WPCV_Unknown_File_Scanner(),
+		null,
+		$continuation_scheduler ?? static function () {},
+		// Repository群に注入する `$now`(固定の過去日時)と時刻源を揃える
+		// (`WPCV_Chunk_Dispatcher` の `$now` プロパティのdocblock参照。ずれると
+		// `deadline_at` が常に「過去」と誤判定され、すべてのrunが即座に
+		// `aborted` になる).
+		static function () use ( $now ) {
+			return strtotime( call_user_func( $now ) );
 		}
 	);
-	$target_run_repository = new WPCV_Target_Run_Repository( $wpdb );
-	$finding_repository    = new WPCV_Finding_Repository( $wpdb );
+
+	$coordinator = new WPCV_Run_Coordinator( new WPCV_Run_Planner(), $run_repository, $target_run_repository, $dispatcher );
 
 	return array(
-		'coordinator'           => new WPCV_Run_Coordinator( $verifier, $run_repository, $target_run_repository, $finding_repository ),
-		'run_repository'        => $run_repository,
-		'target_run_repository' => $target_run_repository,
-		'finding_repository'    => $finding_repository,
-		'wpdb'                  => $wpdb,
+		'coordinator'             => $coordinator,
+		'dispatcher'              => $dispatcher,
+		'run_repository'          => $run_repository,
+		'target_run_repository'   => $target_run_repository,
+		'finding_repository'      => $finding_repository,
+		'chunk_result_repository' => $chunk_result_repository,
+		'wpdb'                    => $wpdb,
 	);
 }
 
@@ -367,6 +401,34 @@ function wpcv_test_inject_finding_repository( $repository = null ) {
 	$property = new ReflectionProperty( WPCV_Plugin::class, 'finding_repository' );
 	$property->setAccessible( true );
 	$property->setValue( null, $repository );
+}
+
+/**
+ * `WPCV_Plugin::chunk_result_repository()` が返すインスタンスを差し替える
+ * (`wpcv_test_inject_run_repository()` と同じ手法. v0.4.0 §Step5).
+ *
+ * @param WPCV_Chunk_Result_Repository|null $repository 差し替え先. 省略時はキャッシュを空に戻す.
+ * @return void
+ */
+function wpcv_test_inject_chunk_result_repository( $repository = null ) {
+	$property = new ReflectionProperty( WPCV_Plugin::class, 'chunk_result_repository' );
+	$property->setAccessible( true );
+	$property->setValue( null, $repository );
+}
+
+/**
+ * `WPCV_Plugin::chunk_dispatcher()` が返すインスタンスを差し替える
+ * (`wpcv_test_inject_run_repository()` と同じ手法. v0.4.0 §Step5:
+ * `WPCV_Runner_Async::run_async_action()` が `WPCV_Plugin::chunk_dispatcher()` を
+ * 直接呼ぶようになったため、実 `global $wpdb` 無しでテストするのに必要).
+ *
+ * @param WPCV_Chunk_Dispatcher|null $dispatcher 差し替え先. 省略時はキャッシュを空に戻す.
+ * @return void
+ */
+function wpcv_test_inject_chunk_dispatcher( $dispatcher = null ) {
+	$property = new ReflectionProperty( WPCV_Plugin::class, 'chunk_dispatcher' );
+	$property->setAccessible( true );
+	$property->setValue( null, $dispatcher );
 }
 
 /**

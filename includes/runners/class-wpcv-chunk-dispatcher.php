@@ -147,6 +147,21 @@ class WPCV_Chunk_Dispatcher {
 	private $continuation_scheduler;
 
 	/**
+	 * 現在時刻(Unix timestamp)を返す callable(deadline超過判定に使う).
+	 *
+	 * `WPCV_Run_Repository`/`WPCV_Target_Run_Repository` と同じ理由(テストで
+	 * 固定時刻を注入できるようにするため)で引数で差し替え可能にする。これを
+	 * 固定 `time()` にすると、テストが固定の過去日時を `$wpdb` の `now` callable
+	 * に注入していてもdeadline判定だけは実際の壁時計時刻を見てしまい、
+	 * `deadline_at`(固定の過去日時 + 6時間)が常に「過去」と誤判定されて
+	 * すべてのrunが即座に `aborted` になる、という実際に踏んだ不具合がある
+	 * (Repository群の `now` callableとdeadline判定の時刻源がずれていたため).
+	 *
+	 * @var callable
+	 */
+	private $now;
+
+	/**
 	 * コンストラクタ.
 	 *
 	 * @param WPCV_Run_Repository          $run_repository           `wpcv_runs` の永続化層.
@@ -161,6 +176,8 @@ class WPCV_Chunk_Dispatcher {
 	 *                                                                `as_enqueue_async_action()`/
 	 *                                                                `as_schedule_single_action()`
 	 *                                                                (利用不可なら何もしない).
+	 * @param callable|null                $now                      現在時刻(Unix timestamp)を
+	 *                                                                返す callable. 省略時は `time()`.
 	 */
 	public function __construct(
 		WPCV_Run_Repository $run_repository,
@@ -171,7 +188,8 @@ class WPCV_Chunk_Dispatcher {
 		WPCV_Manifest_Source $plugin_source,
 		WPCV_Unknown_File_Scanner $scanner,
 		?callable $lease_owner_factory = null,
-		?callable $continuation_scheduler = null
+		?callable $continuation_scheduler = null,
+		?callable $now = null
 	) {
 		$this->run_repository          = $run_repository;
 		$this->target_run_repository   = $target_run_repository;
@@ -186,6 +204,10 @@ class WPCV_Chunk_Dispatcher {
 		};
 
 		$this->continuation_scheduler = $continuation_scheduler ?? array( __CLASS__, 'schedule_via_action_scheduler' );
+
+		$this->now = $now ?? static function () {
+			return time();
+		};
 	}
 
 	/**
@@ -627,7 +649,7 @@ class WPCV_Chunk_Dispatcher {
 	private function is_past( $datetime ) {
 		$timestamp = strtotime( (string) $datetime );
 
-		return false !== $timestamp && $timestamp <= time();
+		return false !== $timestamp && $timestamp <= call_user_func( $this->now );
 	}
 
 	/**

@@ -45,4 +45,17 @@ class PageSettingsTest extends TestCase {
 		$this->assertFalse( $state['disabled'] );
 		$this->assertNull( $state['notice'] );
 	}
+
+	/**
+	 * `format_active_run_notice()`(v0.4.0 §Step5)が run_id を含む案内文を
+	 * 組み立てることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_format_active_run_notice_includes_run_id() {
+		$notice = WPCV_Page_Settings::format_active_run_notice( 42 );
+
+		$this->assertIsString( $notice );
+		$this->assertStringContainsString( '42', $notice );
+	}
 }

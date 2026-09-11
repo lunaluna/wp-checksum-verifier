@@ -14,11 +14,16 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-unknown-file-scanner.php';
 require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-source.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-verifier.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-cursor.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-verifier.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-chunk-result-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-planner.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-starter.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-coordinator.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-context-builder.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
@@ -46,8 +51,7 @@ class RunnerAsyncTest extends TestCase {
 	protected function setUp(): void {
 		parent::setUp();
 		unset( $GLOBALS['_wpcv_test_as_enqueue_calls'], $GLOBALS['_wpcv_test_bloginfo'], $GLOBALS['_wpcv_test_plugins'], $GLOBALS['_wpcv_test_mu_plugins'], $GLOBALS['_wpcv_test_as_enqueue_return_zero'], $GLOBALS['_wpcv_test_action_scheduler_initialized'] );
-		wpcv_test_inject_run_coordinator();
-		wpcv_test_inject_run_repository();
+		$this->reset_plugin_cache();
 	}
 
 	/**
@@ -56,9 +60,49 @@ class RunnerAsyncTest extends TestCase {
 	 * @return void
 	 */
 	protected function tearDown(): void {
+		$this->reset_plugin_cache();
+		parent::tearDown();
+	}
+
+	/**
+	 * `WPCV_Plugin` がキャッシュする全アクセサをリセットする.
+	 *
+	 * v0.4.0 §Step5で `WPCV_Runner_Async::run_async_action()` が
+	 * `WPCV_Plugin::target_run_repository()`/`finding_repository()`/
+	 * `chunk_result_repository()`/`chunk_dispatcher()` も(`WPCV_Run_Starter::plan_and_save()`
+	 * 経由・`chunk_dispatcher()->dispatch()` 経由で)使うようになったため、
+	 * `run_coordinator`/`run_repository` の2つだけでは不十分になった。リセットせず
+	 * 放置すると、先に実行された別テストが実 `global $wpdb` で構築したインスタンスが
+	 * キャッシュに残り、以降のテストがフェイク環境ではなく実DBアクセスへ
+	 * フォールバックしてしまう.
+	 *
+	 * @return void
+	 */
+	private function reset_plugin_cache() {
 		wpcv_test_inject_run_coordinator();
 		wpcv_test_inject_run_repository();
-		parent::tearDown();
+		wpcv_test_inject_target_run_repository();
+		wpcv_test_inject_finding_repository();
+		wpcv_test_inject_chunk_result_repository();
+		wpcv_test_inject_chunk_dispatcher();
+	}
+
+	/**
+	 * `wpcv_test_make_fake_environment()` が組み立てた6つのインスタンスすべてを
+	 * `WPCV_Plugin` のキャッシュへ注入する(`run_async_action()` は
+	 * `WPCV_Plugin::chunk_dispatcher()` を直接呼ぶため、`coordinator`/
+	 * `run_repository` だけの注入では実DBへフォールバックしてしまう).
+	 *
+	 * @param array $made `wpcv_test_make_fake_environment()` の戻り値.
+	 * @return void
+	 */
+	private function inject_fake_environment( array $made ) {
+		wpcv_test_inject_run_coordinator( $made['coordinator'] );
+		wpcv_test_inject_run_repository( $made['run_repository'] );
+		wpcv_test_inject_target_run_repository( $made['target_run_repository'] );
+		wpcv_test_inject_finding_repository( $made['finding_repository'] );
+		wpcv_test_inject_chunk_result_repository( $made['chunk_result_repository'] );
+		wpcv_test_inject_chunk_dispatcher( $made['dispatcher'] );
 	}
 
 	/**
@@ -70,8 +114,7 @@ class RunnerAsyncTest extends TestCase {
 	 */
 	public function test_enqueue_run_enqueues_when_action_scheduler_available() {
 		$made = wpcv_test_make_fake_environment();
-		wpcv_test_inject_run_coordinator( $made['coordinator'] );
-		wpcv_test_inject_run_repository( $made['run_repository'] );
+		$this->inject_fake_environment( $made );
 
 		$result = WPCV_Runner_Async::enqueue_run(
 			'cron',
@@ -112,8 +155,7 @@ class RunnerAsyncTest extends TestCase {
 	public function test_enqueue_run_reports_busy_before_enqueue_when_active_run_exists() {
 		$made = wpcv_test_make_fake_environment();
 		$made['run_repository']->reserve_run();
-		wpcv_test_inject_run_coordinator( $made['coordinator'] );
-		wpcv_test_inject_run_repository( $made['run_repository'] );
+		$this->inject_fake_environment( $made );
 
 		$result = WPCV_Runner_Async::enqueue_run(
 			'cron',
@@ -139,8 +181,7 @@ class RunnerAsyncTest extends TestCase {
 		$GLOBALS['_wpcv_test_as_enqueue_return_zero'] = true;
 
 		$made = wpcv_test_make_fake_environment();
-		wpcv_test_inject_run_coordinator( $made['coordinator'] );
-		wpcv_test_inject_run_repository( $made['run_repository'] );
+		$this->inject_fake_environment( $made );
 
 		$result = WPCV_Runner_Async::enqueue_run(
 			'cron',
@@ -169,8 +210,7 @@ class RunnerAsyncTest extends TestCase {
 	public function test_enqueue_run_default_checker_falls_back_when_action_scheduler_not_initialized() {
 		$GLOBALS['_wpcv_test_bloginfo'] = array( 'version' => '6.8' );
 		$made                           = wpcv_test_make_fake_environment();
-		wpcv_test_inject_run_coordinator( $made['coordinator'] );
-		wpcv_test_inject_run_repository( $made['run_repository'] );
+		$this->inject_fake_environment( $made );
 
 		// $GLOBALS['_wpcv_test_action_scheduler_initialized'] を設定しない
 		// (既定 false = ActionScheduler::is_initialized() が偽を返す).
@@ -191,8 +231,7 @@ class RunnerAsyncTest extends TestCase {
 		$GLOBALS['_wpcv_test_action_scheduler_initialized'] = true;
 
 		$made = wpcv_test_make_fake_environment();
-		wpcv_test_inject_run_coordinator( $made['coordinator'] );
-		wpcv_test_inject_run_repository( $made['run_repository'] );
+		$this->inject_fake_environment( $made );
 
 		$result = WPCV_Runner_Async::enqueue_run( 'cron' );
 
@@ -209,8 +248,7 @@ class RunnerAsyncTest extends TestCase {
 	public function test_enqueue_run_falls_back_to_sync_when_action_scheduler_unavailable() {
 		$GLOBALS['_wpcv_test_bloginfo'] = array( 'version' => '6.8' );
 		$made                           = wpcv_test_make_fake_environment();
-		wpcv_test_inject_run_coordinator( $made['coordinator'] );
-		wpcv_test_inject_run_repository( $made['run_repository'] );
+		$this->inject_fake_environment( $made );
 
 		$result = WPCV_Runner_Async::enqueue_run(
 			'rest',
@@ -238,8 +276,7 @@ class RunnerAsyncTest extends TestCase {
 	public function test_enqueue_run_reports_busy_when_active_run_exists() {
 		$made = wpcv_test_make_fake_environment();
 		$made['run_repository']->reserve_run();
-		wpcv_test_inject_run_coordinator( $made['coordinator'] );
-		wpcv_test_inject_run_repository( $made['run_repository'] );
+		$this->inject_fake_environment( $made );
 
 		$result = WPCV_Runner_Async::enqueue_run(
 			'rest',
@@ -256,16 +293,21 @@ class RunnerAsyncTest extends TestCase {
 	/**
 	 * `run_async_action()` が enqueue 時点で予約されていた `queued` run を
 	 * `mark_queued_running()` で引き継ぎ、`$run_trigger` から `$context` を
-	 * 組み立て直して `WPCV_Plugin::run_coordinator()->run()` を呼ぶことを確認する
-	 * (v0.3.1 §Step2).
+	 * 組み立て直して plan+保存を行うことを確認する.
+	 *
+	 * v0.4.0 §Step5: `WPCV_Run_Coordinator::run()`(完走するまでループする)は
+	 * もう呼ばない。`WPCV_Chunk_Dispatcher::dispatch()` を1回呼ぶだけの設計に
+	 * 変わったため、この1回の呼び出しでは(plan結果の`core`/`core:_scan`のうち)
+	 * 先頭の1件しか処理されず、runはまだ `running` のまま完了していない
+	 * (`WPCV_Run_Coordinator` のクラス docblock、`WPCV_Runner_Async::run_async_action()`
+	 * のdocblock参照。続きはdispatcher自身が予約する継続actionに任される設計).
 	 *
 	 * @return void
 	 */
-	public function test_run_async_action_transitions_queued_run_and_runs_coordinator() {
+	public function test_run_async_action_plans_and_processes_one_target_per_call() {
 		$GLOBALS['_wpcv_test_bloginfo'] = array( 'version' => '6.8' );
 		$made                           = wpcv_test_make_fake_environment();
-		wpcv_test_inject_run_coordinator( $made['coordinator'] );
-		wpcv_test_inject_run_repository( $made['run_repository'] );
+		$this->inject_fake_environment( $made );
 
 		$run_id = $made['run_repository']->reserve_run(
 			array(
@@ -277,10 +319,24 @@ class RunnerAsyncTest extends TestCase {
 
 		WPCV_Runner_Async::run_async_action( $run_id, 'cron' );
 
-		$row = $made['wpdb']->rows['wp_wpcv_runs'][ $run_id ];
-		$this->assertSame( 'success', $row['status'] );
-		$this->assertSame( 'async', $row['runner'] );
-		$this->assertSame( 'cron', $row['run_trigger'] );
+		$run_row = $made['wpdb']->rows['wp_wpcv_runs'][ $run_id ];
+		$this->assertSame( WPCV_Run_Status::RUNNING, $run_row['status'] );
+		$this->assertSame( 'async', $run_row['runner'] );
+		$this->assertSame( 'cron', $run_row['run_trigger'] );
+
+		// plan結果(core + core:_scan)が保存されており、うち1件(claim順で先頭の
+		// `core`)だけが処理済み(success)になっていることを確認する.
+		$target_ids = array_column( $made['wpdb']->rows['wp_wpcv_target_runs'], 'target_id' );
+		$this->assertContains( 'core', $target_ids );
+		$this->assertContains( 'core:_scan', $target_ids );
+
+		$core_row = null;
+		foreach ( $made['wpdb']->rows['wp_wpcv_target_runs'] as $row ) {
+			if ( 'core' === $row['target_id'] ) {
+				$core_row = $row;
+			}
+		}
+		$this->assertSame( WPCV_Target_Status::SUCCESS, $core_row['status'] );
 	}
 
 	/**
@@ -304,8 +360,7 @@ class RunnerAsyncTest extends TestCase {
 				'notes'       => 'stale sweep により failed 化済み',
 			)
 		);
-		wpcv_test_inject_run_coordinator( $made['coordinator'] );
-		wpcv_test_inject_run_repository( $made['run_repository'] );
+		$this->inject_fake_environment( $made );
 
 		WPCV_Runner_Async::run_async_action( 1, 'cron' );
 

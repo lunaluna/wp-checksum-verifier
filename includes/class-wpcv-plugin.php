@@ -12,9 +12,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * 本番の WordPress 環境から `WPCV_Run_Coordinator` を組み立てる composition root(v0.3 §Step1).
  *
- * `WPCV_Verifier` / 各 Repository / `WPCV_Run_Coordinator` はいずれもコンストラクタ
- * 注入で依存(`WPCV_Manifest_Source` 実装・`$wpdb`)を受け取る設計(単体テストで
- * テストダブルに差し替えられるようにするため)にしてある。このクラスは唯一、
+ * `WPCV_Chunk_Dispatcher` / 各 Repository / `WPCV_Run_Coordinator` はいずれも
+ * コンストラクタ注入で依存(`WPCV_Manifest_Source` 実装・`$wpdb`)を受け取る設計
+ * (単体テストでテストダブルに差し替えられるようにするため)にしてある。このクラスは唯一、
  * 実際の `global $wpdb` と本番用のソース実装(`WPCV_Source_Core` /
  * `WPCV_Source_Wporg_Plugin` / `WPCV_Unknown_File_Scanner`)を組み合わせて配線する
  * 場所として新設した(WP-CLI / WP-Cron / REST いずれのエントリポイントからも
@@ -27,8 +27,14 @@ if ( ! defined( 'ABSPATH' ) ) {
  *
  * v0.4.0 §Step4で `chunk_result_repository()`/`chunk_dispatcher()` を追加し、
  * `dispatch_chunk()`(`WPCV_Chunk_Dispatcher::HOOK` のフックハンドラ)を新設した。
- * `run_coordinator()`(一括実行)と `chunk_dispatcher()`(chunk分割実行)は
- * Step5でCLI/REST/WP-Cronの繋ぎ替えが完了するまでの間、並行して存在する.
+ *
+ * v0.4.0 §Step5で `run_coordinator()` の実体を「chunk dispatcherを完走まで
+ * ループするadapter」へ書き換えた(`WPCV_Run_Coordinator` のクラス docblock 参照)。
+ * `run_coordinator()` が使う `WPCV_Chunk_Dispatcher` インスタンスは
+ * `chunk_dispatcher()`(AS action向け。継続を実際にenqueueする)とは別に、
+ * continuation schedulerをno-opにしたものを `build_dispatcher()` で都度組み立てる
+ * (同期ループ自身が「次のdispatch呼び出し」を供給するため。理由の詳細は
+ * `WPCV_Run_Coordinator` のクラス docblock 参照).
  */
 class WPCV_Plugin {
 
@@ -155,15 +161,7 @@ class WPCV_Plugin {
 	 */
 	public static function chunk_dispatcher() {
 		if ( null === self::$chunk_dispatcher ) {
-			self::$chunk_dispatcher = new WPCV_Chunk_Dispatcher(
-				self::run_repository(),
-				self::target_run_repository(),
-				self::chunk_result_repository(),
-				new WPCV_Chunk_Verifier(),
-				new WPCV_Source_Core(),
-				new WPCV_Source_Wporg_Plugin(),
-				new WPCV_Unknown_File_Scanner()
-			);
+			self::$chunk_dispatcher = self::build_dispatcher();
 		}
 
 		return self::$chunk_dispatcher;
@@ -191,20 +189,43 @@ class WPCV_Plugin {
 	/**
 	 * `WPCV_Run_Coordinator` を実際の依存で組み立てる.
 	 *
+	 * `chunk_dispatcher()`(AS action向けシングルトン)とは別の
+	 * `WPCV_Chunk_Dispatcher` インスタンスを、continuation schedulerをno-opにして
+	 * 都度組み立てる(`WPCV_Run_Coordinator` のクラス docblock 参照).
+	 *
 	 * @return WPCV_Run_Coordinator
 	 */
 	private static function build_run_coordinator() {
-		$verifier = new WPCV_Verifier(
-			new WPCV_Source_Core(),
-			new WPCV_Source_Wporg_Plugin(),
-			new WPCV_Unknown_File_Scanner()
-		);
-
 		return new WPCV_Run_Coordinator(
-			$verifier,
+			new WPCV_Run_Planner(),
 			self::run_repository(),
 			self::target_run_repository(),
-			self::finding_repository()
+			self::build_dispatcher( static function () {} )
+		);
+	}
+
+	/**
+	 * `WPCV_Chunk_Dispatcher` を実際の依存で組み立てる.
+	 *
+	 * `chunk_dispatcher()`(AS action向け。既定のcontinuation scheduler=実際の
+	 * Action Scheduler呼び出し)と `build_run_coordinator()`(同期ループ向け。
+	 * continuation schedulerをno-opに差し替え)の両方から呼ぶ共通の組み立て処理.
+	 *
+	 * @param callable|null $continuation_scheduler 省略時は `WPCV_Chunk_Dispatcher` の
+	 *                                              既定(実際の Action Scheduler 呼び出し).
+	 * @return WPCV_Chunk_Dispatcher
+	 */
+	private static function build_dispatcher( ?callable $continuation_scheduler = null ) {
+		return new WPCV_Chunk_Dispatcher(
+			self::run_repository(),
+			self::target_run_repository(),
+			self::chunk_result_repository(),
+			new WPCV_Chunk_Verifier(),
+			new WPCV_Source_Core(),
+			new WPCV_Source_Wporg_Plugin(),
+			new WPCV_Unknown_File_Scanner(),
+			null,
+			$continuation_scheduler
 		);
 	}
 

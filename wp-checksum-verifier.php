@@ -115,8 +115,7 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-verifier.
 
 /**
  * Chunk分割実行のための決定的な順序付け・fingerprint計算とchunk単位の検証本体
- * (v0.4.0 §Step3). まだ実際の呼び出し経路(dispatcher。§Step4)は無いが、
- * クラス定義自体は常に読み込んでおく.
+ * (v0.4.0 §Step3). `WPCV_Chunk_Dispatcher`(§Step4)が呼び出し元.
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-chunk-cursor.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-chunk-verifier.php';
@@ -136,10 +135,27 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-finding-reposito
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-chunk-result-repository.php';
 
 /**
- * Run 開始時点でのtarget列挙(v0.4.0 §Step2). `WPCV_Run_Coordinator` が列挙
- * ロジック(`CORE_BUNDLED_PLUGIN_FILES`・slug解決)を委譲するため、先に読み込む.
+ * Run 開始時点でのtarget列挙(v0.4.0 §Step2). `WPCV_Chunk_Dispatcher` が列挙
+ * ロジック(`CORE_BUNDLED_PLUGIN_FILES`・slug解決)を利用するため、先に読み込む.
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-run-planner.php';
+
+/**
+ * Chunk分割実行のdispatcher(v0.4.0 §Step4)。`WPCV_Run_Coordinator`(次で読み込む)
+ * がコンストラクタで型宣言するため先に読み込む必要がある.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-chunk-dispatcher.php';
+
+/**
+ * Run開始時の「列挙(plan)→保存」を失敗時の後始末込みで行う共通処理
+ * (v0.4.0 §Step5)。`WPCV_Run_Coordinator`・`WPCV_Runner_Async` の両方が使う.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-run-starter.php';
+
+/**
+ * 1回分の検証(run)を、chunk分割実行の上で完走するまでループする薄いadapter
+ * (v0.4.0 §Step5. `WPCV_Run_Coordinator` のクラス docblock 参照).
+ */
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-run-coordinator.php';
 
 /**
@@ -151,17 +167,11 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-plugin.php';
 
 /**
  * WP-Cron・「今すぐ実行」・REST・CLI `--async` が収束する非同期実行の一本化
- * エントリポイント(v0.3 §Step4). Step5以降の呼び出し元(WP-Cron等)より前に
- * 読み込む必要があるため、常に読み込む(WP-CLI 同様の条件分岐はしない).
+ * エントリポイント(v0.3 §Step4。v0.4.0 §Step5でAS worker側をchunk dispatcherの
+ * 1回呼び出しに書き換えた). エントリポイント(WP-Cron等)より前に読み込む
+ * 必要があるため、常に読み込む(WP-CLI 同様の条件分岐はしない).
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-runner-async.php';
-
-/**
- * Chunk分割実行のdispatcher(v0.4.0 §Step4)。現時点ではAction Scheduler
- * 経由でのみ到達可能で、CLI/REST/WP-Cronからの呼び出しはまだ無い
- * (Step5・6で繋ぎ替える。`WPCV_Chunk_Dispatcher` のクラス docblock 参照).
- */
-require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-chunk-dispatcher.php';
 
 /**
  * 設定値の保存機構(実行時刻)と、既定の自動実行経路である WP-Cron の

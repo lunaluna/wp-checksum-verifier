@@ -202,6 +202,14 @@ class WPCV_Runner_Async {
 	 * `$context` は `$run_trigger` から `WPCV_Context_Builder::build()` で都度
 	 * 組み立て直す(クラス docblock 参照。enqueue 時点の `$context` は保持しない).
 	 *
+	 * v0.4.0 §Step5: `WPCV_Run_Coordinator::run()`(完走するまでループする一括
+	 * adapter)は呼ばない。ここは「plan+保存 → `WPCV_Chunk_Dispatcher::dispatch()`を
+	 * **1回だけ**呼ぶ」に留め、続きは `dispatch()` 自身が予約する継続action
+	 * (`WPCV_Chunk_Dispatcher::HOOK` の自己連鎖)に任せる。1つのAS action(=1回の
+	 * WP-Cron発火に相当)が大規模サイトの全チェックサム検証を1リクエストで
+	 * ブロックし続けない設計にするため(§6.2「WP-Cron自動実行はdue runの作成と
+	 * dispatcher起動を行う」。`WPCV_Run_Coordinator` のクラス docblock も参照).
+	 *
 	 * @param int    $run_id      `enqueue_via_action_scheduler()` が enqueue した run の id.
 	 * @param string $run_trigger `enqueue_run()` に渡されたもの.
 	 * @return void
@@ -213,7 +221,9 @@ class WPCV_Runner_Async {
 
 		$context = WPCV_Context_Builder::build( (string) $run_trigger );
 
-		WPCV_Plugin::run_coordinator()->run( (int) $run_id, $context );
+		WPCV_Run_Starter::plan_and_save( WPCV_Plugin::run_repository(), new WPCV_Run_Planner(), WPCV_Plugin::target_run_repository(), (int) $run_id, $context );
+
+		WPCV_Plugin::chunk_dispatcher()->dispatch( (int) $run_id, $context );
 	}
 }
 
