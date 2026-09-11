@@ -74,7 +74,10 @@ class WPCV_Finding_Repository {
 	 * @param array $target_run_ids `WPCV_Target_Run_Repository::save_target_runs()` が返した
 	 *                              `target_id => target_run_id` の対応表.
 	 * @param array $findings       `WPCV_Verifier` の各 `verify_*()` が返す findings の配列
-	 *                              (id/run_id/target_run_id 無し。§5.5 のスキーマに準拠).
+	 *                              (id/run_id/target_run_id 無し。§5.5 のスキーマに準拠)。
+	 *                              `suppressed_by`/`suppression_id`(v0.4.0 §Step8:
+	 *                              `WPCV_Suppression_Matcher::apply()` の戻り値)は
+	 *                              省略可(無ければ両方 null として保存する).
 	 * @return void
 	 *
 	 * @throws InvalidArgumentException 対応する target_run_id が `$target_run_ids` に無い場合(同一バッチの
@@ -113,8 +116,10 @@ class WPCV_Finding_Repository {
 					'expected_hash'  => $finding['expected_hash'],
 					'actual_hash'    => $finding['actual_hash'],
 					'file_size'      => $finding['file_size'],
+					'suppressed_by'  => isset( $finding['suppressed_by'] ) ? $finding['suppressed_by'] : null,
+					'suppression_id' => isset( $finding['suppression_id'] ) ? $finding['suppression_id'] : null,
 				),
-				array( '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d' )
+				array( '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%d' )
 			);
 		}
 	}

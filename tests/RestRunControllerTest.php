@@ -20,6 +20,9 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-matcher.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-chunk-result-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-planner.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
@@ -69,6 +72,7 @@ class RestRunControllerTest extends TestCase {
 		wpcv_test_inject_run_repository();
 		wpcv_test_inject_target_run_repository();
 		wpcv_test_inject_sync_dispatcher();
+		wpcv_test_inject_suppression_repository();
 	}
 
 	/**
@@ -80,6 +84,7 @@ class RestRunControllerTest extends TestCase {
 		wpcv_test_inject_run_repository();
 		wpcv_test_inject_target_run_repository();
 		wpcv_test_inject_sync_dispatcher();
+		wpcv_test_inject_suppression_repository();
 		unset( $_SERVER['REMOTE_ADDR'] );
 		parent::tearDown();
 	}
@@ -189,6 +194,7 @@ class RestRunControllerTest extends TestCase {
 		wpcv_test_inject_run_repository( $made['run_repository'] );
 		wpcv_test_inject_target_run_repository( $made['target_run_repository'] );
 		wpcv_test_inject_sync_dispatcher( $made['dispatcher'] );
+		wpcv_test_inject_suppression_repository( $made['suppression_repository'] );
 
 		// cron由来のactive run(scheduled_forを持たない)を、REST以外の経路が
 		// 既に予約・planning済みの状態として用意する.
@@ -200,7 +206,7 @@ class RestRunControllerTest extends TestCase {
 		);
 		WPCV_Run_Starter::plan_and_save(
 			$made['run_repository'],
-			new WPCV_Run_Planner(),
+			new WPCV_Run_Planner( $made['suppression_repository'] ),
 			$made['target_run_repository'],
 			$reservation['run_id'],
 			WPCV_Context_Builder::build( 'cron' )
@@ -238,6 +244,7 @@ class RestRunControllerTest extends TestCase {
 		wpcv_test_inject_run_repository( $made['run_repository'] );
 		wpcv_test_inject_target_run_repository( $made['target_run_repository'] );
 		wpcv_test_inject_sync_dispatcher( $made['dispatcher'] );
+		wpcv_test_inject_suppression_repository( $made['suppression_repository'] );
 
 		// 固定 now(wpcv_test_make_fake_environment() 参照)は 2026-09-08 12:00:00.
 		// 設定実行時刻 11:00 は既に過ぎている.
@@ -388,6 +395,7 @@ class RestRunControllerTest extends TestCase {
 		wpcv_test_inject_run_repository( $made['run_repository'] );
 		wpcv_test_inject_target_run_repository( $made['target_run_repository'] );
 		wpcv_test_inject_sync_dispatcher( $made['dispatcher'] );
+		wpcv_test_inject_suppression_repository( $made['suppression_repository'] );
 
 		$reservation = $made['run_repository']->reserve_run(
 			array(
@@ -447,6 +455,7 @@ class RestRunControllerTest extends TestCase {
 		wpcv_test_inject_run_repository( $made['run_repository'] );
 		wpcv_test_inject_target_run_repository( $made['target_run_repository'] );
 		wpcv_test_inject_sync_dispatcher( $made['dispatcher'] );
+		wpcv_test_inject_suppression_repository( $made['suppression_repository'] );
 
 		// $GLOBALS['_wpcv_test_bloginfo'] を設定しないことで version が空文字になり、
 		// WPCV_Run_Planner::plan() がバリデーション例外を投げる.

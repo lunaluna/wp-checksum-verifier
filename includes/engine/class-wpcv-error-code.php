@@ -86,6 +86,14 @@ class WPCV_Error_Code {
 	const LEASE_EXPIRED = 'lease_expired';
 
 	/**
+	 * `exclude_target` 抑制ルールに一致し、検証自体を行わずスキップした(v0.4.0 §Step8).
+	 *
+	 * `LOCKED`(更新処理中の一時的なスキップ)とは異なり、ユーザーが明示的に
+	 * この target を検証対象外にした恒久的なスキップであることを示す.
+	 */
+	const EXCLUDED = 'excluded';
+
+	/**
 	 * 全 error_code とその説明の一覧を返す(管理画面表示・バリデーション用).
 	 *
 	 * @return array<string, string> error_code => 説明.
@@ -109,6 +117,7 @@ class WPCV_Error_Code {
 			self::TIMEOUT            => __( 'Time budget exhausted (will resume)', 'wp-checksum-verifier' ),
 			self::TARGET_MISSING     => __( 'Target no longer found locally', 'wp-checksum-verifier' ),
 			self::LEASE_EXPIRED      => __( 'Worker lease expired too many times', 'wp-checksum-verifier' ),
+			self::EXCLUDED           => __( 'Excluded by an exclude_target suppression rule', 'wp-checksum-verifier' ),
 		);
 	}
 

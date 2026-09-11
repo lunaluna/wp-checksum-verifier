@@ -7,8 +7,12 @@
 
 require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-matcher.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-chunk-result-repository.php';
 require_once __DIR__ . '/doubles.php';
 
@@ -35,7 +39,7 @@ class ChunkResultRepositoryTest extends TestCase {
 		$wpdb                  = new WPCV_Test_Fake_WPDB();
 		$target_run_repository = new WPCV_Target_Run_Repository( $wpdb );
 		$finding_repository    = new WPCV_Finding_Repository( $wpdb );
-		$repository            = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, $finding_repository );
+		$repository            = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, $finding_repository, new WPCV_Suppression_Repository( $wpdb ) );
 
 		$target_run_ids = $target_run_repository->save_target_runs(
 			1,
@@ -86,7 +90,7 @@ class ChunkResultRepositoryTest extends TestCase {
 		$wpdb                  = new WPCV_Test_Fake_WPDB();
 		$target_run_repository = new WPCV_Target_Run_Repository( $wpdb );
 		$finding_repository    = new WPCV_Finding_Repository( $wpdb );
-		$repository            = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, $finding_repository );
+		$repository            = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, $finding_repository, new WPCV_Suppression_Repository( $wpdb ) );
 
 		$target_run_ids = $target_run_repository->save_target_runs(
 			1,
@@ -132,7 +136,7 @@ class ChunkResultRepositoryTest extends TestCase {
 		$wpdb                  = new WPCV_Test_Fake_WPDB();
 		$target_run_repository = new WPCV_Target_Run_Repository( $wpdb );
 		$finding_repository    = new WPCV_Finding_Repository( $wpdb );
-		$repository            = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, $finding_repository );
+		$repository            = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, $finding_repository, new WPCV_Suppression_Repository( $wpdb ) );
 
 		$target_run_ids = $target_run_repository->save_target_runs( 1, array( wpcv_test_make_target_run() ) );
 		$target_run_id  = $target_run_ids['core'];
@@ -161,5 +165,53 @@ class ChunkResultRepositoryTest extends TestCase {
 			$this->assertContains( 'ROLLBACK', $wpdb->query_calls );
 			$this->assertNotContains( 'COMMIT', $wpdb->query_calls );
 		}
+	}
+
+	/**
+	 * 有効な `exclude_path` 抑制ルールに一致するfindingが、`suppression_id` 付きで
+	 * 保存されることを確認する(v0.4.0 §Step8。`apply_suppressions()` の適用先が
+	 * `save_findings()` の直前であることの統合確認).
+	 *
+	 * @return void
+	 */
+	public function test_commit_chunk_applies_exclude_path_suppression_before_saving() {
+		$wpdb                   = new WPCV_Test_Fake_WPDB();
+		$target_run_repository  = new WPCV_Target_Run_Repository( $wpdb );
+		$finding_repository     = new WPCV_Finding_Repository( $wpdb );
+		$suppression_repository = new WPCV_Suppression_Repository( $wpdb );
+		$repository             = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, $finding_repository, $suppression_repository );
+		$suppression_id         = $suppression_repository->insert(
+			array(
+				'type'       => WPCV_Suppression_Type::EXCLUDE_PATH,
+				'dimension'  => 'core',
+				'slug'       => 'wordpress',
+				'pattern'    => 'wp-admin/index.php',
+				'reason'     => 'known noisy path',
+				'created_by' => 1,
+			)
+		);
+
+		$target_run_ids = $target_run_repository->save_target_runs( 1, array( wpcv_test_make_target_run() ) );
+		$target_run_id  = $target_run_ids['core'];
+
+		$repository->commit_chunk(
+			1,
+			$target_run_id,
+			'core',
+			array(
+				'findings'             => array( wpcv_test_make_finding( array( 'path' => 'wp-admin/index.php' ) ) ),
+				'cursor_path'          => null,
+				'files_verified_delta' => 10,
+				'files_total'          => 10,
+				'completed'            => true,
+				'manifest_fingerprint' => 'abc123',
+				'needs_retry'          => false,
+			)
+		);
+
+		$saved_finding = current( $wpdb->rows['wp_wpcv_findings'] );
+
+		$this->assertNull( $saved_finding['suppressed_by'] );
+		$this->assertSame( $suppression_id, $saved_finding['suppression_id'] );
 	}
 }

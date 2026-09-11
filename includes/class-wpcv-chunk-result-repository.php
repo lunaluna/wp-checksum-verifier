@@ -24,6 +24,11 @@ if ( ! defined( 'ABSPATH' ) ) {
  * chunk確定では「findingsのinsertは成功したがcursor更新が失敗した」といった
  * 半端な状態を残さないため、`$wpdb` の `START TRANSACTION`/`COMMIT`/`ROLLBACK`を
  * 直接発行する.
+ *
+ * v0.4.0 §Step8で `exclude_path`/`allowlist_hash` 抑制ルール(`WPCV_Suppression_Matcher`)の
+ * 適用を追加した。永続化直前(`save_findings()` を呼ぶ前)の1箇所に集約する設計
+ * (ユーザー確認済み)。`exclude_target` は `WPCV_Run_Planner::plan()` が列挙時点で
+ * 適用済みのため、ここでは扱わない.
  */
 class WPCV_Chunk_Result_Repository {
 
@@ -49,16 +54,25 @@ class WPCV_Chunk_Result_Repository {
 	private $finding_repository;
 
 	/**
+	 * `wpcv_suppressions` の永続化層(v0.4.0 §Step8).
+	 *
+	 * @var WPCV_Suppression_Repository
+	 */
+	private $suppression_repository;
+
+	/**
 	 * コンストラクタ.
 	 *
-	 * @param object                     $wpdb                  `$wpdb` 相当のオブジェクト.
-	 * @param WPCV_Target_Run_Repository $target_run_repository `wpcv_target_runs` の永続化層.
-	 * @param WPCV_Finding_Repository    $finding_repository    `wpcv_findings` の永続化層.
+	 * @param object                      $wpdb                   `$wpdb` 相当のオブジェクト.
+	 * @param WPCV_Target_Run_Repository  $target_run_repository  `wpcv_target_runs` の永続化層.
+	 * @param WPCV_Finding_Repository     $finding_repository     `wpcv_findings` の永続化層.
+	 * @param WPCV_Suppression_Repository $suppression_repository `wpcv_suppressions` の永続化層.
 	 */
-	public function __construct( $wpdb, WPCV_Target_Run_Repository $target_run_repository, WPCV_Finding_Repository $finding_repository ) {
-		$this->wpdb                  = $wpdb;
-		$this->target_run_repository = $target_run_repository;
-		$this->finding_repository    = $finding_repository;
+	public function __construct( $wpdb, WPCV_Target_Run_Repository $target_run_repository, WPCV_Finding_Repository $finding_repository, WPCV_Suppression_Repository $suppression_repository ) {
+		$this->wpdb                   = $wpdb;
+		$this->target_run_repository  = $target_run_repository;
+		$this->finding_repository     = $finding_repository;
+		$this->suppression_repository = $suppression_repository;
 	}
 
 	/**
@@ -100,7 +114,7 @@ class WPCV_Chunk_Result_Repository {
 					$this->finding_repository->save_findings(
 						$run_id,
 						array( $target_id => $target_run_id ),
-						$chunk_result['findings']
+						$this->apply_suppressions( $chunk_result['findings'] )
 					);
 				}
 
@@ -115,5 +129,32 @@ class WPCV_Chunk_Result_Repository {
 
 			throw $e;
 		}
+	}
+
+	/**
+	 * Findings配列に `exclude_path`/`allowlist_hash` 抑制ルールを適用し、
+	 * `suppressed_by`/`suppression_id` を埋め込んだ配列を返す(v0.4.0 §Step8)。
+	 *
+	 * `$findings` は同一chunk(=同一target_run。1 target_run = 1直列cursorの前提。
+	 * `WPCV_Chunk_Verifier` のクラス docblock参照)内のfindingsのため、すべて同じ
+	 * dimension/slugを持つ。ルール取得は1回で済む.
+	 *
+	 * @param array $findings `WPCV_Chunk_Verifier` が返す findings の配列(空でないことを呼び出し元が保証済み).
+	 * @return array `suppressed_by`/`suppression_id` を追加済みの findings.
+	 */
+	private function apply_suppressions( array $findings ) {
+		$first       = $findings[0];
+		$rules       = $this->suppression_repository->find_active_rules_for_target( $first['dimension'], $first['slug'] );
+		$strict_mode = WPCV_Settings::get_strict_mode();
+
+		return array_map(
+			static function ( $finding ) use ( $rules, $strict_mode ) {
+				return array_merge(
+					$finding,
+					WPCV_Suppression_Matcher::apply( $finding, $rules['exclude_path'], $rules['allowlist_hash'], $strict_mode )
+				);
+			},
+			$findings
+		);
 	}
 }

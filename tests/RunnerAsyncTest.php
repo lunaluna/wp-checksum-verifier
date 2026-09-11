@@ -20,6 +20,10 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-matcher.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-chunk-result-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-planner.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
@@ -85,6 +89,7 @@ class RunnerAsyncTest extends TestCase {
 		wpcv_test_inject_finding_repository();
 		wpcv_test_inject_chunk_result_repository();
 		wpcv_test_inject_chunk_dispatcher();
+		wpcv_test_inject_suppression_repository();
 	}
 
 	/**
@@ -103,6 +108,7 @@ class RunnerAsyncTest extends TestCase {
 		wpcv_test_inject_finding_repository( $made['finding_repository'] );
 		wpcv_test_inject_chunk_result_repository( $made['chunk_result_repository'] );
 		wpcv_test_inject_chunk_dispatcher( $made['dispatcher'] );
+		wpcv_test_inject_suppression_repository( $made['suppression_repository'] );
 	}
 
 	/**

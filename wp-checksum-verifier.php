@@ -95,6 +95,12 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-run-statu
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-target-status.php';
 
 /**
+ * 抑制ルールのtype定数(v0.4.0 §Step8). `WPCV_Suppression_Repository`/
+ * `WPCV_Run_Planner` 等より前に読み込む必要がある.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-suppression-type.php';
+
+/**
  * ファイルハッシュ算出とパス正規化(検証エンジンの土台).
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-file-hasher.php';
@@ -121,6 +127,12 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-chunk-cur
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-chunk-verifier.php';
 
 /**
+ * Finding単位の抑制判定(v0.4.0 §Step8。exclude_path/allowlist_hash/soft change)。
+ * `WPCV_Chunk_Result_Repository` が呼び出し元のため先に読み込む.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-suppression-matcher.php';
+
+/**
  * DB 永続化層(§4.2. v0.4.0 §Step1でrun/target_run/findingの3責務に分割)と、
  * 1回分の run のライフサイクルを統括する Coordinator.
  */
@@ -129,8 +141,15 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-target-run-repos
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-finding-repository.php';
 
 /**
+ * 抑制ルール(`wpcv_suppressions`)の永続化層(v0.4.0 §Step8)。
+ * `WPCV_Chunk_Result_Repository`・`WPCV_Run_Planner` より前に読み込む必要がある.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-suppression-repository.php';
+
+/**
  * Chunk結果(cursor更新とfindings保存)をtransactionで確定する調整役(v0.4.0 §Step3).
- * `WPCV_Target_Run_Repository`/`WPCV_Finding_Repository` より後に読み込む必要がある.
+ * `WPCV_Target_Run_Repository`/`WPCV_Finding_Repository`/`WPCV_Suppression_Repository`
+ * より後に読み込む必要がある.
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-chunk-result-repository.php';
 

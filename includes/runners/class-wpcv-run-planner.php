@@ -43,6 +43,13 @@ if ( ! defined( 'ABSPATH' ) ) {
  * (core本体 + core:_scan の2件)。既存の一括実行(`WPCV_Run_Coordinator`)は
  * この合成targetを消費しないため無害だが、`plan()` の戻り値件数に依存する
  * テスト・呼び出し元は影響を受ける.
+ *
+ * Step8(v0.4.0)で `exclude_target` 抑制ルール(`WPCV_Suppression_Type::EXCLUDE_TARGET`)
+ * の適用を追加した。列挙した各targetについて有効な `exclude_target` ルールが
+ * あれば、`WPCV_Target_Status::QUEUED` ではなく `SKIPPED`(`error_code` は
+ * `WPCV_Error_Code::EXCLUDED`)として作る。plan時点でスキップを確定させ、
+ * chunk verifierへは一切回さない設計(ユーザー確認済み)。これにより、除外した
+ * targetのmanifest取得・ファイルI/Oが一切発生しない.
  */
 class WPCV_Run_Planner {
 
@@ -56,6 +63,22 @@ class WPCV_Run_Planner {
 	 * @var string[]
 	 */
 	const CORE_BUNDLED_PLUGIN_FILES = array( 'hello.php' );
+
+	/**
+	 * `exclude_target` 抑制ルールの取得元.
+	 *
+	 * @var WPCV_Suppression_Repository
+	 */
+	private $suppression_repository;
+
+	/**
+	 * コンストラクタ.
+	 *
+	 * @param WPCV_Suppression_Repository $suppression_repository `exclude_target` 抑制ルールの取得元.
+	 */
+	public function __construct( WPCV_Suppression_Repository $suppression_repository ) {
+		$this->suppression_repository = $suppression_repository;
+	}
 
 	/**
 	 * コア・公式プラグイン・MU プラグイン領域の target 一覧を列挙する.
@@ -93,12 +116,14 @@ class WPCV_Run_Planner {
 
 		$target_runs = array();
 
-		$target_runs[] = self::queued_target_run(
-			WPCV_Target_Resolver::DIMENSION_CORE,
-			WPCV_Target_Resolver::DIMENSION_CORE,
-			'wordpress', // phpcs:ignore WordPress.WP.CapitalPDangit.MisspelledInText -- WPCV_Verifier::verify_core() と同じ理由.
-			(string) $context['version'],
-			'wporg'
+		$target_runs[] = $this->maybe_apply_exclude_target(
+			self::queued_target_run(
+				WPCV_Target_Resolver::DIMENSION_CORE,
+				WPCV_Target_Resolver::DIMENSION_CORE,
+				'wordpress', // phpcs:ignore WordPress.WP.CapitalPDangit.MisspelledInText -- WPCV_Verifier::verify_core() と同じ理由.
+				(string) $context['version'],
+				'wporg'
+			)
 		);
 
 		// Step4(v0.4.0)のchunk分割dispatcher向け合成target。コアの未知ファイル走査
@@ -110,12 +135,14 @@ class WPCV_Run_Planner {
 		// 従来どおり `core` target_run 1件の中で未知ファイル走査まで行う(この
 		// target_run自体はStep5でdispatcher経由に繋ぎ替えるまでの間、一括実行側からは
 		// 参照されない).
-		$target_runs[] = self::queued_target_run(
-			WPCV_Target_Resolver::build_id( WPCV_Target_Resolver::DIMENSION_CORE, '_scan' ),
-			WPCV_Target_Resolver::DIMENSION_CORE,
-			'_scan',
-			null,
-			null
+		$target_runs[] = $this->maybe_apply_exclude_target(
+			self::queued_target_run(
+				WPCV_Target_Resolver::build_id( WPCV_Target_Resolver::DIMENSION_CORE, '_scan' ),
+				WPCV_Target_Resolver::DIMENSION_CORE,
+				'_scan',
+				null,
+				null
+			)
 		);
 
 		foreach ( $plugins as $plugin_file => $plugin_data ) {
@@ -126,12 +153,14 @@ class WPCV_Run_Planner {
 			$resolved       = self::resolve_plugin_slug_and_root( (string) $plugin_file, $plugin_dir );
 			$plugin_version = isset( $plugin_data['Version'] ) ? (string) $plugin_data['Version'] : '';
 
-			$target_runs[] = self::queued_target_run(
-				WPCV_Target_Resolver::build_id( WPCV_Target_Resolver::DIMENSION_PLUGIN, $resolved['slug'] ),
-				WPCV_Target_Resolver::DIMENSION_PLUGIN,
-				$resolved['slug'],
-				'' === $plugin_version ? null : $plugin_version,
-				'wporg'
+			$target_runs[] = $this->maybe_apply_exclude_target(
+				self::queued_target_run(
+					WPCV_Target_Resolver::build_id( WPCV_Target_Resolver::DIMENSION_PLUGIN, $resolved['slug'] ),
+					WPCV_Target_Resolver::DIMENSION_PLUGIN,
+					$resolved['slug'],
+					'' === $plugin_version ? null : $plugin_version,
+					'wporg'
+				)
 			);
 		}
 
@@ -143,27 +172,52 @@ class WPCV_Run_Planner {
 			// 現時点では検証の結果は必ず unverifiable になるが、その判定自体は
 			// Step3のchunk verifierが行う。ここではqueuedとして列挙するのみ).
 			foreach ( array_keys( $mu_plugins ) as $basename ) {
-				$target_runs[] = self::queued_target_run(
-					WPCV_Target_Resolver::build_id( $dimension, (string) $basename ),
-					$dimension,
-					(string) $basename,
-					null,
-					null
+				$target_runs[] = $this->maybe_apply_exclude_target(
+					self::queued_target_run(
+						WPCV_Target_Resolver::build_id( $dimension, (string) $basename ),
+						$dimension,
+						(string) $basename,
+						null,
+						null
+					)
 				);
 			}
 
 			// サブディレクトリ配下の未知ファイル走査用の合成target
 			// (`WPCV_Verifier::verify_muplugin_area()` の docblock 参照).
-			$target_runs[] = self::queued_target_run(
-				WPCV_Target_Resolver::build_id( $dimension, '_scan' ),
-				$dimension,
-				'_scan',
-				null,
-				null
+			$target_runs[] = $this->maybe_apply_exclude_target(
+				self::queued_target_run(
+					WPCV_Target_Resolver::build_id( $dimension, '_scan' ),
+					$dimension,
+					'_scan',
+					null,
+					null
+				)
 			);
 		}
 
 		return $target_runs;
+	}
+
+	/**
+	 * 列挙済みの target_run に対し、有効な `exclude_target` 抑制ルールがあれば
+	 * `WPCV_Target_Status::SKIPPED` へ書き換える(v0.4.0 §Step8).
+	 *
+	 * @param array $target_run `queued_target_run()` が返す target_run.
+	 * @return array 抑制ルールが無ければそのまま。あれば `status`/`error_code` を
+	 *               書き換えたもの.
+	 */
+	private function maybe_apply_exclude_target( array $target_run ) {
+		$rule = $this->suppression_repository->find_active_exclude_target_rule( $target_run['dimension'], $target_run['slug'] );
+
+		if ( null === $rule ) {
+			return $target_run;
+		}
+
+		$target_run['status']     = WPCV_Target_Status::SKIPPED;
+		$target_run['error_code'] = WPCV_Error_Code::EXCLUDED;
+
+		return $target_run;
 	}
 
 	/**

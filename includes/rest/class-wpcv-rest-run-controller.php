@@ -151,7 +151,7 @@ class WPCV_Rest_Run_Controller {
 
 		if ( $reservation['created'] ) {
 			try {
-				WPCV_Run_Starter::plan_and_save( $run_repository, new WPCV_Run_Planner(), $target_run_repository, $run_id, $context );
+				WPCV_Run_Starter::plan_and_save( $run_repository, new WPCV_Run_Planner( WPCV_Plugin::suppression_repository() ), $target_run_repository, $run_id, $context );
 			} catch ( Throwable $e ) {
 				// plan_and_save() 自身が run を failed 化した上で再送出する
 				// (`WPCV_Run_Starter` のクラス docblock 参照).

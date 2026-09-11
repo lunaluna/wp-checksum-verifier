@@ -74,22 +74,36 @@ class WPCV_Settings {
 	const DEFAULT_EXTERNAL_HTTP_TIME_BUDGET_SECONDS = 20;
 
 	/**
+	 * Strict mode(v0.4.0 §Step8)の既定値.
+	 *
+	 * 既定は false(soft change扱い)。`readme.txt`/`readme.md` の差分は
+	 * 実運用上ほぼ無害な変更(翻訳・changelog更新等)であることが多く、
+	 * 既定で通常findingとして毎回目に入るとノイズになるため
+	 * `WPCV_Suppression_Matcher::SOFT_CHANGE_REASON` として抑制する。
+	 * 厳密に全差分を検出したい運用者向けに strict mode で無効化できるようにする.
+	 *
+	 * @var bool
+	 */
+	const DEFAULT_STRICT_MODE = false;
+
+	/**
 	 * 既定値.
 	 *
-	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int}
+	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool}
 	 */
 	public static function defaults() {
 		return array(
 			'run_hour'                          => self::DEFAULT_RUN_HOUR,
 			'run_minute'                        => self::DEFAULT_RUN_MINUTE,
 			'external_http_time_budget_seconds' => self::DEFAULT_EXTERNAL_HTTP_TIME_BUDGET_SECONDS,
+			'strict_mode'                       => self::DEFAULT_STRICT_MODE,
 		);
 	}
 
 	/**
 	 * 保存済みの設定値を既定値とマージして返す.
 	 *
-	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int}
+	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool}
 	 */
 	public static function get_all() {
 		$stored = self::read_option();
@@ -153,6 +167,31 @@ class WPCV_Settings {
 		$settings = self::get_all();
 
 		$settings['external_http_time_budget_seconds'] = self::clamp_int( $seconds, 5, 55 );
+
+		return self::write_option( $settings );
+	}
+
+	/**
+	 * Strict mode(v0.4.0 §Step8)が有効かどうかを返す.
+	 *
+	 * @return bool
+	 */
+	public static function get_strict_mode() {
+		$settings = self::get_all();
+
+		return (bool) $settings['strict_mode'];
+	}
+
+	/**
+	 * Strict modeの有効・無効を保存する.
+	 *
+	 * @param bool $enabled true で有効化.
+	 * @return bool `update_option()`/`update_site_option()` の戻り値.
+	 */
+	public static function update_strict_mode( $enabled ) {
+		$settings = self::get_all();
+
+		$settings['strict_mode'] = (bool) $enabled;
 
 		return self::write_option( $settings );
 	}

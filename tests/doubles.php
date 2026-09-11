@@ -277,6 +277,11 @@ class WPCV_Test_Fake_WPDB {
  * continuation schedulerは既定でno-op(テストが明示的に検証する場合のみ
  * `$continuation_scheduler` 引数で差し替える)。
  *
+ * v0.4.0 §Step8で `WPCV_Suppression_Repository` を組み立てに加え、
+ * `WPCV_Run_Planner`/`WPCV_Chunk_Result_Repository` に注入するようにした
+ * (`suppression_repository` も返す。`wpcv_test_inject_suppression_repository()`
+ * で `WPCV_Plugin::suppression_repository()` も一緒に差し替えること)。
+ *
  * @param WPCV_Manifest_Source|null $core_source            省略時は常に成功する空マニフェストのfake.
  * @param WPCV_Manifest_Source|null $plugin_source          省略時は `manifest_not_found` を返すfake.
  * @param callable|null             $continuation_scheduler 省略時はno-op(`WPCV_Chunk_Dispatcher`
@@ -288,6 +293,7 @@ class WPCV_Test_Fake_WPDB {
  *     target_run_repository: WPCV_Target_Run_Repository,
  *     finding_repository: WPCV_Finding_Repository,
  *     chunk_result_repository: WPCV_Chunk_Result_Repository,
+ *     suppression_repository: WPCV_Suppression_Repository,
  *     wpdb: WPCV_Test_Fake_WPDB,
  * }
  */
@@ -314,7 +320,8 @@ function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = 
 	$run_repository          = new WPCV_Run_Repository( $wpdb, $now );
 	$target_run_repository   = new WPCV_Target_Run_Repository( $wpdb, $now );
 	$finding_repository      = new WPCV_Finding_Repository( $wpdb );
-	$chunk_result_repository = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, $finding_repository );
+	$suppression_repository  = new WPCV_Suppression_Repository( $wpdb, $now );
+	$chunk_result_repository = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, $finding_repository, $suppression_repository );
 
 	$dispatcher = new WPCV_Chunk_Dispatcher(
 		$run_repository,
@@ -335,7 +342,7 @@ function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = 
 		}
 	);
 
-	$coordinator = new WPCV_Run_Coordinator( new WPCV_Run_Planner(), $run_repository, $target_run_repository, $dispatcher );
+	$coordinator = new WPCV_Run_Coordinator( new WPCV_Run_Planner( $suppression_repository ), $run_repository, $target_run_repository, $dispatcher );
 
 	return array(
 		'coordinator'             => $coordinator,
@@ -344,6 +351,7 @@ function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = 
 		'target_run_repository'   => $target_run_repository,
 		'finding_repository'      => $finding_repository,
 		'chunk_result_repository' => $chunk_result_repository,
+		'suppression_repository'  => $suppression_repository,
 		'wpdb'                    => $wpdb,
 	);
 }
@@ -444,6 +452,19 @@ function wpcv_test_inject_sync_dispatcher( $dispatcher = null ) {
 	$property = new ReflectionProperty( WPCV_Plugin::class, 'sync_dispatcher' );
 	$property->setAccessible( true );
 	$property->setValue( null, $dispatcher );
+}
+
+/**
+ * `WPCV_Plugin::suppression_repository()` が返すインスタンスを差し替える
+ * (`wpcv_test_inject_run_repository()` と同じ手法. v0.4.0 §Step8).
+ *
+ * @param WPCV_Suppression_Repository|null $repository 差し替え先. 省略時はキャッシュを空に戻す.
+ * @return void
+ */
+function wpcv_test_inject_suppression_repository( $repository = null ) {
+	$property = new ReflectionProperty( WPCV_Plugin::class, 'suppression_repository' );
+	$property->setAccessible( true );
+	$property->setValue( null, $repository );
 }
 
 /**

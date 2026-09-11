@@ -20,6 +20,10 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-verifier.ph
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-matcher.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-chunk-result-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-planner.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
@@ -100,7 +104,7 @@ class ChunkDispatcherTest extends TestCase {
 	 * @return WPCV_Chunk_Dispatcher
 	 */
 	private function make_dispatcher( array $repositories, WPCV_Test_Fake_WPDB $wpdb, array $overrides, array &$continuation_calls ) {
-		$chunk_result_repository = new WPCV_Chunk_Result_Repository( $wpdb, $repositories['target_run_repository'], $repositories['finding_repository'] );
+		$chunk_result_repository = new WPCV_Chunk_Result_Repository( $wpdb, $repositories['target_run_repository'], $repositories['finding_repository'], new WPCV_Suppression_Repository( $wpdb ) );
 
 		return new WPCV_Chunk_Dispatcher(
 			$repositories['run_repository'],

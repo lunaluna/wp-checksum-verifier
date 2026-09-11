@@ -80,6 +80,14 @@ class WPCV_Plugin {
 	private static $chunk_result_repository = null;
 
 	/**
+	 * 組み立て済みの `WPCV_Suppression_Repository`(1リクエスト内で使い回す。
+	 * v0.4.0 §Step8で追加).
+	 *
+	 * @var WPCV_Suppression_Repository|null
+	 */
+	private static $suppression_repository = null;
+
+	/**
 	 * 組み立て済みの `WPCV_Chunk_Dispatcher`(1リクエスト内で使い回す。
 	 * v0.4.0 §Step4で追加).
 	 *
@@ -161,10 +169,25 @@ class WPCV_Plugin {
 		if ( null === self::$chunk_result_repository ) {
 			global $wpdb;
 
-			self::$chunk_result_repository = new WPCV_Chunk_Result_Repository( $wpdb, self::target_run_repository(), self::finding_repository() );
+			self::$chunk_result_repository = new WPCV_Chunk_Result_Repository( $wpdb, self::target_run_repository(), self::finding_repository(), self::suppression_repository() );
 		}
 
 		return self::$chunk_result_repository;
+	}
+
+	/**
+	 * 本番用に配線された `WPCV_Suppression_Repository` を返す(v0.4.0 §Step8).
+	 *
+	 * @return WPCV_Suppression_Repository
+	 */
+	public static function suppression_repository() {
+		if ( null === self::$suppression_repository ) {
+			global $wpdb;
+
+			self::$suppression_repository = new WPCV_Suppression_Repository( $wpdb );
+		}
+
+		return self::$suppression_repository;
 	}
 
 	/**
@@ -231,7 +254,7 @@ class WPCV_Plugin {
 	 */
 	private static function build_run_coordinator() {
 		return new WPCV_Run_Coordinator(
-			new WPCV_Run_Planner(),
+			new WPCV_Run_Planner( self::suppression_repository() ),
 			self::run_repository(),
 			self::target_run_repository(),
 			self::sync_dispatcher()

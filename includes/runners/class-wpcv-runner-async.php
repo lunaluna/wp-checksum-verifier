@@ -221,7 +221,7 @@ class WPCV_Runner_Async {
 
 		$context = WPCV_Context_Builder::build( (string) $run_trigger );
 
-		WPCV_Run_Starter::plan_and_save( WPCV_Plugin::run_repository(), new WPCV_Run_Planner(), WPCV_Plugin::target_run_repository(), (int) $run_id, $context );
+		WPCV_Run_Starter::plan_and_save( WPCV_Plugin::run_repository(), new WPCV_Run_Planner( WPCV_Plugin::suppression_repository() ), WPCV_Plugin::target_run_repository(), (int) $run_id, $context );
 
 		WPCV_Plugin::chunk_dispatcher()->dispatch( (int) $run_id, $context );
 	}
