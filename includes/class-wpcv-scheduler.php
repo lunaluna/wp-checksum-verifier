@@ -20,9 +20,14 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 済み、設定変更時の再予約(`reschedule()`)と自己連鎖時の再予約が同じ計算ロジック
  * (`next_timestamp_after()`)を共有できる.
  *
- * stale run 検知(`WPCV_Run_Repository::sweep_stale_running()`。v0.3 §Step5)は専用の
- * Cron を立てず、このハンドラの冒頭でオポチュニスティックに呼ぶ(WPMAR の
- * `sweep_stale_running()` と同じ「アクセスのたびに掃除する」方式).
+ * Stale run 検知は専用の Cron を立てず、このハンドラの冒頭でオポチュニスティックに
+ * 行う(WPMAR の `sweep_stale_running()` と同じ「アクセスのたびに掃除する」方式)。
+ *
+ * v0.4.0コードレビューCR-07是正: stale判定を旧`WPCV_Run_Repository::
+ * sweep_stale_running()`(`started_at`基準・既定180分。v0.3 §Step5)から
+ * `WPCV_Chunk_Dispatcher::sweep_deadline_and_expired_leases()`(`deadline_at`
+ * 基準・既定6時間+target lease)へ切り替えた。詳細・不具合の経緯は同メソッドの
+ * docblock参照.
  */
 class WPCV_Scheduler {
 
@@ -49,12 +54,14 @@ class WPCV_Scheduler {
 	const MANUAL_HOOK = 'wpcv_manual_verify';
 
 	/**
-	 * Stale 判定の閾値(分。`WPCV_Run_Repository::sweep_stale_running()` に渡す).
-	 *
-	 * 【未実測】v0.3計画時点の仮値(「1アクション=1run全体」の想定所要時間より
-	 * 十分長い値、という以上の根拠は無い)。実地検証(§14)で検証サイトの
-	 * `wp wpcv run` の実測所要時間を計測し、その最大値に安全マージンを載せた値へ
-	 * 見直すこと.
+	 * 【v0.4.0コードレビューCR-07是正で不使用に】旧`WPCV_Run_Repository::
+	 * sweep_stale_running()`(`started_at`基準・v0.3 §Step5)向けのstale判定
+	 * 閾値(分)だったが、`run_verification()`が`WPCV_Chunk_Dispatcher::
+	 * sweep_deadline_and_expired_leases()`(`deadline_at`基準)へ切り替わった
+	 * ことに伴い、このクラスからは参照しなくなった。`sweep_stale_running()`
+	 * 自体はメソッドとして残っており、この定数だけを削除すると対応関係が
+	 * 分かりづらくなるため、値はそのまま残してある(呼び出し元が無いことを
+	 * 承知のうえでの残置。完全な整理は別途判断).
 	 *
 	 * @var int
 	 */
@@ -144,12 +151,24 @@ class WPCV_Scheduler {
 	 * Stale run 検知 → 非同期実行の enqueue、の共通処理(`handle_event()` と
 	 * `handle_manual_event()` で共有する).
 	 *
+	 * 現在activeなrunがあれば、新規runを受け付ける前に
+	 * `WPCV_Chunk_Dispatcher::sweep_deadline_and_expired_leases()` でdeadline
+	 * 超過・lease切れを確認する(v0.4.0コードレビューCR-07是正。旧
+	 * `sweep_stale_running()`からの切り替え理由は同メソッドのdocblock参照)。
+	 * 本当に生きているactive runであれば何も起こらず、`enqueue_run()`は
+	 * `reserve_run()`のadvisory lock内で「既にactive」と判定してbusyを返す
+	 * (新規runは作られない。これが意図した挙動).
+	 *
 	 * @param string $run_trigger `WPCV_Runner_Async::enqueue_run()` に渡す
 	 *                            `'cron'|'manual'`.
 	 * @return void
 	 */
 	private static function run_verification( $run_trigger ) {
-		WPCV_Plugin::run_repository()->sweep_stale_running( self::STALE_THRESHOLD_MINUTES );
+		$active_run_id = WPCV_Plugin::run_repository()->find_active_run_id();
+
+		if ( null !== $active_run_id ) {
+			WPCV_Plugin::chunk_dispatcher()->sweep_deadline_and_expired_leases( $active_run_id );
+		}
 
 		WPCV_Runner_Async::enqueue_run( $run_trigger );
 	}

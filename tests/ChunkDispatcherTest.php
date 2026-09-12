@@ -335,6 +335,102 @@ class ChunkDispatcherTest extends TestCase {
 	}
 
 	/**
+	 * `sweep_deadline_and_expired_leases()`(v0.4.0コードレビューCR-07是正で追加。
+	 * `dispatch()`を経由せずWP-Cron/「今すぐ実行」の受付処理から直接呼べる、
+	 * lease掃除+deadline超過チェックのみのメソッド)が、deadline超過している
+	 * activeなrunをabortし、非終端のtargetもabortすることを確認する
+	 * (`dispatch()`側の同種テストと同じ状況を、claim・chunk処理を経由せずに
+	 * 再現できることの確認).
+	 *
+	 * @return void
+	 */
+	public function test_sweep_deadline_and_expired_leases_aborts_run_and_targets_when_deadline_passed() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $repositories['run_repository']->reserve_run();
+		$run_id       = $reservation['run_id'];
+
+		$wpdb->rows['wp_wpcv_runs'][ $run_id ]['deadline_at'] = '2000-01-01 00:00:00';
+
+		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
+			$run_id,
+			array( wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::QUEUED ) ) )
+		);
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array(), $continuation_calls );
+
+		$dispatcher->sweep_deadline_and_expired_leases( $run_id );
+
+		$this->assertSame( WPCV_Run_Status::ABORTED, $wpdb->rows['wp_wpcv_runs'][ $run_id ]['status'] );
+		$this->assertSame( WPCV_Target_Status::ABORTED, $wpdb->rows['wp_wpcv_target_runs'][ $target_run_ids['core'] ]['status'] );
+	}
+
+	/**
+	 * `sweep_deadline_and_expired_leases()` が、deadlineをまだ超過していない
+	 * activeなrunには何もしないことを確認する(v0.4.0コードレビューCR-07是正の
+	 * 核心: `started_at`基準の旧stale判定なら誤ってfailed化していたはずの
+	 * 「経過時間は長いがdeadline内」のrunが、生存判定を`deadline_at`に一本化
+	 * したことで正しく維持されることの確認).
+	 *
+	 * @return void
+	 */
+	public function test_sweep_deadline_and_expired_leases_does_nothing_when_deadline_not_yet_passed() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $repositories['run_repository']->reserve_run();
+		$run_id       = $reservation['run_id'];
+
+		// `reserve_run()` が設定した(未来の)deadline_atをそのまま使う.
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array(), $continuation_calls );
+
+		$dispatcher->sweep_deadline_and_expired_leases( $run_id );
+
+		$this->assertSame( WPCV_Run_Status::PLANNING, $wpdb->rows['wp_wpcv_runs'][ $run_id ]['status'] );
+	}
+
+	/**
+	 * `sweep_deadline_and_expired_leases()` が、既に終端状態のrunには何もしない
+	 * (誤って再abort扱いにしない)ことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_sweep_deadline_and_expired_leases_does_nothing_when_run_already_terminal() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $repositories['run_repository']->reserve_run();
+		$run_id       = $reservation['run_id'];
+
+		$wpdb->rows['wp_wpcv_runs'][ $run_id ]['status']      = WPCV_Run_Status::SUCCESS;
+		$wpdb->rows['wp_wpcv_runs'][ $run_id ]['deadline_at'] = '2000-01-01 00:00:00';
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array(), $continuation_calls );
+
+		$dispatcher->sweep_deadline_and_expired_leases( $run_id );
+
+		$this->assertSame( WPCV_Run_Status::SUCCESS, $wpdb->rows['wp_wpcv_runs'][ $run_id ]['status'] );
+	}
+
+	/**
+	 * `sweep_deadline_and_expired_leases()` が、存在しないrun_idに対して何も
+	 * せず静かに戻ることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_sweep_deadline_and_expired_leases_does_nothing_when_run_not_found() {
+		$wpdb                = new WPCV_Test_Fake_WPDB();
+		$repositories        = $this->make_repositories( $wpdb );
+		$continuation_calls  = array();
+		$dispatcher          = $this->make_dispatcher( $repositories, $wpdb, array(), $continuation_calls );
+
+		$dispatcher->sweep_deadline_and_expired_leases( 999 );
+
+		$this->assertArrayNotHasKey( 'wp_wpcv_runs', $wpdb->rows );
+	}
+
+	/**
 	 * Claim可能なtargetが無く、全target_runが終端状態ならrunを確定させることを確認する.
 	 *
 	 * @return void

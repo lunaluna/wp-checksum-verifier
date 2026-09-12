@@ -120,9 +120,11 @@ class WPCV_Plugin {
 	/**
 	 * 本番用に配線された `WPCV_Run_Repository` を返す.
 	 *
-	 * `WPCV_Run_Coordinator::run()` を経由しない単発の DB 操作(v0.3 §Step5の
-	 * `sweep_stale_running()` を WP-Cron/REST ハンドラの冒頭で呼ぶ場合など)向けに、
-	 * `run_coordinator()` が内部で使うのと同じインスタンスを公開する.
+	 * `WPCV_Run_Coordinator::run()` を経由しない単発の DB 操作(`WPCV_Scheduler`/
+	 * `WPCV_Page_Settings` が受付処理の冒頭で `find_active_run_id()` を呼ぶ場合
+	 * など。v0.4.0コードレビューCR-07是正で、旧`sweep_stale_running()`直接呼び出しは
+	 * `WPCV_Chunk_Dispatcher::sweep_deadline_and_expired_leases()`経由に置き換えた)
+	 * 向けに、`run_coordinator()` が内部で使うのと同じインスタンスを公開する.
 	 *
 	 * @return WPCV_Run_Repository
 	 */

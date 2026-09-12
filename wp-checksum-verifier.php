@@ -78,8 +78,20 @@ register_activation_hook( __FILE__, array( 'WPCV_Activator', 'activate' ) );
 
 /**
  * 自動更新など有効化フックを経由せずに WPCV_DB_VERSION が上がった場合の追従.
+ *
+ * `WPCV_Migrator::maybe_upgrade()` の戻り値(bool。v0.4.0コードレビューCR-05是正)は
+ * ここでは意図的に無視する(`maybe_upgrade()` 自身のdocblock参照。`plugins_loaded`
+ * は毎リクエスト無条件で発火するため、失敗を可視化する責務は有効化フック
+ * 〔`WPCV_Activator::activate()`〕側にある)。クロージャで包むのは、action
+ * コールバックはPHPStanの規約上値を返すべきではないため(`add_action()` に
+ * メソッド参照を直接渡すと戻り値の型が伝播してしまう).
  */
-add_action( 'plugins_loaded', array( 'WPCV_Migrator', 'maybe_upgrade' ) );
+add_action(
+	'plugins_loaded',
+	static function () {
+		WPCV_Migrator::maybe_upgrade();
+	}
+);
 
 /**
  * エラーコードの列挙(§5.4)と target モデル(§5.3: target_id の生成・分解).

@@ -15,10 +15,17 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-unknown-file-scan
 require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-source.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-verifier.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-cursor.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-verifier.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-matcher.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-chunk-result-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-planner.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-coordinator.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-context-builder.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
@@ -59,6 +66,7 @@ class SchedulerTest extends TestCase {
 			$GLOBALS['_wpcv_test_action_scheduler_initialized']
 		);
 		wpcv_test_inject_run_repository();
+		wpcv_test_inject_chunk_dispatcher();
 	}
 
 	/**
@@ -68,6 +76,7 @@ class SchedulerTest extends TestCase {
 	 */
 	protected function tearDown(): void {
 		wpcv_test_inject_run_repository();
+		wpcv_test_inject_chunk_dispatcher();
 		parent::tearDown();
 	}
 
@@ -159,29 +168,34 @@ class SchedulerTest extends TestCase {
 	}
 
 	/**
-	 * `handle_event()` が stale run 検知 → enqueue → 再予約の順で行うことを確認する.
+	 * `handle_event()` が、deadlineを超過しているactive runをabortしてから
+	 * enqueue・再予約の順で行うことを確認する(v0.4.0コードレビューCR-07是正:
+	 * 旧`sweep_stale_running()`〔`started_at`基準・既定180分〕から
+	 * `WPCV_Chunk_Dispatcher::sweep_deadline_and_expired_leases()`〔`deadline_at`
+	 * 基準・既定6時間〕への切り替え後も、本当に停止しているrunは引き続き
+	 * 検知・後始末されることの確認).
 	 *
 	 * @return void
 	 */
-	public function test_handle_event_sweeps_stale_runs_enqueues_and_reschedules() {
-		$wpdb = new WPCV_Test_Fake_WPDB();
-		$now  = static function () {
-			return '2026-09-09 12:00:00';
-		};
+	public function test_handle_event_aborts_run_past_deadline_enqueues_and_reschedules() {
+		$fake = wpcv_test_make_fake_environment();
+		$wpdb = $fake['wpdb'];
 
-		// stale 判定の閾値(`WPCV_Scheduler::STALE_THRESHOLD_MINUTES` = 180分 = 3時間)
-		// より古い running 行を1件仕込む(09:00 より前は stale).
+		// deadline_at(6時間)を既に超過している running 行を1件仕込む
+		// (`wpcv_test_make_fake_environment()` の固定 now は 2026-09-08 12:00:00).
 		$wpdb->insert(
 			'wp_wpcv_runs',
 			array(
-				'started_at'  => '2026-09-09 08:00:00',
+				'started_at'  => '2026-09-08 05:00:00',
+				'deadline_at' => '2026-09-08 11:00:00',
 				'status'      => 'running',
 				'run_trigger' => 'cron',
 				'runner'      => 'async',
 			)
 		);
 
-		wpcv_test_inject_run_repository( new WPCV_Run_Repository( $wpdb, $now ) );
+		wpcv_test_inject_run_repository( $fake['run_repository'] );
+		wpcv_test_inject_chunk_dispatcher( $fake['dispatcher'] );
 
 		// `ActionScheduler::is_initialized()` を真にし、enqueue 経路(可用性あり)を
 		// 通す(v0.3.1 §Step2で `WPCV_Runner_Async::enqueue_run()` の既定可用性
@@ -190,19 +204,58 @@ class SchedulerTest extends TestCase {
 
 		WPCV_Scheduler::handle_event();
 
-		// 1. stale run が failed 化されている.
-		$this->assertSame( 'failed', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
+		// 1. deadline超過のrunが aborted 化されている.
+		$this->assertSame( WPCV_Run_Status::ABORTED, $wpdb->rows['wp_wpcv_runs'][1]['status'] );
 
 		// 2. `WPCV_Runner_Async::enqueue_run( 'cron' )` が enqueue 経路を通っている.
 		$this->assertCount( 1, $GLOBALS['_wpcv_test_as_enqueue_calls'] );
 		list( $hook, $args ) = $GLOBALS['_wpcv_test_as_enqueue_calls'][0];
 		$this->assertSame( WPCV_Runner_Async::HOOK, $hook );
-		// enqueue する args は run_id(stale run の1件を failed 化した直後に
-		// 新規 queued run として2件目が作られるため2)と $run_trigger(v0.3.1 §Step2).
+		// enqueue する args は run_id(aborted化した直後に新規 queued run として
+		// 2件目が作られるため2)と $run_trigger(v0.3.1 §Step2).
 		$this->assertSame( array( 2, 'cron' ), $args );
 
 		// 3. 次回分が自己連鎖で再予約されている.
 		$this->assertNotFalse( wp_next_scheduled( WPCV_Scheduler::HOOK ) );
+	}
+
+	/**
+	 * `handle_event()` が、`started_at`からの経過時間は長い(旧stale閾値の3時間を
+	 * 超えている)がdeadline(6時間)にはまだ余裕があるactive runを、誤って
+	 * abort・enqueueしないことを確認する(v0.4.0コードレビューCR-07是正の核心:
+	 * 旧`sweep_stale_running()`ならこのrunを`failed`化してしまっていたはずの
+	 * シナリオ).
+	 *
+	 * @return void
+	 */
+	public function test_handle_event_does_not_abort_or_enqueue_when_run_is_within_deadline() {
+		$fake = wpcv_test_make_fake_environment();
+		$wpdb = $fake['wpdb'];
+
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-08 08:00:00',
+				'deadline_at' => '2026-09-08 18:00:00',
+				'status'      => 'running',
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+			)
+		);
+
+		wpcv_test_inject_run_repository( $fake['run_repository'] );
+		wpcv_test_inject_chunk_dispatcher( $fake['dispatcher'] );
+
+		$GLOBALS['_wpcv_test_action_scheduler_initialized'] = true;
+
+		WPCV_Scheduler::handle_event();
+
+		// runは running のまま(abortされていない).
+		$this->assertSame( 'running', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
+
+		// active runがあるため `enqueue_run()` は busy 判定で新規 run を作らず、
+		// `as_enqueue_async_action()` 自体も呼ばれない.
+		$this->assertArrayNotHasKey( '_wpcv_test_as_enqueue_calls', $GLOBALS );
 	}
 
 	/**

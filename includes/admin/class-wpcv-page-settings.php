@@ -310,9 +310,13 @@ class WPCV_Page_Settings {
 	 * runがある状態でクリックすると、後から`WPCV_Run_Repository::reserve_run()`の
 	 * advisory lock内で黙って弾かれるだけで、管理画面には「予約しました」としか
 	 * 出ない不整合があった(プラン§Step5「active runがあれば既存runを表示する」)。
-	 * `sweep_stale_running()` を先に呼ぶのは、stale化した run を active と
-	 * 誤判定して新規実行をブロックし続けないため(他の同期系エントリポイントと
-	 * 同じ手順).
+	 *
+	 * Active runの有無を見る前に `WPCV_Chunk_Dispatcher::sweep_deadline_and_expired_leases()`
+	 * を呼ぶのは、stale化した run を active と誤判定して新規実行をブロックし
+	 * 続けないため(v0.4.0コードレビューCR-07是正: 旧`sweep_stale_running()`
+	 * 〔`started_at`基準・既定180分〕は、6時間`deadline_at`+target leaseの下で
+	 * 正常に進行中のchunk実行runを誤って`failed`にしてしまう競合があったため、
+	 * `deadline_at`基準の判定へ切り替えた。詳細は同メソッドのdocblock参照).
 	 *
 	 * @return true|array{run_id: int}|WP_Error|null 予約に成功すれば `true`、
 	 *         既にactiveなrunがあれば`{run_id}`、予約自体が失敗すれば `WP_Error`。
@@ -335,9 +339,14 @@ class WPCV_Page_Settings {
 		}
 
 		$run_repository = WPCV_Plugin::run_repository();
-		$run_repository->sweep_stale_running( WPCV_Scheduler::STALE_THRESHOLD_MINUTES );
+		$active_run     = $run_repository->find_active_run_id();
 
-		$active_run = $run_repository->find_active_run_id();
+		if ( null !== $active_run ) {
+			WPCV_Plugin::chunk_dispatcher()->sweep_deadline_and_expired_leases( $active_run );
+			// sweepでdeadline超過により aborted 化された可能性があるため、
+			// 表示に使う前に active run の有無を読み直す.
+			$active_run = $run_repository->find_active_run_id();
+		}
 
 		if ( null !== $active_run ) {
 			// find_active_run_id() は id のみ返す(実際の status(queued|running)までは

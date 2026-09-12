@@ -51,6 +51,16 @@ if ( ! defined( 'ABSPATH' ) ) {
  * `plugin_root_dir`・現在のversionを毎回「実行時点の最新状態」から再解決する
  * ことになり、実行中にプラグインが更新された場合の検知(§8.5)にも寄与する
  * (`resolve_current_plugin_context()` 参照)。
+ *
+ * v0.4.0コードレビューCR-07是正: `sweep_deadline_and_expired_leases()`を追加した。
+ * WP-Cron(`WPCV_Scheduler`)・「今すぐ実行」(`WPCV_Page_Settings`)が新規runを
+ * 受け付ける前に「既存のactive runが停止していないか」を確認する用途で、旧
+ * v0.3の`WPCV_Run_Repository::sweep_stale_running()`(`started_at`基準・
+ * 既定180分)をそのまま使い続けていたことが原因で、6時間`deadline_at`の下で
+ * 正常に進行中のchunk実行runを誤って`failed`にしてしまう競合があった(詳細は
+ * `sweep_deadline_and_expired_leases()`のdocblock参照)。生存判定を
+ * `deadline_at`+target leaseに一本化するため、それらの呼び出し元は
+ * `sweep_stale_running()`ではなくこのメソッドを使う.
  */
 class WPCV_Chunk_Dispatcher {
 
@@ -255,12 +265,9 @@ class WPCV_Chunk_Dispatcher {
 			);
 		}
 
-		if ( ! empty( $run['deadline_at'] ) && $this->is_past( $run['deadline_at'] ) ) {
-			// `queued`/`planning`のまま止まったrun(worker crash等)もここで
-			// 拾えるよう、claim対象の有無を見る前にdeadlineだけを先に判定する.
-			$this->run_repository->mark_run_aborted( $run_id, 'run deadline を超過したため aborted にしました.' );
-			$this->target_run_repository->abort_non_terminal_for_run( $run_id );
-
+		// `queued`/`planning`のまま止まったrun(worker crash等)もここで拾えるよう、
+		// claim対象の有無を見る前にdeadlineだけを先に判定する.
+		if ( $this->abort_if_deadline_exceeded( $run_id, $run ) ) {
 			return array( 'action' => 'aborted' );
 		}
 
@@ -306,6 +313,65 @@ class WPCV_Chunk_Dispatcher {
 			'action'    => 'processed',
 			'target_id' => $claimed['target_id'],
 		);
+	}
+
+	/**
+	 * 指定runのlease切れ掃除とdeadline超過チェックだけを行う(claim・chunk処理は
+	 * 一切行わない。v0.4.0コードレビューCR-07是正)。
+	 *
+	 * WP-Cron(`WPCV_Scheduler`)・「今すぐ実行」(`WPCV_Page_Settings`)の受付処理は、
+	 * 新規runを予約する前に「既存のactiveなrunが本当に生きているか」を確認する
+	 * 必要がある(でなければ、詰まったrunがいつまでも新規runの受付をブロックし
+	 * 続ける)。旧v0.3実装はここで `WPCV_Run_Repository::sweep_stale_running()`
+	 * (`started_at`からの経過時間のみで判定。既定180分)を使っていたが、これは
+	 * 「1 action = 1 run全体」だった旧モデルの閾値であり、v0.4.0のchunk分割実行が
+	 * 前提とする「複数回の`dispatch()`呼び出しにまたがって、6時間の`deadline_at`
+	 * まで前進し続けてよい」という生存モデルと衝突する。target
+	 * lease(`update_chunk_progress()`等)・heartbeatが健全に更新され続けている
+	 * 限り、`started_at`から3時間以上経っていても run 自体は正常に進行中であり
+	 * 得るため、`sweep_stale_running()`をそのまま使うとこの正常なrunを誤って
+	 * `failed`にしてしまう(実際に指摘された競合)。
+	 *
+	 * このメソッドは `dispatch()` が冒頭で行う「lease切れ掃除→deadline超過
+	 * チェック」の部分だけを、claim・chunk処理を経由せずに単独で呼べるように
+	 * 切り出したもの(`dispatch()`の`abort_if_deadline_exceeded()`呼び出しと
+	 * 同じロジックを共有し、二重実装によるドリフトを避ける).
+	 *
+	 * @param int $run_id 対象の run の id.
+	 * @return void
+	 */
+	public function sweep_deadline_and_expired_leases( $run_id ) {
+		$run_id = (int) $run_id;
+
+		$this->target_run_repository->sweep_expired_leases( $run_id );
+
+		$run = $this->run_repository->find_by_id( $run_id );
+
+		if ( null === $run || ! WPCV_Run_Status::is_active( $run['status'] ) ) {
+			return;
+		}
+
+		$this->abort_if_deadline_exceeded( $run_id, $run );
+	}
+
+	/**
+	 * `$run['deadline_at']` を過ぎていれば run を `aborted` にし、非終端の
+	 * target_run も併せて `aborted` にする(`dispatch()`/
+	 * `sweep_deadline_and_expired_leases()` で共有するヘルパー).
+	 *
+	 * @param int   $run_id 対象の run の id.
+	 * @param array $run    `find_by_id()` が返した run 行.
+	 * @return bool 超過していて実際に abort した場合は true.
+	 */
+	private function abort_if_deadline_exceeded( $run_id, array $run ) {
+		if ( empty( $run['deadline_at'] ) || ! $this->is_past( $run['deadline_at'] ) ) {
+			return false;
+		}
+
+		$this->run_repository->mark_run_aborted( $run_id, 'run deadline を超過したため aborted にしました.' );
+		$this->target_run_repository->abort_non_terminal_for_run( $run_id );
+
+		return true;
 	}
 
 	/**
