@@ -319,6 +319,33 @@ if ( ! function_exists( 'as_enqueue_async_action' ) ) {
 	}
 }
 
+if ( ! function_exists( 'as_schedule_single_action' ) ) {
+	/**
+	 * Stub as_schedule_single_action() — records the call in
+	 * $GLOBALS['_wpcv_test_as_schedule_single_calls'][] and returns a fake
+	 * incrementing action id (mirrors the real function's `int` return on
+	 * success), unless $GLOBALS['_wpcv_test_as_schedule_single_return_zero']
+	 * is truthy, in which case it returns 0 (mirrors the real function's
+	 * failure return). Added for v0.4.0コードレビューCR-06是正
+	 * (`WPCV_Chunk_Dispatcher::schedule_via_action_scheduler()` の遅延予約経路のテスト用).
+	 *
+	 * @param int    $timestamp Unix timestamp.
+	 * @param string $hook      Hook name.
+	 * @param array  $args      Args passed to the hook.
+	 * @param string $group     Group.
+	 * @return int
+	 */
+	function as_schedule_single_action( $timestamp, $hook, $args = array(), $group = '' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_as_schedule_single_calls'][] = array( $timestamp, $hook, $args, $group );
+
+		if ( ! empty( $GLOBALS['_wpcv_test_as_schedule_single_return_zero'] ) ) {
+			return 0;
+		}
+
+		return count( $GLOBALS['_wpcv_test_as_schedule_single_calls'] );
+	}
+}
+
 if ( ! class_exists( 'ActionScheduler' ) ) {
 	/**
 	 * Minimal stub of ActionScheduler(実クラスは `lib/action-scheduler/classes/abstracts/ActionScheduler.php`)。

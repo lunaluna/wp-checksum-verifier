@@ -700,9 +700,18 @@ class WPCV_Chunk_Dispatcher {
 	/**
 	 * `$this->continuation_scheduler` を呼ぶ.
 	 *
+	 * 既定実装(`schedule_via_action_scheduler()`)は予約失敗時に例外を投げる
+	 * (v0.4.0コードレビューCR-06是正)。ここでは捕捉せずそのまま呼び出し元
+	 * (`dispatch()`)へ伝播させる ―― `dispatch()` はAction Schedulerのワーカー
+	 * コンテキストからのみ呼ばれるため、例外はAction Scheduler自身がそのaction
+	 * を failed として記録するだけで安全に吸収される(`schedule_via_action_scheduler()`
+	 * のdocblock参照).
+	 *
 	 * @param int $run_id        対象の run の id.
 	 * @param int $delay_seconds 0なら即時、正の値なら遅延.
 	 * @return void
+	 *
+	 * @throws RuntimeException 既定実装が継続予約に失敗した場合.
 	 */
 	private function schedule_continuation( $run_id, $delay_seconds ) {
 		call_user_func( $this->continuation_scheduler, $run_id, $delay_seconds );
@@ -715,9 +724,25 @@ class WPCV_Chunk_Dispatcher {
 	 * で確認するのは `WPCV_Runner_Async::enqueue_run()` と同じ理由
 	 * (PHPUnitプロセス内でのスタブ漏れ対策。同クラスのdocblock参照).
 	 *
+	 * `as_enqueue_async_action()`/`as_schedule_single_action()` の戻り値
+	 * (action ID。予約失敗時は `0`)を確認せず捨てていた(v0.4.0コードレビュー
+	 * CR-06是正)。捨てたままだと、AS の args 文字数制限超過(`WPCV_Runner_Async`
+	 * のクラスdocblock参照)や一時的なDB書き込み失敗で予約が失敗しても、
+	 * このrunを再度起こす手段が無いまま `running` で永久に停止してしまう
+	 * (レビュー指摘)。呼び出し元はAction Schedulerのワーカーコンテキスト
+	 * (`WPCV_Plugin::dispatch_chunk()`/`WPCV_Runner_Async::run_async_action()`。
+	 * いずれもAS action自体のフックハンドラ)からのみ到達するため、ここで
+	 * 例外を投げてもAction Scheduler自身がフック実行中の例外を捕捉しその
+	 * action を failed 記録するだけで済み、CR-05是正時に`plugins_loaded`への
+	 * 例外化を避けた(毎リクエスト無条件フックでサイト全体を巻き込む)ような
+	 * 副作用は無い.
+	 *
 	 * @param int $run_id        対象の run の id.
 	 * @param int $delay_seconds 0なら即時、正の値なら遅延.
 	 * @return void
+	 *
+	 * @throws RuntimeException `as_enqueue_async_action()`/`as_schedule_single_action()`
+	 *                          が正の action ID を返さなかった場合.
 	 */
 	private static function schedule_via_action_scheduler( $run_id, $delay_seconds ) {
 		if ( ! function_exists( 'as_enqueue_async_action' ) || ! class_exists( 'ActionScheduler' ) || ! ActionScheduler::is_initialized() ) {
@@ -726,12 +751,36 @@ class WPCV_Chunk_Dispatcher {
 
 		if ( $delay_seconds > 0 ) {
 			if ( function_exists( 'as_schedule_single_action' ) ) {
-				as_schedule_single_action( time() + (int) $delay_seconds, self::HOOK, array( (int) $run_id ), self::GROUP );
+				$action_id = as_schedule_single_action( time() + (int) $delay_seconds, self::HOOK, array( (int) $run_id ), self::GROUP );
+
+				if ( (int) $action_id <= 0 ) {
+					throw new RuntimeException(
+						esc_html(
+							sprintf(
+								'WPCV_Chunk_Dispatcher::schedule_via_action_scheduler() は run #%d の継続予約(as_schedule_single_action)に失敗しました(戻り値: %d).',
+								(int) $run_id,
+								(int) $action_id
+							)
+						)
+					);
+				}
 			}
 			return;
 		}
 
-		as_enqueue_async_action( self::HOOK, array( (int) $run_id ), self::GROUP );
+		$action_id = as_enqueue_async_action( self::HOOK, array( (int) $run_id ), self::GROUP );
+
+		if ( (int) $action_id <= 0 ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf(
+						'WPCV_Chunk_Dispatcher::schedule_via_action_scheduler() は run #%d の継続予約(as_enqueue_async_action)に失敗しました(戻り値: %d).',
+						(int) $run_id,
+						(int) $action_id
+					)
+				)
+			);
+		}
 	}
 }
 

@@ -162,6 +162,25 @@ class ChunkDispatcherTest extends TestCase {
 	}
 
 	/**
+	 * 各テストの前に前回の残骸を掃除する(v0.4.0コードレビューCR-06是正で追加した
+	 * `test_schedule_via_action_scheduler_*` が使うAction Scheduler関連の
+	 * グローバルのみが対象。他のテストは `$continuation_scheduler` を注入した
+	 * フェイクを使うため、この掃除の影響を受けない).
+	 *
+	 * @return void
+	 */
+	protected function setUp(): void {
+		parent::setUp();
+		unset(
+			$GLOBALS['_wpcv_test_as_enqueue_calls'],
+			$GLOBALS['_wpcv_test_as_enqueue_return_zero'],
+			$GLOBALS['_wpcv_test_as_schedule_single_calls'],
+			$GLOBALS['_wpcv_test_as_schedule_single_return_zero'],
+			$GLOBALS['_wpcv_test_action_scheduler_initialized']
+		);
+	}
+
+	/**
 	 * 存在しない run_id を渡すと `run_not_found` を返すことを確認する.
 	 *
 	 * @return void
@@ -759,5 +778,81 @@ class ChunkDispatcherTest extends TestCase {
 
 		$this->assertCount( 1, $continuation_calls );
 		$this->assertSame( 0, $continuation_calls[0]['delay_seconds'] );
+	}
+
+	/**
+	 * `schedule_via_action_scheduler()`(`$continuation_scheduler` の既定実装。
+	 * private static)を `ReflectionMethod` 経由で直接呼び、`as_enqueue_async_action()`
+	 * が正の action ID を返せば例外を投げないことを確認する(v0.4.0コード
+	 * レビューCR-06是正の正常系).
+	 *
+	 * @return void
+	 */
+	public function test_schedule_via_action_scheduler_does_not_throw_when_enqueue_succeeds() {
+		$GLOBALS['_wpcv_test_action_scheduler_initialized'] = true;
+
+		$method = new ReflectionMethod( WPCV_Chunk_Dispatcher::class, 'schedule_via_action_scheduler' );
+		$method->setAccessible( true );
+
+		$method->invoke( null, 42, 0 );
+
+		$this->assertCount( 1, $GLOBALS['_wpcv_test_as_enqueue_calls'] );
+	}
+
+	/**
+	 * `schedule_via_action_scheduler()` が、即時予約(`$delay_seconds = 0`)経路で
+	 * `as_enqueue_async_action()` が `0`(予約失敗)を返した場合に `RuntimeException`
+	 * を投げることを確認する(v0.4.0コードレビューCR-06是正: 戻り値を確認せず
+	 * 捨てていたため、予約失敗時にrunを再度起こす手段が無いまま永久に
+	 * 停止していた不具合への対策).
+	 *
+	 * @return void
+	 */
+	public function test_schedule_via_action_scheduler_throws_when_immediate_enqueue_fails() {
+		$GLOBALS['_wpcv_test_action_scheduler_initialized'] = true;
+		$GLOBALS['_wpcv_test_as_enqueue_return_zero']       = true;
+
+		$method = new ReflectionMethod( WPCV_Chunk_Dispatcher::class, 'schedule_via_action_scheduler' );
+		$method->setAccessible( true );
+
+		$this->expectException( RuntimeException::class );
+
+		$method->invoke( null, 42, 0 );
+	}
+
+	/**
+	 * `schedule_via_action_scheduler()` が、遅延予約(`$delay_seconds > 0`)経路で
+	 * `as_schedule_single_action()` が `0`(予約失敗)を返した場合に
+	 * `RuntimeException` を投げることを確認する(v0.4.0コードレビューCR-06是正:
+	 * 即時予約と同じ不具合が遅延予約側にもあった).
+	 *
+	 * @return void
+	 */
+	public function test_schedule_via_action_scheduler_throws_when_delayed_schedule_fails() {
+		$GLOBALS['_wpcv_test_action_scheduler_initialized']   = true;
+		$GLOBALS['_wpcv_test_as_schedule_single_return_zero'] = true;
+
+		$method = new ReflectionMethod( WPCV_Chunk_Dispatcher::class, 'schedule_via_action_scheduler' );
+		$method->setAccessible( true );
+
+		$this->expectException( RuntimeException::class );
+
+		$method->invoke( null, 42, 120 );
+	}
+
+	/**
+	 * `schedule_via_action_scheduler()` が、Action Scheduler未初期化時は
+	 * (従来どおり)何もせず例外も投げないことを確認する(可用性が無い場合の
+	 * 既存の早期returnがCR-06是正で変わっていないことの回帰確認).
+	 *
+	 * @return void
+	 */
+	public function test_schedule_via_action_scheduler_does_nothing_when_action_scheduler_not_initialized() {
+		$method = new ReflectionMethod( WPCV_Chunk_Dispatcher::class, 'schedule_via_action_scheduler' );
+		$method->setAccessible( true );
+
+		$method->invoke( null, 42, 0 );
+
+		$this->assertArrayNotHasKey( '_wpcv_test_as_enqueue_calls', $GLOBALS );
 	}
 }
