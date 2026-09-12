@@ -231,7 +231,9 @@ pagination に対応する。suppressed・closedなfindingは既定で除外し�
 run」を反映するだけで、サーバーにWP-CLI自体がインストールされているか
 どうかを検出するものではない)。その下から、日次実行時刻
 (UTC。WP-CronとRESTの日次due判定が共通で使う)・RESTエンドポイントの
-時間予算・RESTトークンの発行を設定できる.
+時間予算・strict mode(readme.txt/readme.mdの変更を低リスクな「soft change」
+として抑制せず、通常のfindingとして報告する。既定は無効)・RESTトークンの
+発行を設定できる.
 
 ## 配布方針
 

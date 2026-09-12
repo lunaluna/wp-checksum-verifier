@@ -251,7 +251,9 @@ recent WP-CLI-triggered run recorded on this site (this only reflects runs
 actually recorded here — it cannot detect whether WP-CLI itself is
 installed on the server). Below that, you can configure: the daily run time
 (UTC, shared by WP-Cron and the REST endpoint's due check), the REST
-endpoint's per-request time budget, and REST token issuance.
+endpoint's per-request time budget, strict mode (reports readme.txt/readme.md
+changes as findings instead of suppressing them as a low-risk "soft change";
+off by default), and REST token issuance.
 
 ## Distribution
 

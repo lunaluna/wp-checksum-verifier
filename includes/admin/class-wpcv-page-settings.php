@@ -24,7 +24,11 @@ if ( ! defined( 'ABSPATH' ) ) {
  * v0.4.0 §Step10で状態パネル(`render_status_panel()`)を追加した。current_run/
  * last_run/next_scheduled_atは`WPCV_Rest_Status_Controller::handle_status()`を
  * 直接呼び出して再利用し(REST側とロジックを重複させない)、WP-Cron状態・
- * Action Scheduler可用性・最後にWP-CLIで実行した時刻はこのクラス自身で判定する.
+ * Action Scheduler可用性・最後にWP-CLIで実行した時刻はこのクラス自身で判定する。
+ * v0.4.0コードレビューCR-10是正: strict mode(§Step8。`WPCV_Settings::
+ * update_strict_mode()`/`WPCV_Suppression_Matcher`)はAPI・matcher側は実装済み
+ * だったが、この保存フォームにチェックボックスと保存処理が無く通常操作では
+ * 既定値`false`のまま変更できなかったため、実行時刻フォームの下に追加した.
  */
 class WPCV_Page_Settings {
 
@@ -101,6 +105,7 @@ class WPCV_Page_Settings {
 
 		$run_time                          = WPCV_Settings::get_run_time();
 		$external_http_time_budget_seconds = WPCV_Settings::get_external_http_time_budget_seconds();
+		$strict_mode                       = WPCV_Settings::get_strict_mode();
 		$button_state                      = self::run_now_button_state( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON );
 		?>
 		<div class="wrap">
@@ -152,6 +157,20 @@ class WPCV_Page_Settings {
 							<input type="number" min="5" max="55" step="1" name="wpcv_external_http_time_budget_seconds" id="wpcv_external_http_time_budget_seconds" value="<?php echo esc_attr( (string) $external_http_time_budget_seconds ); ?>" style="width: 5em;" />
 							<p class="description">
 								<?php echo esc_html__( 'When an external scheduler calls POST /wp-json/wpcv/v1/run, this is how long (per request) it keeps advancing the run before returning. Keep it well under your host\'s max_execution_time.', 'wp-checksum-verifier' ); ?>
+							</p>
+						</td>
+					</tr>
+					<tr>
+						<th scope="row">
+							<?php echo esc_html__( 'Strict mode', 'wp-checksum-verifier' ); ?>
+						</th>
+						<td>
+							<label for="wpcv_strict_mode">
+								<input type="checkbox" name="wpcv_strict_mode" id="wpcv_strict_mode" value="1" <?php checked( $strict_mode ); ?> />
+								<?php echo esc_html__( 'Report readme.txt / readme.md changes as findings instead of suppressing them.', 'wp-checksum-verifier' ); ?>
+							</label>
+							<p class="description">
+								<?php echo esc_html__( 'By default, changes limited to readme.txt/readme.md are treated as a low-risk "soft change" and suppressed automatically. Enable strict mode to see every difference, including those files.', 'wp-checksum-verifier' ); ?>
 							</p>
 						</td>
 					</tr>
@@ -288,6 +307,16 @@ class WPCV_Page_Settings {
 			: WPCV_Settings::DEFAULT_EXTERNAL_HTTP_TIME_BUDGET_SECONDS;
 
 		WPCV_Settings::update_external_http_time_budget_seconds( $time_budget_seconds );
+
+		// v0.4.0コードレビューCR-10是正: strict modeはAPI(`WPCV_Settings::
+		// update_strict_mode()`)・matcher(`WPCV_Suppression_Matcher`)側は
+		// v0.4.0 §Step8から実装済みだったが、この保存フォームに入力欄・保存処理が
+		// 無く、通常の管理画面操作では既定値`false`のまま変更できなかった
+		// (レビュー指摘)。チェックボックスは未チェック時に`$_POST`へキー自体が
+		// 送られてこないため、`isset()`の有無だけで有効・無効を判定できる
+		// (`wpcv_run_hour`等の数値項目のような「未送信時は既定値を使う」フォールバックは
+		// 不要).
+		WPCV_Settings::update_strict_mode( isset( $_POST['wpcv_strict_mode'] ) );
 
 		return true;
 	}

@@ -156,4 +156,45 @@ class SettingsTest extends TestCase {
 
 		$this->assertSame( array( 'hour' => 5, 'minute' => 30 ), WPCV_Settings::get_run_time() );
 	}
+
+	/**
+	 * 未保存の状態では既定値(false)が返ることを確認する(v0.4.0 §Step8。
+	 * `DEFAULT_STRICT_MODE`のdocblock参照).
+	 *
+	 * @return void
+	 */
+	public function test_get_strict_mode_returns_default_when_unset() {
+		$this->assertFalse( WPCV_Settings::get_strict_mode() );
+	}
+
+	/**
+	 * 保存した値がそのまま返ることを確認する(v0.4.0コードレビューCR-10是正:
+	 * この永続化自体はStep8から実装済みで、今回のCR-10対応で管理画面の保存
+	 * フォームから初めて呼ばれるようになった).
+	 *
+	 * @return void
+	 */
+	public function test_update_strict_mode_persists_value() {
+		WPCV_Settings::update_strict_mode( true );
+		$this->assertTrue( WPCV_Settings::get_strict_mode() );
+
+		WPCV_Settings::update_strict_mode( false );
+		$this->assertFalse( WPCV_Settings::get_strict_mode() );
+	}
+
+	/**
+	 * 既存の `run_hour`/`run_minute` 設定に影響を与えないことを確認する
+	 * (`update_external_http_time_budget_seconds()` と同じ懸念。設定値は単一の
+	 * option配列にまとめて保存されるため、他フィールドの保存が意図せず他の
+	 * フィールドを既定値へ巻き戻さないことを確認する).
+	 *
+	 * @return void
+	 */
+	public function test_update_strict_mode_does_not_touch_run_time() {
+		WPCV_Settings::update_run_time( 5, 30 );
+
+		WPCV_Settings::update_strict_mode( true );
+
+		$this->assertSame( array( 'hour' => 5, 'minute' => 30 ), WPCV_Settings::get_run_time() );
+	}
 }
