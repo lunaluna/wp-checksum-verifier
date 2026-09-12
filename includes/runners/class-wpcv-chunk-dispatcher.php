@@ -295,7 +295,8 @@ class WPCV_Chunk_Dispatcher {
 				array(
 					'status'        => WPCV_Target_Status::FAILED,
 					'error_message' => get_class( $e ) . ': ' . $e->getMessage(),
-				)
+				),
+				$claimed['lease_owner']
 			);
 		}
 
@@ -389,7 +390,8 @@ class WPCV_Chunk_Dispatcher {
 				array(
 					'status'     => WPCV_Target_Status::UNVERIFIABLE,
 					'error_code' => WPCV_Error_Code::UNKNOWN_SOURCE,
-				)
+				),
+				$target_run['lease_owner']
 			);
 			return;
 		}
@@ -407,7 +409,8 @@ class WPCV_Chunk_Dispatcher {
 			array(
 				'status'     => WPCV_Target_Status::UNVERIFIABLE,
 				'error_code' => WPCV_Error_Code::UNKNOWN_SOURCE,
-			)
+			),
+			$target_run['lease_owner']
 		);
 	}
 
@@ -432,7 +435,8 @@ class WPCV_Chunk_Dispatcher {
 					'manifest_status' => $manifest['manifest_status'],
 					'status'          => WPCV_Target_Status::UNVERIFIABLE,
 					'error_code'      => $manifest['error_code'],
-				)
+				),
+				$target_run['lease_owner']
 			);
 			return;
 		}
@@ -462,7 +466,8 @@ class WPCV_Chunk_Dispatcher {
 			// 走査対象が無いため、差分ゼロの成功として終端化する.
 			$this->target_run_repository->finalize_immediate(
 				$target_run['id'],
-				array( 'status' => WPCV_Target_Status::SUCCESS )
+				array( 'status' => WPCV_Target_Status::SUCCESS ),
+				$target_run['lease_owner']
 			);
 			return;
 		}
@@ -504,7 +509,8 @@ class WPCV_Chunk_Dispatcher {
 				array(
 					'status'     => WPCV_Target_Status::UNVERIFIABLE,
 					'error_code' => WPCV_Error_Code::TARGET_MISSING,
-				)
+				),
+				$target_run['lease_owner']
 			);
 			return;
 		}
@@ -575,7 +581,8 @@ class WPCV_Chunk_Dispatcher {
 					'manifest_status' => $manifest['manifest_status'],
 					'status'          => WPCV_Target_Status::UNVERIFIABLE,
 					'error_code'      => $manifest['error_code'],
-				)
+				),
+				$target_run['lease_owner']
 			);
 			return;
 		}
@@ -596,7 +603,7 @@ class WPCV_Chunk_Dispatcher {
 			)
 		);
 
-		$this->chunk_result_repository->commit_chunk( $run_id, $target_run['id'], $target_run['target_id'], $chunk_result, $version );
+		$this->chunk_result_repository->commit_chunk( $run_id, $target_run['id'], $target_run['target_id'], $chunk_result, $target_run['lease_owner'], $version );
 	}
 
 	/**
@@ -624,7 +631,7 @@ class WPCV_Chunk_Dispatcher {
 			)
 		);
 
-		$this->chunk_result_repository->commit_chunk( $run_id, $target_run['id'], $target_run['target_id'], $chunk_result );
+		$this->chunk_result_repository->commit_chunk( $run_id, $target_run['id'], $target_run['target_id'], $chunk_result, $target_run['lease_owner'] );
 	}
 
 	/**

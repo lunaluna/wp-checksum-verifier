@@ -19,6 +19,17 @@ if ( ! defined( 'ABSPATH' ) ) {
  * backoff)・`abort_non_terminal_for_run()`(run deadline超過sweep)・
  * `finalize_immediate()`(chunk処理を伴わない即時終端化。muplugin loader等)・
  * `find_all_by_run()`(run完了判定・summary再計算用)を追加した.
+ *
+ * v0.4.0コードレビューCR-02是正: `update_chunk_progress()`/`reset_for_retry()`/
+ * `finalize_immediate()`(=claimした後に確定を行う3メソッド)は、確定用の
+ * `$wpdb->update()`のWHEREに`id`だけでなく`status = running`・`lease_owner`
+ * (`claim_next()`が割り当てた値)も含めるfencingを行う。これが無いと、
+ * worker Aのleaseが切れて`sweep_expired_leases()`が同じtargetをworker Bへ
+ * 再claimさせた後に、Aが(処理が単に遅かっただけで)遅れて確定処理を実行すると、
+ * `id`のみのWHEREではAの古い結果でBの結果を無条件に上書きしてしまう
+ * (cursorの後退・集計の二重加算・finding重複・Bの状態の消失)。fencingに
+ * より、Aの確定は「もう自分がこのtargetのlease所有者ではない」ため0行しか
+ * 更新できず、静かに諦められる(claim_next()のCAS敗北と同じ扱い).
  */
 class WPCV_Target_Run_Repository {
 
@@ -166,12 +177,24 @@ class WPCV_Target_Run_Repository {
 	 * 列もあわせてクリアし、次回の `claim_next()` がすぐにこの target_run を
 	 * schedulable と判定できるようにする.
 	 *
-	 * @param int   $target_run_id 対象の target_run の id.
-	 * @param array $chunk_result  `WPCV_Chunk_Verifier::verify_*_chunk()` の戻り値
-	 *                             (`needs_retry: false` のもの).
-	 * @return bool 更新できたら true。false は対象行が見つからなかったことを意味する.
+	 * `$lease_owner` を(`id`に加えて)`status = running`とともにWHEREへ含める
+	 * ことで、確定用のfencingを行う(v0.4.0コードレビューCR-02是正)。lease失効
+	 * sweep(`sweep_expired_leases()`)が別workerへ再claimさせた後に、失効した
+	 * 側のworkerが遅れて戻ってきてこのメソッドを呼んでも、`lease_owner`が
+	 * 既に変わっている(または`status`がrunningでなくなっている)ため0行しか
+	 * 更新されず、cursorの後退・集計の二重加算・新workerの結果の上書きを防げる.
+	 *
+	 * @param int    $target_run_id 対象の target_run の id.
+	 * @param array  $chunk_result  `WPCV_Chunk_Verifier::verify_*_chunk()` の戻り値
+	 *                              (`needs_retry: false` のもの).
+	 * @param string $lease_owner   `claim_next()` がこの処理エピソードに割り当てた
+	 *                               lease owner(呼び出し元が保持しているclaim結果の値).
+	 * @return bool 更新できたら true。false は対象行が見つからなかった、または
+	 *              既に別workerに再claimされていた(fencing失敗)ことを意味する
+	 *              (呼び出し元は例外を投げず、静かに諦めてよい ―― 再claimした
+	 *              側が処理を引き継ぐため).
 	 */
-	public function update_chunk_progress( $target_run_id, array $chunk_result ) {
+	public function update_chunk_progress( $target_run_id, array $chunk_result, $lease_owner ) {
 		$table   = $this->wpdb->base_prefix . 'wpcv_target_runs';
 		$current = $this->find_by_id( (int) $target_run_id );
 
@@ -210,9 +233,13 @@ class WPCV_Target_Run_Repository {
 		$updated = $this->wpdb->update(
 			$table,
 			$data,
-			array( 'id' => (int) $target_run_id ),
+			array(
+				'id'          => (int) $target_run_id,
+				'status'      => WPCV_Target_Status::RUNNING,
+				'lease_owner' => (string) $lease_owner,
+			),
 			$format,
-			array( '%d' )
+			array( '%d', '%s', '%s' )
 		);
 
 		return $updated > 0;
@@ -242,15 +269,22 @@ class WPCV_Target_Run_Repository {
 	 * (`null` は「versionが不明であることを明示的に記録する」という別の意味に
 	 * 使うため、区別する必要がある).
 	 *
+	 * `$lease_owner`を(`id`に加えて)`status = running`とともにWHEREへ含めて
+	 * fencingする理由は `update_chunk_progress()` と同じ(v0.4.0コードレビュー
+	 * CR-02是正。クラスdocblock参照).
+	 *
 	 * @param int          $target_run_id        対象の target_run の id.
 	 * @param string|null  $manifest_fingerprint 今回計算し直した fingerprint
 	 *                                           (次回の照合基準として保存しておく).
 	 * @param string|false $version              新しい基準として保存する version。
 	 *                                           `false`(既定)なら version 列は
 	 *                                           変更しない.
-	 * @return bool 更新できたら true。false は対象行が見つからなかったことを意味する.
+	 * @param string       $lease_owner          `claim_next()` がこの処理エピソードに
+	 *                                           割り当てた lease owner.
+	 * @return bool 更新できたら true。false は対象行が見つからなかった、または
+	 *              既に別workerに再claimされていた(fencing失敗)ことを意味する.
 	 */
-	public function reset_for_retry( $target_run_id, $manifest_fingerprint, $version = false ) {
+	public function reset_for_retry( $target_run_id, $manifest_fingerprint, $version, $lease_owner ) {
 		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
 
 		$data   = array(
@@ -274,9 +308,13 @@ class WPCV_Target_Run_Repository {
 		$updated = $this->wpdb->update(
 			$table,
 			$data,
-			array( 'id' => (int) $target_run_id ),
+			array(
+				'id'          => (int) $target_run_id,
+				'status'      => WPCV_Target_Status::RUNNING,
+				'lease_owner' => (string) $lease_owner,
+			),
 			$format,
-			array( '%d' )
+			array( '%d', '%s', '%s' )
 		);
 
 		return $updated > 0;
@@ -545,13 +583,21 @@ class WPCV_Target_Run_Repository {
 	 * 行わない target 向け。findings を伴わないため `WPCV_Chunk_Result_Repository`
 	 * のtransactionは経由しない).
 	 *
-	 * @param int   $target_run_id 対象の target_run の id.
-	 * @param array $fields        更新するカラム => 値(すべて文字列として扱う。
-	 *                             `status`/`error_code`/`error_message`/
-	 *                             `manifest_status` 等を想定).
-	 * @return bool 更新できたら true。false は対象行が見つからなかったことを意味する.
+	 * `$lease_owner`を(`id`に加えて)`status = running`とともにWHEREへ含めて
+	 * fencingする理由は `update_chunk_progress()` と同じ(v0.4.0コードレビュー
+	 * CR-02是正。クラスdocblock参照)。`WPCV_Chunk_Dispatcher`の各呼び出し箇所は
+	 * すべて`claim_next()`が返した行の`lease_owner`をそのまま渡す.
+	 *
+	 * @param int    $target_run_id 対象の target_run の id.
+	 * @param array  $fields        更新するカラム => 値(すべて文字列として扱う。
+	 *                              `status`/`error_code`/`error_message`/
+	 *                              `manifest_status` 等を想定).
+	 * @param string $lease_owner   `claim_next()` がこの処理エピソードに割り当てた
+	 *                              lease owner.
+	 * @return bool 更新できたら true。false は対象行が見つからなかった、または
+	 *              既に別workerに再claimされていた(fencing失敗)ことを意味する.
 	 */
-	public function finalize_immediate( $target_run_id, array $fields ) {
+	public function finalize_immediate( $target_run_id, array $fields, $lease_owner ) {
 		$table  = $this->wpdb->base_prefix . 'wpcv_target_runs';
 		$data   = array_merge( array( 'finished_at' => call_user_func( $this->now ) ), $fields );
 		$format = array_fill( 0, count( $data ), '%s' );
@@ -559,9 +605,13 @@ class WPCV_Target_Run_Repository {
 		$updated = $this->wpdb->update(
 			$table,
 			$data,
-			array( 'id' => (int) $target_run_id ),
+			array(
+				'id'          => (int) $target_run_id,
+				'status'      => WPCV_Target_Status::RUNNING,
+				'lease_owner' => (string) $lease_owner,
+			),
 			$format,
-			array( '%d' )
+			array( '%d', '%s', '%s' )
 		);
 
 		return $updated > 0;

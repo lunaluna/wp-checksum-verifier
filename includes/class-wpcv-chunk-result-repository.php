@@ -29,6 +29,15 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 適用を追加した。永続化直前(`save_findings()` を呼ぶ前)の1箇所に集約する設計
  * (ユーザー確認済み)。`exclude_target` は `WPCV_Run_Planner::plan()` が列挙時点で
  * 適用済みのため、ここでは扱わない.
+ *
+ * v0.4.0コードレビューCR-02是正: `commit_chunk()` に `$lease_owner` を追加し、
+ * `WPCV_Target_Run_Repository::update_chunk_progress()`/`reset_for_retry()` の
+ * fencing(`WPCV_Target_Run_Repository` のクラスdocblock参照)結果を見て、
+ * fencingに失敗した(lease失効sweepにより既に別workerへ再claimされていた)
+ * 場合はCOMMITではなくROLLBACKする。`findings`のinsertだけが確定しcursor/
+ * 集計は古いまま、という半端な状態を防ぐため(`commit_chunk()`は`void`から
+ * `bool`に変更し、確定できたかどうかを呼び出し元〔`WPCV_Chunk_Dispatcher`〕に
+ * 伝える).
  */
 class WPCV_Chunk_Result_Repository {
 
@@ -83,23 +92,35 @@ class WPCV_Chunk_Result_Repository {
 	 * 「resume時にversion/fingerprintが変わっていたらchunk結果を確定せず
 	 * retryへ戻す」)。偽の場合は findings を保存してから cursor・集計値を更新する.
 	 *
+	 * `$lease_owner`(v0.4.0コードレビューCR-02是正で追加)は、`claim_next()`が
+	 * この処理エピソードに割り当てた値をそのまま渡すこと。`WPCV_Target_Run_Repository::
+	 * update_chunk_progress()`/`reset_for_retry()`のfencing(`status = running AND
+	 * lease_owner = $lease_owner`)が失敗した場合(lease失効sweepが別workerへ
+	 * 既に再claimさせていた場合)、`findings`のinsertが既に行われていても
+	 * ROLLBACKし、古いworkerの結果を確定させない(この判定が無いと、findingsだけ
+	 * 保存されcursor/集計は更新されない、という半端な状態がCOMMITされてしまう).
+	 *
 	 * @param int          $run_id        findings.run_id に使う run の id.
 	 * @param int          $target_run_id 対象の target_run の id.
 	 * @param string       $target_id     対象の target_id(`save_findings()` の
 	 *                                    `target_id => target_run_id` 対応表の組み立てに使う).
 	 * @param array        $chunk_result  `WPCV_Chunk_Verifier::verify_manifest_chunk()`/
 	 *                                    `verify_unknown_files_chunk()` の戻り値.
+	 * @param string       $lease_owner   `claim_next()` がこの処理エピソードに割り当てた
+	 *                                    lease owner(fencingに使う).
 	 * @param string|false $new_version   `needs_retry: true` のとき
 	 *                                    `WPCV_Target_Run_Repository::reset_for_retry()` へ
 	 *                                    そのまま渡す新しい version(v0.4.0 §Step4:
 	 *                                    dispatcherが今回のchunk処理で観測した「現在の」
 	 *                                    version。`reset_for_retry()` のdocblock参照。
 	 *                                    `false`(既定)は「version列を変更しない」).
-	 * @return void
+	 * @return bool 確定できたら true。false はfencingに失敗した(既に別workerに
+	 *              再claimされていた)ことを意味し、呼び出し元は例外を投げず
+	 *              静かに諦めてよい.
 	 *
 	 * @throws Throwable DB操作中に発生した例外(ROLLBACK後に再送出).
 	 */
-	public function commit_chunk( $run_id, $target_run_id, $target_id, array $chunk_result, $new_version = false ) {
+	public function commit_chunk( $run_id, $target_run_id, $target_id, array $chunk_result, $lease_owner, $new_version = false ) {
 		$wpdb = $this->wpdb;
 
 		// transaction制御自体は動的な値を含まない固定リテラルのため prepare 不要.
@@ -108,7 +129,7 @@ class WPCV_Chunk_Result_Repository {
 
 		try {
 			if ( $chunk_result['needs_retry'] ) {
-				$this->target_run_repository->reset_for_retry( $target_run_id, $chunk_result['manifest_fingerprint'], $new_version );
+				$committed = $this->target_run_repository->reset_for_retry( $target_run_id, $chunk_result['manifest_fingerprint'], $new_version, $lease_owner );
 			} else {
 				if ( ! empty( $chunk_result['findings'] ) ) {
 					$this->finding_repository->save_findings(
@@ -118,11 +139,20 @@ class WPCV_Chunk_Result_Repository {
 					);
 				}
 
-				$this->target_run_repository->update_chunk_progress( $target_run_id, $chunk_result );
+				$committed = $this->target_run_repository->update_chunk_progress( $target_run_id, $chunk_result, $lease_owner );
 			}
 
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- transaction control statement.
-			$wpdb->query( 'COMMIT' );
+			if ( $committed ) {
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- transaction control statement.
+				$wpdb->query( 'COMMIT' );
+			} else {
+				// fencingに失敗した(既に別workerに再claimされていた)。findingsの
+				// insertが行われていた場合でも、古いworkerの結果を確定させない.
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- transaction control statement.
+				$wpdb->query( 'ROLLBACK' );
+			}
+
+			return $committed;
 		} catch ( Throwable $e ) {
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- transaction control statement.
 			$wpdb->query( 'ROLLBACK' );
