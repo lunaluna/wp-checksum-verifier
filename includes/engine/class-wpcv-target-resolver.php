@@ -46,9 +46,19 @@ class WPCV_Target_Resolver {
 	/**
 	 * 検証対象の target_id を生成する(§5.3: `core` / `plugin:{slug}` / `theme:{slug}` / `muplugin:{file}`).
 	 *
+	 * Core は identifier省略時のみ素の `core` を返す。v0.4.0 §Step4で、core次元の
+	 * 中に「manifest比較(素の `core`)」と「未知ファイル走査(合成target)」という
+	 * 性質の異なる2つのtargetを持つ必要が生じた(1 target_run = 1直列cursorという
+	 * chunk分割実行の前提上、同じtarget_runに同居できないため)。muplugin次元に
+	 * 既にある合成target `muplugin:_scan` と対称的に `core:_scan` を作れるよう、
+	 * core でも identifier を指定できるようにする(identifier省略時の挙動は
+	 * 変更していないため、既存の呼び出し元 (`WPCV_Verifier`/`WPCV_Run_Planner` が
+	 * `WPCV_Target_Resolver::DIMENSION_CORE` 定数を直接使う箇所) には影響しない).
+	 *
 	 * @param string $dimension  self::DIMENSIONS のいずれか.
-	 * @param string $identifier core 以外では必須. plugin/theme は slug、
-	 *                            muplugin は WPMU_PLUGIN_DIR からの相対ファイルパス.
+	 * @param string $identifier core は省略可(省略時は素の `core`). core 以外は必須.
+	 *                            plugin/theme は slug、muplugin は WPMU_PLUGIN_DIR
+	 *                            からの相対ファイルパス.
 	 * @return string target_id.
 	 *
 	 * @throws InvalidArgumentException 指定した dimension が不正、または
@@ -60,7 +70,7 @@ class WPCV_Target_Resolver {
 		}
 
 		if ( self::DIMENSION_CORE === $dimension ) {
-			return self::DIMENSION_CORE;
+			return '' === $identifier ? self::DIMENSION_CORE : self::DIMENSION_CORE . ":{$identifier}";
 		}
 
 		if ( '' === $identifier ) {

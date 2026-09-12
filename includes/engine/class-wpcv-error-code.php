@@ -64,6 +64,36 @@ class WPCV_Error_Code {
 	const TIMEOUT = 'timeout';
 
 	/**
+	 * Plan時点では存在した対象(プラグイン等)が、後続chunkの実行時点で見つからない
+	 * (v0.4.0 §Step4)。
+	 *
+	 * 分割実行では `WPCV_Run_Planner::plan()` が列挙してから実際にdispatcherが
+	 * その target を claim するまでに時間差があり得るため、一括実行(§16-D以前)には
+	 * 存在しなかった状態。「削除された」「slugが変わった」のいずれも区別せず
+	 * この1つに倒す(claim時点でローカルに見つからない、という事実のみを記録する).
+	 */
+	const TARGET_MISSING = 'target_missing';
+
+	/**
+	 * Lease有効期限切れ(worker のクラッシュ・強制終了・タイムアウトの疑い)の
+	 * 検知が最大試行回数を超えた(v0.4.0 §Step4。
+	 * `WPCV_Target_Run_Repository::sweep_expired_leases()` 参照).
+	 *
+	 * `TIMEOUT`(chunkが時間予算に達して正常にyieldした場合)とは意味が異なる
+	 * ―― こちらは「yieldすら記録されないまま lease が切れた」= 途中経過が
+	 * 一切確定していない異常系であり、`WPCV_Target_Status::FAILED`(終端)へ倒す.
+	 */
+	const LEASE_EXPIRED = 'lease_expired';
+
+	/**
+	 * `exclude_target` 抑制ルールに一致し、検証自体を行わずスキップした(v0.4.0 §Step8).
+	 *
+	 * `LOCKED`(更新処理中の一時的なスキップ)とは異なり、ユーザーが明示的に
+	 * この target を検証対象外にした恒久的なスキップであることを示す.
+	 */
+	const EXCLUDED = 'excluded';
+
+	/**
 	 * 全 error_code とその説明の一覧を返す(管理画面表示・バリデーション用).
 	 *
 	 * @return array<string, string> error_code => 説明.
@@ -85,6 +115,9 @@ class WPCV_Error_Code {
 			self::VERSION_CHANGED    => __( 'Version changed during verification (will retry)', 'wp-checksum-verifier' ),
 			self::LOCKED             => __( 'Skipped: an update is in progress', 'wp-checksum-verifier' ),
 			self::TIMEOUT            => __( 'Time budget exhausted (will resume)', 'wp-checksum-verifier' ),
+			self::TARGET_MISSING     => __( 'Target no longer found locally', 'wp-checksum-verifier' ),
+			self::LEASE_EXPIRED      => __( 'Worker lease expired too many times', 'wp-checksum-verifier' ),
+			self::EXCLUDED           => __( 'Excluded by an exclude_target suppression rule', 'wp-checksum-verifier' ),
 		);
 	}
 

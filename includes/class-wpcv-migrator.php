@@ -38,18 +38,45 @@ class WPCV_Migrator {
 	 * プラグイン有効化時に加え、`plugins_loaded` にもフックする(自動更新で
 	 * 有効化フックを経由せずにバージョンが上がるケースに対応するため).
 	 *
-	 * @return void
+	 * v0.4.0コードレビューCR-05是正: `create_or_update_tables()`(`dbDelta()`)の
+	 * 実行後、`schema_is_current()` で実際に必要な列がすべて揃ったかを確認して
+	 * からでないと `write_stored_version()` を呼ばないようにした。`dbDelta()` は
+	 * ALTER権限不足・index作成失敗・DB非互換等でSQLエラーが起きても例外を投げず、
+	 * 部分的にしか適用されなかった場合でもそれと分かる形では呼び出し元に伝わらない
+	 * (WordPressコアの既知の制約)。確認せずに常に `write_stored_version()` して
+	 * いると、実際には移行が失敗しているのに `wpcv_db_version` だけが最新へ
+	 * 進んでしまい、以降 `maybe_upgrade()` が(`$stored >= WPCV_DB_VERSION` の
+	 * 早期returnにより)二度と再試行しなくなる不具合があった(レビュー指摘)。
+	 *
+	 * このメソッド自体は例外を投げない(`false` を返すのみ)。`plugins_loaded`
+	 * には毎リクエスト無条件でフックされているため、ここで例外を投げると
+	 * DB権限の問題が解消するまで**サイト全体が毎リクエスト致命的エラーになる**
+	 * (元の不具合よりも被害が大きい退行)。「移行失敗を目に見える形にする」のは
+	 * 一度きりの明示的な操作である有効化フック(`WPCV_Activator::activate()`。
+	 * WordPress自身が有効化時の致命的エラーを捕捉しプラグインを自動的に
+	 * 無効化する)側の責務とし、そちらで戻り値を確認して例外を投げる設計にした.
+	 *
+	 * @return bool 現在のバージョンが既に最新、または今回の更新でスキーマが
+	 *              確認できたら true。更新を試みたがスキーマを確認できなかった
+	 *              場合は false(`wpcv_db_version` は更新せず、次回の呼び出しで
+	 *              再試行される).
 	 */
 	public static function maybe_upgrade() {
 		$stored = self::get_stored_version();
 
 		if ( $stored >= WPCV_DB_VERSION ) {
-			return;
+			return true;
 		}
 
 		self::create_or_update_tables();
 
+		if ( ! self::schema_is_current() ) {
+			return false;
+		}
+
 		self::write_stored_version( WPCV_DB_VERSION );
+
+		return true;
 	}
 
 	/**
@@ -116,9 +143,105 @@ class WPCV_Migrator {
 	 * @return void
 	 */
 	protected static function create_or_update_tables() {
+		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+
+		foreach ( self::table_definitions() as $sql ) {
+			dbDelta( $sql );
+		}
+	}
+
+	/**
+	 * 実DBの4テーブルが `table_definitions()` の期待する列をすべて持っているかを
+	 * 検証する(v0.4.0コードレビューCR-05是正。`maybe_upgrade()` のクラス
+	 * docblock参照)。
+	 *
+	 * @return bool 4テーブルすべてが期待する列を持っていれば true.
+	 */
+	protected static function schema_is_current() {
 		global $wpdb;
 
-		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+		foreach ( self::expected_columns_by_table() as $table => $expected_columns ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name only (base_prefix + 固定のテーブル名文字列。ユーザー入力を含まない).
+			$actual_columns = $wpdb->get_col( "DESCRIBE {$table}" );
+			$actual_columns = is_array( $actual_columns ) ? $actual_columns : array();
+
+			foreach ( $expected_columns as $expected_column ) {
+				if ( ! in_array( $expected_column, $actual_columns, true ) ) {
+					return false;
+				}
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * `table_definitions()` の CREATE TABLE 文から、テーブル名 => 期待される
+	 * 列名の配列を組み立てる(`schema_is_current()` 専用のヘルパー).
+	 *
+	 * @return array<string, string[]>
+	 */
+	private static function expected_columns_by_table() {
+		global $wpdb;
+
+		$tables = array(
+			$wpdb->base_prefix . 'wpcv_runs',
+			$wpdb->base_prefix . 'wpcv_target_runs',
+			$wpdb->base_prefix . 'wpcv_findings',
+			$wpdb->base_prefix . 'wpcv_suppressions',
+		);
+
+		$by_table = array();
+
+		foreach ( array_combine( $tables, self::table_definitions() ) as $table => $sql ) {
+			$by_table[ $table ] = self::parse_column_names( $sql );
+		}
+
+		return $by_table;
+	}
+
+	/**
+	 * 1つの CREATE TABLE 文から列名だけを抽出する(`PRIMARY KEY`/`KEY` 行は除く。
+	 * `expected_columns_by_table()` 専用のヘルパー)。
+	 *
+	 * `table_definitions()` のSQLは「1列 = 1行、行頭が列名」という単純な整形
+	 * ルールで書かれているため、この前提に依存した簡易パーサーで十分(汎用的な
+	 * SQL構文解析は行わない).
+	 *
+	 * @param string $sql CREATE TABLE 文.
+	 * @return string[]
+	 */
+	private static function parse_column_names( $sql ) {
+		$columns = array();
+
+		foreach ( explode( "\n", $sql ) as $line ) {
+			$line = trim( $line );
+
+			if ( '' === $line || 0 === stripos( $line, 'CREATE TABLE' ) || 0 === stripos( $line, 'PRIMARY KEY' ) || 0 === stripos( $line, 'KEY ' ) || 0 === strpos( $line, ')' ) ) {
+				continue;
+			}
+
+			if ( 1 === preg_match( '/^(\w+)\s/', $line, $matches ) ) {
+				$columns[] = $matches[1];
+			}
+		}
+
+		return $columns;
+	}
+
+	/**
+	 * 4 テーブル分の CREATE TABLE 文を組み立てて返す(`create_or_update_tables()` から分離).
+	 *
+	 * `global $wpdb` にしか依存しない純粋な文字列組み立てのため、単体テストから
+	 * `ReflectionMethod` 経由で呼び出し、`WPCV_DB_VERSION` を上げた際に必要な
+	 * 列・indexが SQL に含まれているかを実 DB 無しで検証できるようにする
+	 * (v0.4.0 §Step1: 「migrationの再実行性」の確認は実 DB が必要なため実地検証
+	 * 側の責務のままだが、「スキーマ定義に列が漏れていないか」はここで検証可能にする).
+	 *
+	 * @return string[] CREATE TABLE 文の配列(dbDelta に渡す順序).
+	 */
+	protected static function table_definitions() {
+		global $wpdb;
 
 		$charset_collate = $wpdb->get_charset_collate();
 
@@ -128,7 +251,10 @@ class WPCV_Migrator {
 		$suppressions_table = $wpdb->base_prefix . 'wpcv_suppressions';
 
 		// §5.2: run 全体の集計値. status = partial は「1 つ以上の target が
-		// unverifiable / failed だが run 自体は完走した」を意味する.
+		// unverifiable / failed だが run 自体は完走した」を意味する。
+		// scheduled_for/heartbeat_at/deadline_at は v0.4.0 §Step1 で追加(日次due判定・
+		// stale worker検知・run deadline超過sweepに使う。いずれもStep1時点では
+		// 列を用意するのみで、書き込むロジックはStep2以降で追加する).
 		// プラン§5.2は列名を trigger としているが、MySQL/MariaDB の予約語のため
 		// バッククォート無しでは CREATE TABLE が構文エラーになる(実際に CI の
 		// Plugin Check が実環境の dbDelta 実行で検出した)。DB スキーマは
@@ -140,6 +266,9 @@ class WPCV_Migrator {
 	status varchar(16) NOT NULL default 'running',
 	run_trigger varchar(16) NOT NULL default 'cron',
 	runner varchar(16) NOT NULL default 'sync',
+	scheduled_for datetime NULL,
+	heartbeat_at datetime NULL,
+	deadline_at datetime NULL,
 	targets_total int unsigned NOT NULL default 0,
 	targets_verified int unsigned NOT NULL default 0,
 	targets_unverifiable int unsigned NOT NULL default 0,
@@ -150,7 +279,12 @@ class WPCV_Migrator {
 ) {$charset_collate};";
 
 		// §5.3: target 単位の検証結果. unverifiable の理由は error_code で必ず
-		// コード化する(§5.4 の一覧は WPCV_Error_Code 側で定数として列挙する).
+		// コード化する(§5.4 の一覧は WPCV_Error_Code 側で定数として列挙する)。
+		// cursor_path/manifest_fingerprint/attempt_count/heartbeat_at/lease_owner/
+		// lease_expires_at/retry_after は v0.4.0 §Step1 で追加(chunk単位の分割実行・
+		// resume・lease制御に使う。列名の意味は §Step3・Step4 参照。Step1時点では
+		// 列を用意するのみ)。idx_run_status は claim クエリ
+		// (`status IN ('queued','retry') AND run_id = ?`)用に追加.
 		$sql_target_runs = "CREATE TABLE {$target_runs_table} (
 	id bigint unsigned NOT NULL auto_increment,
 	run_id bigint unsigned NOT NULL,
@@ -169,14 +303,25 @@ class WPCV_Migrator {
 	files_total int unsigned NOT NULL default 0,
 	files_verified int unsigned NOT NULL default 0,
 	findings_total int unsigned NOT NULL default 0,
+	cursor_path varchar(500) NULL,
+	manifest_fingerprint varchar(64) NULL,
+	attempt_count int unsigned NOT NULL default 0,
+	heartbeat_at datetime NULL,
+	lease_owner varchar(191) NULL,
+	lease_expires_at datetime NULL,
+	retry_after datetime NULL,
 	PRIMARY KEY (id),
 	KEY idx_run_id (run_id),
-	KEY idx_target_id (target_id)
+	KEY idx_target_id (target_id),
+	KEY idx_run_status (run_id, status)
 ) {$charset_collate};";
 
 		// §5.5: path 単位の検出結果. version を差分キーに含めることで、バージョン
 		// 世代ごとの比較(§8.2)を成立させる. unverifiable はここには置かない
-		// (target_runs 側の事象。§16-A 参照).
+		// (target_runs 側の事象。§16-A 参照)。suppression_id は v0.4.0 §Step1で
+		// 追加(ユーザー作成の抑制ルール `wpcv_suppressions.id` への参照。既存の
+		// `suppressed_by`(system suppressionの理由コード文字列)とは別列にし、
+		// ユーザー作成ルールを監査可能な参照として持てるようにする. §Step8参照).
 		$sql_findings = "CREATE TABLE {$findings_table} (
 	id bigint unsigned NOT NULL auto_increment,
 	run_id bigint unsigned NOT NULL,
@@ -194,6 +339,7 @@ class WPCV_Migrator {
 	actual_hash varchar(64) NULL,
 	file_size bigint unsigned NULL,
 	suppressed_by varchar(16) NULL,
+	suppression_id bigint unsigned NULL,
 	closed_at datetime NULL,
 	closed_reason varchar(24) NULL,
 	PRIMARY KEY (id),
@@ -201,7 +347,8 @@ class WPCV_Migrator {
 	KEY idx_target_version (target_id, version),
 	KEY idx_status (status),
 	KEY idx_closed_at (closed_at),
-	KEY idx_path (path(191))
+	KEY idx_path (path(191)),
+	KEY idx_suppression_id (suppression_id)
 ) {$charset_collate};";
 
 		// §7: 抑制 3 層(対象除外・パス除外・ハッシュ承認)を 1 テーブルに保持する.
@@ -224,9 +371,6 @@ class WPCV_Migrator {
 	KEY idx_type_dimension_slug (type, dimension, slug)
 ) {$charset_collate};";
 
-		dbDelta( $sql_runs );
-		dbDelta( $sql_target_runs );
-		dbDelta( $sql_findings );
-		dbDelta( $sql_suppressions );
+		return array( $sql_runs, $sql_target_runs, $sql_findings, $sql_suppressions );
 	}
 }

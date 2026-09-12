@@ -44,7 +44,7 @@ class WPCV_Runner_Async {
 	 * Action Scheduler へ enqueue するときの group(v0.3.1 §Step2)。
 	 *
 	 * `as_enqueue_async_action()` の `unique = true` と組み合わせて使う補助防御
-	 * (主制御は `WPCV_Repository::reserve_run()` の advisory lock。クラス
+	 * (主制御は `WPCV_Run_Repository::reserve_run()` の advisory lock。クラス
 	 * docblock 参照)。group を固定することで、他プラグインの同名 hook との
 	 * 偶発的な unique 判定の混線も避けられる.
 	 *
@@ -112,11 +112,11 @@ class WPCV_Runner_Async {
 	 * @return array `enqueue_run()` の戻り値と同じ形.
 	 */
 	private static function enqueue_via_action_scheduler( $run_trigger ) {
-		$reservation = WPCV_Plugin::repository()->reserve_run(
+		$reservation = WPCV_Plugin::run_repository()->reserve_run(
 			array(
 				'run_trigger'    => $run_trigger,
 				'runner'         => 'async',
-				'initial_status' => WPCV_Repository::STATUS_QUEUED,
+				'initial_status' => WPCV_Run_Status::QUEUED,
 			)
 		);
 
@@ -136,7 +136,7 @@ class WPCV_Runner_Async {
 			// enqueue 自体の失敗(戻り値が正の整数でない)を成功扱いしない
 			// (プラン§P1「enqueue失敗を成功扱いする」への対策)。予約済みの
 			// queued run は failed として記録し、呼び出し元に受付失敗を返す.
-			WPCV_Plugin::repository()->mark_run_failed(
+			WPCV_Plugin::run_repository()->mark_run_failed(
 				$run_id,
 				sprintf( 'as_enqueue_async_action() が有効なaction_idを返しませんでした(戻り値: %d).', (int) $action_id )
 			);
@@ -164,7 +164,7 @@ class WPCV_Runner_Async {
 	 * @return array `enqueue_run()` の戻り値と同じ形.
 	 */
 	private static function run_sync_fallback( $run_trigger ) {
-		$reservation = WPCV_Plugin::repository()->reserve_run(
+		$reservation = WPCV_Plugin::run_repository()->reserve_run(
 			array(
 				'run_trigger' => $run_trigger,
 				'runner'      => 'sync',
@@ -194,26 +194,39 @@ class WPCV_Runner_Async {
 	 * `self::HOOK` のフックハンドラ. Action Scheduler のワーカーから呼ばれる.
 	 *
 	 * `enqueue_via_action_scheduler()` が enqueue 時点で予約しておいた `queued` run を
-	 * `mark_queued_running()` で引き継ぐ(v0.3.1 §Step2)。対象行が既に `queued`
-	 * ではない場合(stale sweep に先を越された、Action Scheduler の再実行で
-	 * 同じ action が2度発火した等)は検証を行わず no-op で戻る(プラン§Step2の
-	 * テスト「同じAS actionが再実行されても検証は1回だけ行う」への対策).
+	 * `mark_queued_planning()` で引き継ぐ(v0.3.1 §Step2。v0.4.0コードレビュー
+	 * CR-01是正で遷移先を`running`から`planning`へ変更 ―― target_runsの保存が
+	 * 完了する〔`WPCV_Run_Starter::plan_and_save()`が`planning→running`へ遷移
+	 * させる〕までは`running`にしない。対象行が既に`queued`ではない場合
+	 * (stale sweep に先を越された、Action Scheduler の再実行で同じ action が
+	 * 2度発火した等)は検証を行わず no-op で戻る(プラン§Step2のテスト「同じAS
+	 * actionが再実行されても検証は1回だけ行う」への対策).
 	 *
 	 * `$context` は `$run_trigger` から `WPCV_Context_Builder::build()` で都度
 	 * 組み立て直す(クラス docblock 参照。enqueue 時点の `$context` は保持しない).
+	 *
+	 * v0.4.0 §Step5: `WPCV_Run_Coordinator::run()`(完走するまでループする一括
+	 * adapter)は呼ばない。ここは「plan+保存 → `WPCV_Chunk_Dispatcher::dispatch()`を
+	 * **1回だけ**呼ぶ」に留め、続きは `dispatch()` 自身が予約する継続action
+	 * (`WPCV_Chunk_Dispatcher::HOOK` の自己連鎖)に任せる。1つのAS action(=1回の
+	 * WP-Cron発火に相当)が大規模サイトの全チェックサム検証を1リクエストで
+	 * ブロックし続けない設計にするため(§6.2「WP-Cron自動実行はdue runの作成と
+	 * dispatcher起動を行う」。`WPCV_Run_Coordinator` のクラス docblock も参照).
 	 *
 	 * @param int    $run_id      `enqueue_via_action_scheduler()` が enqueue した run の id.
 	 * @param string $run_trigger `enqueue_run()` に渡されたもの.
 	 * @return void
 	 */
 	public static function run_async_action( $run_id, $run_trigger ) {
-		if ( ! WPCV_Plugin::repository()->mark_queued_running( (int) $run_id ) ) {
+		if ( ! WPCV_Plugin::run_repository()->mark_queued_planning( (int) $run_id ) ) {
 			return;
 		}
 
 		$context = WPCV_Context_Builder::build( (string) $run_trigger );
 
-		WPCV_Plugin::run_coordinator()->run( (int) $run_id, $context );
+		WPCV_Run_Starter::plan_and_save( WPCV_Plugin::run_repository(), new WPCV_Run_Planner( WPCV_Plugin::suppression_repository() ), WPCV_Plugin::target_run_repository(), (int) $run_id, $context );
+
+		WPCV_Plugin::chunk_dispatcher()->dispatch( (int) $run_id, $context );
 	}
 }
 

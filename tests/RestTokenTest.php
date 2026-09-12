@@ -265,4 +265,105 @@ class RestTokenTest extends TestCase {
 
 		$this->addToAssertionCount( 1 );
 	}
+
+	/**
+	 * `SCOPE_RUN`(既定)と `SCOPE_READ` のトークンが別々に保存され、互いの検証に
+	 * 通らないことを確認する(v0.4.0 §Step7: run/read scope分離).
+	 *
+	 * @return void
+	 */
+	public function test_run_and_read_scope_tokens_are_independent() {
+		$run_token  = WPCV_Rest_Token::generate( WPCV_Rest_Token::SCOPE_RUN );
+		$read_token = WPCV_Rest_Token::generate( WPCV_Rest_Token::SCOPE_READ );
+
+		$this->assertTrue( WPCV_Rest_Token::verify_against( $run_token, null, WPCV_Rest_Token::SCOPE_RUN ) );
+		$this->assertTrue( WPCV_Rest_Token::verify_against( $read_token, null, WPCV_Rest_Token::SCOPE_READ ) );
+
+		// run scopeのトークンではread scopeを、逆もまた通らない.
+		$this->assertFalse( WPCV_Rest_Token::verify_against( $run_token, null, WPCV_Rest_Token::SCOPE_READ ) );
+		$this->assertFalse( WPCV_Rest_Token::verify_against( $read_token, null, WPCV_Rest_Token::SCOPE_RUN ) );
+	}
+
+	/**
+	 * `has_stored_token()` がscopeごとに独立して発行状況を報告することを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_has_stored_token_is_independent_per_scope() {
+		$this->assertFalse( WPCV_Rest_Token::has_stored_token( WPCV_Rest_Token::SCOPE_RUN ) );
+		$this->assertFalse( WPCV_Rest_Token::has_stored_token( WPCV_Rest_Token::SCOPE_READ ) );
+
+		WPCV_Rest_Token::generate( WPCV_Rest_Token::SCOPE_READ );
+
+		$this->assertFalse( WPCV_Rest_Token::has_stored_token( WPCV_Rest_Token::SCOPE_RUN ) );
+		$this->assertTrue( WPCV_Rest_Token::has_stored_token( WPCV_Rest_Token::SCOPE_READ ) );
+	}
+
+	/**
+	 * `WPCV_REST_TOKEN` 定数(相当の override)は `SCOPE_RUN` にのみ適用され、
+	 * `SCOPE_READ` の検証には影響しないことを確認する(クラス docblock
+	 * 「定数はSCOPE_RUNのみに適用する」の確認. 定数自体はPHPの言語仕様上
+	 * 未定義に戻せないため、`verify_against()` の `$token_override` 引数で
+	 * 定数相当の値を模す).
+	 *
+	 * @return void
+	 */
+	public function test_token_override_does_not_apply_to_read_scope() {
+		$this->assertFalse( WPCV_Rest_Token::verify_against( 'override-token', 'override-token', WPCV_Rest_Token::SCOPE_READ ) );
+	}
+
+	/**
+	 * `check_permission()` が正しいトークン(該当scope)なら `true` を返すことを確認する
+	 * (v0.4.0 §Step7: 3コントローラーで共有するパーミッションチェックの確認).
+	 *
+	 * @return void
+	 */
+	public function test_check_permission_allows_correct_token_for_scope() {
+		$token   = WPCV_Rest_Token::generate( WPCV_Rest_Token::SCOPE_READ );
+		$request = new WPCV_Test_Fake_Rest_Request( array( 'Authorization' => 'Bearer ' . $token ) );
+
+		$this->assertTrue( WPCV_Rest_Token::check_permission( $request, WPCV_Rest_Token::SCOPE_READ ) );
+	}
+
+	/**
+	 * `check_permission()` が、scopeの異なる(=無効な)トークンを `WP_Error`(401)で
+	 * 拒否することを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_check_permission_rejects_token_for_wrong_scope() {
+		$run_token = WPCV_Rest_Token::generate( WPCV_Rest_Token::SCOPE_RUN );
+		$request   = new WPCV_Test_Fake_Rest_Request( array( 'Authorization' => 'Bearer ' . $run_token ) );
+
+		$result = WPCV_Rest_Token::check_permission( $request, WPCV_Rest_Token::SCOPE_READ );
+
+		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertSame( 401, $result->get_error_data()['status'] );
+	}
+
+	/**
+	 * `check_permission()` が失敗回数の上限に達すると `429` で拒否することを確認する
+	 * (`WPCV_Rest_Run_Controller::check_permission()` から移植した既存テストの
+	 * 対象を共通実装へ差し替えたもの).
+	 *
+	 * @return void
+	 */
+	public function test_check_permission_returns_429_after_rate_limit_exceeded() {
+		$_SERVER['REMOTE_ADDR'] = '203.0.113.10';
+
+		$token           = WPCV_Rest_Token::generate( WPCV_Rest_Token::SCOPE_READ );
+		$wrong_request   = new WPCV_Test_Fake_Rest_Request( array( 'Authorization' => 'Bearer wrong-token' ) );
+		$correct_request = new WPCV_Test_Fake_Rest_Request( array( 'Authorization' => 'Bearer ' . $token ) );
+
+		for ( $i = 0; $i < WPCV_Rest_Token::RATE_LIMIT_MAX_ATTEMPTS; $i++ ) {
+			WPCV_Rest_Token::check_permission( $wrong_request, WPCV_Rest_Token::SCOPE_READ );
+		}
+
+		$result = WPCV_Rest_Token::check_permission( $correct_request, WPCV_Rest_Token::SCOPE_READ );
+
+		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertSame( 429, $result->get_error_data()['status'] );
+
+		unset( $_SERVER['REMOTE_ADDR'] );
+	}
 }

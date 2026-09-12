@@ -10,7 +10,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * RESTトークン認証(v0.3 §Step9、§12.3).
+ * RESTトークン認証(v0.3 §Step9、§12.3。v0.4.0 §Step7でscope分離).
  *
  * WordPressログインセッションを持たない外部システムcronから
  * `POST /wp-json/wpcv/v1/run` を呼べるようにするための、cookie認証とは独立した
@@ -28,11 +28,40 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 優先し、`X-WPCV-Token: <token>` ヘッダーも許容する。クエリパラメータ
  * (`?token=...`)は意図的に読まない(アクセスログやリファラーにトークンが
  * 残る事故を避けるため。§12.3の要件).
+ *
+ * v0.4.0 §Step7で `POST /run`(`SCOPE_RUN`)と `GET /status`・`GET /findings`
+ * (`SCOPE_READ`)のトークンを分離した。移行互換のため、v0.3〜v0.3.1で発行済みの
+ * トークン(`OPTION_NAME` に保存済みのハッシュ)はそのまま `SCOPE_RUN` として
+ * 扱い続ける(読み取り専用トークンは新設の `OPTION_NAME_READ` に別枠で保存し、
+ * 管理画面から別途発行する。§Step7プラン「移行互換のため既存tokenはrun scope
+ * として扱い、read scopeは管理画面から別発行する」)。`WPCV_REST_TOKEN` 定数は
+ * 従来どおり `SCOPE_RUN` のみに適用する(定数の唯一の既存用途を変えないため。
+ * read scope向けの定数上書きは本ステップの対象外).
+ *
+ * `is_rate_limited()`/`record_failed_attempt()`/`clear_failed_attempts()` は
+ * scopeを問わず呼び出し元(IP)単位で共有する(scopeごとにbucketを分けても
+ * ブルートフォース対策上の意味が薄く、実装を複雑にするだけのため).
  */
 class WPCV_Rest_Token {
 
 	/**
-	 * トークンのハッシュを保存するオプション名(`wp_options`/`wp_sitemeta` 共通).
+	 * 検証実行(`POST /run`)用のscope. v0.3〜v0.3.1由来の唯一のscopeで、
+	 * 後方互換のため `OPTION_NAME` にそのまま保存され続ける.
+	 *
+	 * @var string
+	 */
+	const SCOPE_RUN = 'run';
+
+	/**
+	 * 読み取り専用(`GET /status`・`GET /findings`)用のscope(v0.4.0 §Step7で新設).
+	 *
+	 * @var string
+	 */
+	const SCOPE_READ = 'read';
+
+	/**
+	 * `SCOPE_RUN` トークンのハッシュを保存するオプション名(`wp_options`/
+	 * `wp_sitemeta` 共通).
 	 *
 	 * 設定値全般をまとめる `WPCV_Settings::OPTION_NAME`(`wpcv_settings`)とは
 	 * あえて分離した専用オプションにしている。セキュリティ上機微な値を、
@@ -41,6 +70,15 @@ class WPCV_Rest_Token {
 	 * @var string
 	 */
 	const OPTION_NAME = 'wpcv_rest_token_hash';
+
+	/**
+	 * `SCOPE_READ` トークンのハッシュを保存するオプション名(v0.4.0 §Step7で新設。
+	 * `OPTION_NAME` とは別枠にすることで、run scopeトークンの取り扱い
+	 * (`WPCV_REST_TOKEN` 定数優先・既存の発行状況)に一切影響を与えない).
+	 *
+	 * @var string
+	 */
+	const OPTION_NAME_READ = 'wpcv_rest_token_hash_read';
 
 	/**
 	 * 失敗回数ベースのレート制限: この回数を超えたら以後を拒否する.
@@ -66,12 +104,13 @@ class WPCV_Rest_Token {
 	 * その場で1回だけ画面に表示する。以後はハッシュからの復元ができないため
 	 * 再表示できない.
 	 *
+	 * @param string $scope `SCOPE_RUN`(既定)または `SCOPE_READ`.
 	 * @return string 生成した平文トークン(64文字の16進数文字列).
 	 */
-	public static function generate() {
+	public static function generate( $scope = self::SCOPE_RUN ) {
 		$token = bin2hex( random_bytes( 32 ) );
 
-		self::store_hash( self::hash( $token ) );
+		self::store_hash( $scope, self::hash( $token ) );
 
 		return $token;
 	}
@@ -79,22 +118,25 @@ class WPCV_Rest_Token {
 	/**
 	 * 設定画面から発行したトークンが存在するかどうか.
 	 *
-	 * `WPCV_REST_TOKEN` 定数の有無は問わない(あくまでDB保存分の有無).
+	 * `WPCV_REST_TOKEN` 定数の有無は問わない(あくまでDB保存分の有無。定数は
+	 * `SCOPE_RUN` にしか適用されないため、`SCOPE_READ` では常にDB保存分のみを見る).
 	 *
+	 * @param string $scope `SCOPE_RUN`(既定)または `SCOPE_READ`.
 	 * @return bool
 	 */
-	public static function has_stored_token() {
-		return '' !== self::stored_hash();
+	public static function has_stored_token( $scope = self::SCOPE_RUN ) {
+		return '' !== self::stored_hash( $scope );
 	}
 
 	/**
 	 * トークンを検証する(本番用の入口. `WPCV_REST_TOKEN` 定数を実際に読む).
 	 *
 	 * @param string $token リクエストから抽出した平文トークン(空文字を許容).
+	 * @param string $scope `SCOPE_RUN`(既定)または `SCOPE_READ`.
 	 * @return bool
 	 */
-	public static function verify( $token ) {
-		return self::verify_against( $token, self::configured_token_override() );
+	public static function verify( $token, $scope = self::SCOPE_RUN ) {
+		return self::verify_against( $token, self::configured_token_override(), $scope );
 	}
 
 	/**
@@ -107,27 +149,90 @@ class WPCV_Rest_Token {
 	 * 「定数が定義されている場合」を検証するテストがあると、以後のテスト全てに
 	 * 定数の定義が漏れてしまう).
 	 *
+	 * `$token_override` は `$scope` が `SCOPE_RUN` のときのみ考慮する(クラス
+	 * docblock「`WPCV_REST_TOKEN` 定数は `SCOPE_RUN` のみに適用する」参照)。
+	 * `SCOPE_READ` では常にDB保存分のハッシュのみと比較する.
+	 *
 	 * @param string      $token          リクエストから抽出した平文トークン.
 	 * @param string|null $token_override `WPCV_REST_TOKEN` 定数相当の値
 	 *                                    (未定義相当は `null`).
+	 * @param string      $scope          `SCOPE_RUN`(既定)または `SCOPE_READ`.
 	 * @return bool
 	 */
-	public static function verify_against( $token, $token_override ) {
+	public static function verify_against( $token, $token_override, $scope = self::SCOPE_RUN ) {
 		$token = (string) $token;
 
 		if ( '' === $token ) {
 			return false;
 		}
 
-		$expected_hash = ( null !== $token_override && '' !== $token_override )
+		$expected_hash = ( self::SCOPE_RUN === $scope && null !== $token_override && '' !== $token_override )
 			? self::hash( $token_override )
-			: self::stored_hash();
+			: self::stored_hash( $scope );
 
 		if ( '' === $expected_hash ) {
 			return false;
 		}
 
 		return hash_equals( $expected_hash, self::hash( $token ) );
+	}
+
+	/**
+	 * REST パーミッションコールバックの共通実装(v0.4.0 §Step7)。
+	 *
+	 * `WPCV_Rest_Run_Controller`・`WPCV_Rest_Status_Controller`・
+	 * `WPCV_Rest_Findings_Controller` の3コントローラーが同じ手順(レート制限
+	 * 確認 → トークン抽出 → scope付き検証 → 成功/失敗の記録)を必要とするため
+	 * (2箇所目以降の利用が出た時点で共通化する、というこのプロジェクトの方針)、
+	 * ここに集約した。`current_user_can()` によるcapabilityチェックとは併用しない
+	 * (§12.3。WordPressログインセッションを持たない外部システムcronから呼べる
+	 * ことが目的のため).
+	 *
+	 * @param WP_REST_Request $request リクエスト.
+	 * @param string          $scope   `SCOPE_RUN` または `SCOPE_READ`.
+	 * @return true|WP_Error
+	 */
+	public static function check_permission( $request, $scope ) {
+		$identifier = self::client_identifier();
+
+		if ( self::is_rate_limited( $identifier ) ) {
+			return new WP_Error(
+				'wpcv_rest_rate_limited',
+				__( 'Too many failed authentication attempts. Try again later.', 'wp-checksum-verifier' ),
+				array( 'status' => 429 )
+			);
+		}
+
+		$token = self::extract_from_request( $request );
+
+		if ( self::verify( $token, $scope ) ) {
+			self::clear_failed_attempts( $identifier );
+
+			return true;
+		}
+
+		self::record_failed_attempt( $identifier );
+
+		return new WP_Error(
+			'wpcv_rest_forbidden',
+			__( 'Invalid or missing REST token.', 'wp-checksum-verifier' ),
+			array( 'status' => 401 )
+		);
+	}
+
+	/**
+	 * レート制限の単位に使う呼び出し元の識別子(IPアドレス)を返す.
+	 *
+	 * `X-Forwarded-For` 等のクライアントが自由に指定できるヘッダーは信用しない
+	 * (プロキシ経由の実運用でIPアドレスが偏る可能性はあるが、v0.3では
+	 * 詐称されうる値をセキュリティ判定に使わないことを優先する).
+	 *
+	 * @return string
+	 */
+	private static function client_identifier() {
+		return isset( $_SERVER['REMOTE_ADDR'] )
+			? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) )
+			: '';
 	}
 
 	/**
@@ -235,12 +340,14 @@ class WPCV_Rest_Token {
 	/**
 	 * 保存済みのハッシュを読み取る.
 	 *
+	 * @param string $scope `SCOPE_RUN` または `SCOPE_READ`.
 	 * @return string 未発行なら空文字.
 	 */
-	private static function stored_hash() {
-		$hash = is_multisite()
-			? get_site_option( self::OPTION_NAME, '' )
-			: get_option( self::OPTION_NAME, '' );
+	private static function stored_hash( $scope ) {
+		$option = self::option_name_for_scope( $scope );
+		$hash   = is_multisite()
+			? get_site_option( $option, '' )
+			: get_option( $option, '' );
 
 		return (string) $hash;
 	}
@@ -249,16 +356,31 @@ class WPCV_Rest_Token {
 	 * ハッシュを保存する. autoloadを無効化する(毎リクエストの `alloptions` に
 	 * 含めるべきでない値のため).
 	 *
-	 * @param string $hash `self::hash()` の戻り値.
+	 * @param string $scope `SCOPE_RUN` または `SCOPE_READ`.
+	 * @param string $hash  `self::hash()` の戻り値.
 	 * @return void
 	 */
-	private static function store_hash( $hash ) {
+	private static function store_hash( $scope, $hash ) {
+		$option = self::option_name_for_scope( $scope );
+
 		if ( is_multisite() ) {
-			update_site_option( self::OPTION_NAME, $hash );
+			update_site_option( $option, $hash );
 			return;
 		}
 
-		update_option( self::OPTION_NAME, $hash, false );
+		update_option( $option, $hash, false );
+	}
+
+	/**
+	 * Scopeに対応するオプション名を返す(`SCOPE_READ` 以外は既定で `SCOPE_RUN`
+	 * 扱いにする。未知のscope値を渡された場合に静かに `SCOPE_RUN`〔既存の唯一の
+	 * 用途〕へフォールバックさせるための設計).
+	 *
+	 * @param string $scope `SCOPE_RUN` または `SCOPE_READ`.
+	 * @return string
+	 */
+	private static function option_name_for_scope( $scope ) {
+		return self::SCOPE_READ === $scope ? self::OPTION_NAME_READ : self::OPTION_NAME;
 	}
 
 	/**

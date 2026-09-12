@@ -319,6 +319,33 @@ if ( ! function_exists( 'as_enqueue_async_action' ) ) {
 	}
 }
 
+if ( ! function_exists( 'as_schedule_single_action' ) ) {
+	/**
+	 * Stub as_schedule_single_action() — records the call in
+	 * $GLOBALS['_wpcv_test_as_schedule_single_calls'][] and returns a fake
+	 * incrementing action id (mirrors the real function's `int` return on
+	 * success), unless $GLOBALS['_wpcv_test_as_schedule_single_return_zero']
+	 * is truthy, in which case it returns 0 (mirrors the real function's
+	 * failure return). Added for v0.4.0コードレビューCR-06是正
+	 * (`WPCV_Chunk_Dispatcher::schedule_via_action_scheduler()` の遅延予約経路のテスト用).
+	 *
+	 * @param int    $timestamp Unix timestamp.
+	 * @param string $hook      Hook name.
+	 * @param array  $args      Args passed to the hook.
+	 * @param string $group     Group.
+	 * @return int
+	 */
+	function as_schedule_single_action( $timestamp, $hook, $args = array(), $group = '' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_as_schedule_single_calls'][] = array( $timestamp, $hook, $args, $group );
+
+		if ( ! empty( $GLOBALS['_wpcv_test_as_schedule_single_return_zero'] ) ) {
+			return 0;
+		}
+
+		return count( $GLOBALS['_wpcv_test_as_schedule_single_calls'] );
+	}
+}
+
 if ( ! class_exists( 'ActionScheduler' ) ) {
 	/**
 	 * Minimal stub of ActionScheduler(実クラスは `lib/action-scheduler/classes/abstracts/ActionScheduler.php`)。
@@ -345,6 +372,10 @@ if ( ! class_exists( 'ActionScheduler' ) ) {
 
 if ( ! defined( 'DAY_IN_SECONDS' ) ) {
 	define( 'DAY_IN_SECONDS', 86400 );
+}
+
+if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
+	define( 'HOUR_IN_SECONDS', 3600 );
 }
 
 if ( ! function_exists( 'is_multisite' ) ) {
@@ -395,6 +426,19 @@ if ( ! function_exists( 'wp_parse_args' ) ) {
 		$parsed_args = is_object( $args ) ? get_object_vars( $args ) : (array) $args;
 
 		return array_merge( $defaults, $parsed_args );
+	}
+}
+
+if ( ! function_exists( 'absint' ) ) {
+	/**
+	 * Stub absint() — 本物と同じく `abs( (int) $value )` を返す
+	 * (`WPCV_Page_Run_History::current_page_from_request()` 等が依存する).
+	 *
+	 * @param mixed $value 変換対象.
+	 * @return int
+	 */
+	function absint( $value ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return abs( (int) $value );
 	}
 }
 
@@ -681,19 +725,51 @@ if ( ! function_exists( 'register_rest_route' ) ) {
 
 if ( ! class_exists( 'WP_REST_Server' ) ) {
 	/**
-	 * Minimal stub of WP_REST_Server — only the constant our controller reads.
+	 * Minimal stub of WP_REST_Server — only the constants our controllers read.
 	 */
 	class WP_REST_Server {
 		const CREATABLE = 'POST';
+		const READABLE  = 'GET';
 	}
 }
 
 if ( ! class_exists( 'WP_REST_Request' ) ) {
 	/**
-	 * Minimal stub of WP_REST_Request. v0.3 §Step8のハンドラはリクエストパラメータを
-	 * 読まないため空のマーカー型として置くだけで十分.
+	 * Minimal stub of WP_REST_Request. v0.3 §Step8のハンドラはリクエスト
+	 * パラメータを読まないため空のマーカー型で足りていたが、v0.4.0 §Step7の
+	 * `GET /status`/`GET /findings` はクエリパラメータ(dimension/status/severity/
+	 * sort/order/page/per_page/run_id/include_suppressed/include_closed)を
+	 * 読むため `get_param()` を実装する。実 WordPress の `WP_REST_Request` は
+	 * クエリ文字列・JSONボディの両方から自動でパラメータを解決するが、この
+	 * スタブは単体テストが渡した連想配列をそのまま返すだけで十分.
 	 */
 	class WP_REST_Request {
+
+		/**
+		 * パラメータ名 => 値.
+		 *
+		 * @var array<string,mixed>
+		 */
+		private $params;
+
+		/**
+		 * コンストラクタ.
+		 *
+		 * @param array<string,mixed> $params パラメータ名 => 値.
+		 */
+		public function __construct( array $params = array() ) {
+			$this->params = $params;
+		}
+
+		/**
+		 * パラメータを返す.
+		 *
+		 * @param string $name パラメータ名.
+		 * @return mixed 未指定なら `null`.
+		 */
+		public function get_param( $name ) {
+			return isset( $this->params[ $name ] ) ? $this->params[ $name ] : null;
+		}
 	}
 }
 

@@ -10,10 +10,25 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-error-code.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-file-hasher.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-path-normalizer.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-budget.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-unknown-file-scanner.php';
 require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-source.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-verifier.php';
-require_once dirname( __DIR__ ) . '/includes/class-wpcv-repository.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-cursor.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-verifier.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-matcher.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-chunk-result-repository.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-planner.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-starter.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-coordinator.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-context-builder.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
@@ -28,12 +43,12 @@ use PHPUnit\Framework\TestCase;
  *
  * 実際の `WPCV_Plugin::run_coordinator()`(composition root)は `global $wpdb`
  * を必要とするため、`doubles.php` の `wpcv_test_make_fake_environment()` /
- * `wpcv_test_inject_run_coordinator()` / `wpcv_test_inject_repository()` で
+ * `wpcv_test_inject_run_coordinator()` / `wpcv_test_inject_run_repository()` で
  * 手書きテストダブルに差し替える(composition root 自体は `PluginTest` で別途検証済み)。
- * v0.3.1 §Step1で `__invoke()` が `WPCV_Plugin::repository()->reserve_run()` を
- * 直接呼ぶようになったため、`run_coordinator()` と `repository()` の両方を
+ * v0.3.1 §Step1で `__invoke()` が `WPCV_Plugin::run_repository()->reserve_run()` を
+ * 直接呼ぶようになったため、`run_coordinator()` と `run_repository()` の両方を
  * (本番の composition root が同じインスタンスを共有するのと同様に)同じ
- * `WPCV_Repository` インスタンスで差し替える必要がある(`wpcv_test_make_fake_environment()`
+ * `WPCV_Run_Repository` インスタンスで差し替える必要がある(`wpcv_test_make_fake_environment()`
  * の docblock 参照).
  */
 class CliCommandTest extends TestCase {
@@ -65,7 +80,7 @@ class CliCommandTest extends TestCase {
 		parent::setUp();
 		unset( $GLOBALS['_wpcv_test_wp_cli_calls'], $GLOBALS['_wpcv_test_bloginfo'], $GLOBALS['_wpcv_test_plugins'], $GLOBALS['_wpcv_test_mu_plugins'], $GLOBALS['_wpcv_test_as_enqueue_calls'], $GLOBALS['_wpcv_test_action_scheduler_initialized'] );
 		wpcv_test_inject_run_coordinator();
-		wpcv_test_inject_repository();
+		wpcv_test_inject_run_repository();
 	}
 
 	/**
@@ -75,7 +90,7 @@ class CliCommandTest extends TestCase {
 	 */
 	protected function tearDown(): void {
 		wpcv_test_inject_run_coordinator();
-		wpcv_test_inject_repository();
+		wpcv_test_inject_run_repository();
 		parent::tearDown();
 	}
 
@@ -88,7 +103,7 @@ class CliCommandTest extends TestCase {
 		$GLOBALS['_wpcv_test_bloginfo'] = array( 'version' => '6.8' );
 		$made                           = wpcv_test_make_fake_environment();
 		wpcv_test_inject_run_coordinator( $made['coordinator'] );
-		wpcv_test_inject_repository( $made['repository'] );
+		wpcv_test_inject_run_repository( $made['run_repository'] );
 
 		$command = new WPCV_CLI_Command();
 		$command->__invoke( array(), array() );
@@ -109,7 +124,7 @@ class CliCommandTest extends TestCase {
 		// get_bloginfo('version') のスタブを未設定のままにし、空文字を返させる.
 		$made = wpcv_test_make_fake_environment();
 		wpcv_test_inject_run_coordinator( $made['coordinator'] );
-		wpcv_test_inject_repository( $made['repository'] );
+		wpcv_test_inject_run_repository( $made['run_repository'] );
 
 		$command = new WPCV_CLI_Command();
 		$command->__invoke( array(), array() );
@@ -129,9 +144,9 @@ class CliCommandTest extends TestCase {
 	 */
 	public function test_invoke_reports_error_when_run_already_active() {
 		$made = wpcv_test_make_fake_environment();
-		$made['repository']->reserve_run();
+		$made['run_repository']->reserve_run();
 		wpcv_test_inject_run_coordinator( $made['coordinator'] );
-		wpcv_test_inject_repository( $made['repository'] );
+		wpcv_test_inject_run_repository( $made['run_repository'] );
 
 		$command = new WPCV_CLI_Command();
 		$command->__invoke( array(), array() );
@@ -154,7 +169,7 @@ class CliCommandTest extends TestCase {
 	public function test_invoke_with_async_flag_enqueues_via_runner_async() {
 		$GLOBALS['_wpcv_test_action_scheduler_initialized'] = true;
 		$made                                               = wpcv_test_make_fake_environment();
-		wpcv_test_inject_repository( $made['repository'] );
+		wpcv_test_inject_run_repository( $made['run_repository'] );
 
 		$command = new WPCV_CLI_Command();
 		$command->__invoke( array(), array( 'async' => true ) );

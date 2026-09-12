@@ -50,7 +50,7 @@ class WPCV_CLI_Command {
 		// 検証開始前に実行権(run 行)を予約する(v0.3.1 §Step1: `WPCV_Run_Coordinator::run()`
 		// はもう run 行を作らないため、同期呼び出し元が必ず先に予約すること。
 		// `WPCV_Run_Coordinator` の docblock 参照).
-		$reservation = WPCV_Plugin::repository()->reserve_run(
+		$reservation = WPCV_Plugin::run_repository()->reserve_run(
 			array(
 				'run_trigger' => 'cli',
 				'runner'      => 'sync',

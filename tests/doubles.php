@@ -73,6 +73,67 @@ class WPCV_Test_Fake_WPDB {
 	public $insert_id = 0;
 
 	/**
+	 * 直近の失敗したクエリのエラーメッセージ(本番の `$wpdb->last_error` に相当).
+	 *
+	 * DB容量不足・接続断・権限不足・制約違反等で `$wpdb->insert()/update()/query()` が
+	 * `false` を返す経路をテストで再現するために追加した(v0.4.0コードレビュー
+	 * CR-03是正)。`$insert_should_fail`/`$update_should_fail`/`$query_should_fail` を参照.
+	 *
+	 * @var string
+	 */
+	public $last_error = '';
+
+	/**
+	 * `true` にすると、以降の `insert()` 呼び出しがすべて `false` を返す
+	 * (本番の `$wpdb->insert()` がSQLエラー時に返す値を模す. v0.4.0コード
+	 * レビューCR-03是正)。行への反映は一切行わない.
+	 *
+	 * @var bool
+	 */
+	public $insert_should_fail = false;
+
+	/**
+	 * `true` にすると、以降の `update()` 呼び出しがすべて `false` を返す
+	 * (本番の `$wpdb->update()` がSQLエラー時に返す値を模す. v0.4.0コード
+	 * レビューCR-03是正)。WHEREに一致する行数に関わらず常に `false` を返す点が、
+	 * 「一致する行が無い」場合の `0` と区別すべき対象.
+	 *
+	 * @var bool
+	 */
+	public $update_should_fail = false;
+
+	/**
+	 * `true` にすると、以降の `query()` 呼び出しがすべて `false` を返す
+	 * (本番の `$wpdb->query()` がSQLエラー時に返す値を模す. v0.4.0コード
+	 * レビューCR-03是正)。`START TRANSACTION`/`COMMIT`/`ROLLBACK` の呼び出し自体は
+	 * `query_calls` に記録され続けるため、「呼ばれたこと」のアサーションはこの
+	 * フラグの影響を受けない.
+	 *
+	 * @var bool
+	 */
+	public $query_should_fail = false;
+
+	/**
+	 * `true` にすると、以降の `delete()` 呼び出しがすべて `false` を返す
+	 * (本番の `$wpdb->delete()` がSQLエラー時に返す値を模す. v0.4.0コード
+	 * レビューCR-04是正で追加した `WPCV_Finding_Repository::delete_by_target_run_id()`
+	 * のテスト用).
+	 *
+	 * @var bool
+	 */
+	public $delete_should_fail = false;
+
+	/**
+	 * `get_col( "DESCRIBE {$table}" )` が返す列名配列を、テーブル名をキーに
+	 * 保持する(本番の実DBスキーマ相当。v0.4.0コードレビューCR-05是正で追加した
+	 * `WPCV_Migrator::schema_is_current()` のテスト用)。未設定のテーブルは
+	 * 空配列(列が1つも無い = dbDeltaが何も作れなかった状態)として扱う.
+	 *
+	 * @var array<string, string[]>
+	 */
+	public $columns_by_table = array();
+
+	/**
 	 * テーブルごとの行(id をキーにした連想配列).
 	 *
 	 * @var array<string, array<int, array>>
@@ -114,13 +175,24 @@ class WPCV_Test_Fake_WPDB {
 	/**
 	 * 行を追加する.
 	 *
+	 * `$insert_should_fail` が真の場合、行への反映を一切行わず `false` を返す
+	 * (本番の `$wpdb->insert()` がSQLエラー時に返す値を模す。v0.4.0コードレビュー
+	 * CR-03是正).
+	 *
 	 * @param string     $table  テーブル名.
 	 * @param array      $data   カラム => 値.
 	 * @param array|null $format 無視する(本番の型指定に相当。ダブルでは検証しない).
-	 * @return int 常に1(本番の `$wpdb->insert()` の成功時と同じ).
+	 * @return int|false 常に1(本番の `$wpdb->insert()` の成功時と同じ)。
+	 *                    `$insert_should_fail` が真なら `false`.
 	 */
 	public function insert( $table, $data, $format = null ) {
 		unset( $format );
+
+		if ( $this->insert_should_fail ) {
+			$this->last_error = 'WPCV_Test_Fake_WPDB: insert_should_fail が true のため insert() を失敗させました.';
+
+			return false;
+		}
 
 		if ( ! isset( $this->next_id[ $table ] ) ) {
 			$this->next_id[ $table ] = 1;
@@ -138,15 +210,26 @@ class WPCV_Test_Fake_WPDB {
 	/**
 	 * 条件に一致する行を更新する.
 	 *
+	 * `$update_should_fail` が真の場合、WHEREに一致する行の有無に関わらず一切
+	 * 反映せず `false` を返す(本番の `$wpdb->update()` がSQLエラー時に返す値を
+	 * 模す。「一致する行が無い」場合の `0` とは区別する。v0.4.0コードレビュー
+	 * CR-03是正).
+	 *
 	 * @param string     $table        テーブル名.
 	 * @param array      $data         更新するカラム => 値.
 	 * @param array      $where        カラム => 値(すべて一致する行を更新).
 	 * @param array|null $format       無視する.
 	 * @param array|null $where_format 無視する.
-	 * @return int 更新した行数.
+	 * @return int|false 更新した行数。`$update_should_fail` が真なら `false`.
 	 */
 	public function update( $table, $data, $where, $format = null, $where_format = null ) {
 		unset( $format, $where_format );
+
+		if ( $this->update_should_fail ) {
+			$this->last_error = 'WPCV_Test_Fake_WPDB: update_should_fail が true のため update() を失敗させました.';
+
+			return false;
+		}
 
 		$updated = 0;
 
@@ -170,13 +253,83 @@ class WPCV_Test_Fake_WPDB {
 	}
 
 	/**
-	 * 行を読み取る(`WPCV_Repository::sweep_stale_running()` 専用の簡易フェイク).
+	 * 条件に一致する行を削除する(v0.4.0コードレビューCR-04是正で追加した
+	 * `WPCV_Finding_Repository::delete_by_target_run_id()` 用).
+	 *
+	 * `$delete_should_fail` が真の場合、WHEREに一致する行の有無に関わらず一切
+	 * 削除せず `false` を返す(本番の `$wpdb->delete()` がSQLエラー時に返す値を
+	 * 模す).
+	 *
+	 * @param string     $table  テーブル名.
+	 * @param array      $where  カラム => 値(すべて一致する行を削除).
+	 * @param array|null $format 無視する.
+	 * @return int|false 削除した行数。`$delete_should_fail` が真なら `false`.
+	 */
+	public function delete( $table, $where, $format = null ) {
+		unset( $format );
+
+		if ( $this->delete_should_fail ) {
+			$this->last_error = 'WPCV_Test_Fake_WPDB: delete_should_fail が true のため delete() を失敗させました.';
+
+			return false;
+		}
+
+		$deleted = 0;
+
+		if ( ! isset( $this->rows[ $table ] ) ) {
+			return $deleted;
+		}
+
+		foreach ( $this->rows[ $table ] as $id => $row ) {
+			$matches = true;
+
+			foreach ( $where as $column => $value ) {
+				if ( ! isset( $row[ $column ] ) || $row[ $column ] !== $value ) {
+					$matches = false;
+					break;
+				}
+			}
+
+			if ( $matches ) {
+				unset( $this->rows[ $table ][ $id ] );
+				++$deleted;
+			}
+		}
+
+		return $deleted;
+	}
+
+	/**
+	 * 単一列を読み取る(`WPCV_Migrator::schema_is_current()` の
+	 * `DESCRIBE {$table}` 専用の簡易フェイク。v0.4.0コードレビューCR-05是正)。
+	 *
+	 * 実 `$wpdb` と異なり SQL を解釈しない。クエリ文字列から `DESCRIBE {table}` の
+	 * テーブル名だけを正規表現で拾い、`$columns_by_table` に設定済みの列名配列を
+	 * そのまま返す(実DBの `DESCRIBE` が返す最初の列 `Field` 相当).
+	 *
+	 * @param string $query         SQL文字列(`DESCRIBE {table}` を含む前提).
+	 * @param int    $column_offset 無視する(本プラグインは常に既定の0で呼ぶ).
+	 * @return string[]
+	 */
+	public function get_col( $query, $column_offset = 0 ) {
+		unset( $column_offset );
+
+		if ( 1 !== preg_match( '/DESCRIBE\s+(\S+)/i', $query, $matches ) ) {
+			return array();
+		}
+
+		$table = $matches[1];
+
+		return isset( $this->columns_by_table[ $table ] ) ? $this->columns_by_table[ $table ] : array();
+	}
+
+	/**
+	 * 行を読み取る(各Repositoryの `all_rows()` 系メソッド向けの簡易フェイク).
 	 *
 	 * 実 `$wpdb` と異なり SQL を解釈しない。クエリ文字列から `FROM {table}` の
 	 * テーブル名だけを正規表現で拾い、そのテーブルの全行をそのまま返す
 	 * (WHERE 句によるフィルタリングは呼び出し側の PHP コードが行う設計になって
-	 * いるため、フェイク側で再現する必要が無い。`WPCV_Repository::sweep_stale_running()`
-	 * の docblock 参照).
+	 * いるため、フェイク側で再現する必要が無い).
 	 *
 	 * @param string $query  SQL文字列(`FROM {table}` を含む前提).
 	 * @param string $output 無視する(本プラグインは常に `ARRAY_A` で呼ぶ).
@@ -208,16 +361,39 @@ class WPCV_Test_Fake_WPDB {
 	}
 
 	/**
-	 * クエリを実行する(`WPCV_Repository::reserve_run()` の `RELEASE_LOCK()` 専用の
-	 * 簡易フェイク)。実 SQL は実行せず、呼び出しを記録するだけ.
+	 * クエリを実行する(`WPCV_Repository::reserve_run()` の `RELEASE_LOCK()`、および
+	 * `WPCV_Chunk_Result_Repository::commit_chunk()` 等の `START TRANSACTION`/
+	 * `COMMIT`/`ROLLBACK` 用の簡易フェイク)。実 SQL は実行せず、呼び出しを記録
+	 * するだけ.
+	 *
+	 * `$query_should_fail` が真の場合、呼び出しの記録(`query_calls`)はそのまま
+	 * 行いつつ戻り値のみ `false` にする(本番の `$wpdb->query()` がSQLエラー時に
+	 * 返す値を模す。v0.4.0コードレビューCR-03是正).
 	 *
 	 * @param string $query クエリ文字列(記録のみ).
-	 * @return true
+	 * @return bool `$query_should_fail` が真なら `false`。それ以外は常に `true`.
 	 */
 	public function query( $query ) {
 		$this->query_calls[] = $query;
 
+		if ( $this->query_should_fail ) {
+			$this->last_error = 'WPCV_Test_Fake_WPDB: query_should_fail が true のため query() を失敗させました.';
+
+			return false;
+		}
+
 		return true;
+	}
+
+	/**
+	 * 文字セット・照合順序の句を返す(`WPCV_Migrator::table_definitions()` 専用の
+	 * 簡易フェイク). 実 `$wpdb->get_charset_collate()` と異なり固定文字列を返すだけ
+	 * (テストは列・indexの有無のみを見るため、文字セットの値自体は検証対象外).
+	 *
+	 * @return string
+	 */
+	public function get_charset_collate() {
+		return '';
 	}
 
 	/**
@@ -241,53 +417,107 @@ class WPCV_Test_Fake_WPDB {
 
 /**
  * コアのみ(常に成功するマニフェスト)を持つ、手書きスタブ組み立ての
- * `WPCV_Run_Coordinator` と、それが使うのと同一インスタンスの `WPCV_Repository` /
- * `WPCV_Test_Fake_WPDB` を組で作る.
+ * `WPCV_Run_Coordinator`・`WPCV_Chunk_Dispatcher` と、それが使うのと同一インスタンスの
+ * 各 Repository / `WPCV_Test_Fake_WPDB` を組で作る.
  *
  * `CliCommandTest` と `RunnerAsyncTest` がどちらも「composition root
- * (`WPCV_Plugin::run_coordinator()` / `WPCV_Plugin::repository()`)を丸ごと
+ * (`WPCV_Plugin::run_coordinator()` / `WPCV_Plugin::run_repository()`)を丸ごと
  * 差し替えて呼び出し結果を検証する」ことを必要とするため、重複を避けてここに
  * 集約する(doubles.php の集約方針参照)。v0.3.1 §Step1で `WPCV_Run_Coordinator::run()`
  * が予約済み run id を要求するようになったため、呼び出し元は本番の
- * `WPCV_Plugin::run_coordinator()` と `WPCV_Plugin::repository()` が同じ
- * `WPCV_Repository` インスタンスを共有するのと同様に、`repository` を
- * `wpcv_test_inject_repository()` で必ず一緒に差し替えること(でなければ
+ * `WPCV_Plugin::run_coordinator()` と `WPCV_Plugin::run_repository()` が同じ
+ * `WPCV_Run_Repository` インスタンスを共有するのと同様に、`run_repository` を
+ * `wpcv_test_inject_run_repository()` で必ず一緒に差し替えること(でなければ
  * `reserve_run()` が本番の `global $wpdb` を必要とする composition root へ
- * フォールバックしてしまう).
+ * フォールバックしてしまう)。v0.4.0 §Step1で `WPCV_Repository` を3責務に分割した
+ * のに合わせ、この関数が返す配列も `run_repository`/`target_run_repository`/
+ * `finding_repository` に分割した.
  *
- * @return array{coordinator: WPCV_Run_Coordinator, repository: WPCV_Repository, wpdb: WPCV_Test_Fake_WPDB}
+ * v0.4.0 §Step5で `WPCV_Run_Coordinator` がchunk dispatcherベースへ書き換わった
+ * ことに合わせ、`dispatcher`/`chunk_result_repository` も返すようにした
+ * (`WPCV_Runner_Async::run_async_action()` が `WPCV_Plugin::chunk_dispatcher()` を
+ * 直接呼ぶため、それをテストする場合は `wpcv_test_inject_chunk_dispatcher()`/
+ * `wpcv_test_inject_chunk_result_repository()`/`wpcv_test_inject_target_run_repository()`/
+ * `wpcv_test_inject_finding_repository()` も一緒に差し替えること)。dispatcherの
+ * continuation schedulerは既定でno-op(テストが明示的に検証する場合のみ
+ * `$continuation_scheduler` 引数で差し替える)。
+ *
+ * v0.4.0 §Step8で `WPCV_Suppression_Repository` を組み立てに加え、
+ * `WPCV_Run_Planner`/`WPCV_Chunk_Result_Repository` に注入するようにした
+ * (`suppression_repository` も返す。`wpcv_test_inject_suppression_repository()`
+ * で `WPCV_Plugin::suppression_repository()` も一緒に差し替えること)。
+ *
+ * @param WPCV_Manifest_Source|null $core_source            省略時は常に成功する空マニフェストのfake.
+ * @param WPCV_Manifest_Source|null $plugin_source          省略時は `manifest_not_found` を返すfake.
+ * @param callable|null             $continuation_scheduler 省略時はno-op(`WPCV_Chunk_Dispatcher`
+ *                                                          のクラス docblock 参照).
+ * @return array{
+ *     coordinator: WPCV_Run_Coordinator,
+ *     dispatcher: WPCV_Chunk_Dispatcher,
+ *     run_repository: WPCV_Run_Repository,
+ *     target_run_repository: WPCV_Target_Run_Repository,
+ *     finding_repository: WPCV_Finding_Repository,
+ *     chunk_result_repository: WPCV_Chunk_Result_Repository,
+ *     suppression_repository: WPCV_Suppression_Repository,
+ *     wpdb: WPCV_Test_Fake_WPDB,
+ * }
  */
-function wpcv_test_make_fake_environment() {
-	$verifier = new WPCV_Verifier(
-		new WPCV_Test_Fake_Manifest_Source(
-			array(
-				'manifest_status' => 'ok',
-				'error_code'      => null,
-				'files'           => array(),
-			)
-		),
-		new WPCV_Test_Fake_Manifest_Source(
-			array(
-				'manifest_status' => 'missing',
-				'error_code'      => WPCV_Error_Code::MANIFEST_NOT_FOUND,
-				'files'           => array(),
-			)
-		),
-		new WPCV_Unknown_File_Scanner()
+function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = null, $continuation_scheduler = null ) {
+	$core_source   = $core_source ?? new WPCV_Test_Fake_Manifest_Source(
+		array(
+			'manifest_status' => 'ok',
+			'error_code'      => null,
+			'files'           => array(),
+		)
+	);
+	$plugin_source = $plugin_source ?? new WPCV_Test_Fake_Manifest_Source(
+		array(
+			'manifest_status' => 'missing',
+			'error_code'      => WPCV_Error_Code::MANIFEST_NOT_FOUND,
+			'files'           => array(),
+		)
 	);
 
-	$wpdb       = new WPCV_Test_Fake_WPDB();
-	$repository = new WPCV_Repository(
-		$wpdb,
-		static function () {
-			return '2026-09-08 12:00:00';
+	$wpdb                    = new WPCV_Test_Fake_WPDB();
+	$now                     = static function () {
+		return '2026-09-08 12:00:00';
+	};
+	$run_repository          = new WPCV_Run_Repository( $wpdb, $now );
+	$target_run_repository   = new WPCV_Target_Run_Repository( $wpdb, $now );
+	$finding_repository      = new WPCV_Finding_Repository( $wpdb );
+	$suppression_repository  = new WPCV_Suppression_Repository( $wpdb, $now );
+	$chunk_result_repository = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, $finding_repository, $suppression_repository );
+
+	$dispatcher = new WPCV_Chunk_Dispatcher(
+		$run_repository,
+		$target_run_repository,
+		$chunk_result_repository,
+		new WPCV_Chunk_Verifier(),
+		$core_source,
+		$plugin_source,
+		new WPCV_Unknown_File_Scanner(),
+		null,
+		$continuation_scheduler ?? static function () {},
+		// Repository群に注入する `$now`(固定の過去日時)と時刻源を揃える
+		// (`WPCV_Chunk_Dispatcher` の `$now` プロパティのdocblock参照。ずれると
+		// `deadline_at` が常に「過去」と誤判定され、すべてのrunが即座に
+		// `aborted` になる).
+		static function () use ( $now ) {
+			return strtotime( call_user_func( $now ) );
 		}
 	);
 
+	$coordinator = new WPCV_Run_Coordinator( new WPCV_Run_Planner( $suppression_repository ), $run_repository, $target_run_repository, $dispatcher );
+
 	return array(
-		'coordinator' => new WPCV_Run_Coordinator( $verifier, $repository ),
-		'repository'  => $repository,
-		'wpdb'        => $wpdb,
+		'coordinator'             => $coordinator,
+		'dispatcher'              => $dispatcher,
+		'run_repository'          => $run_repository,
+		'target_run_repository'   => $target_run_repository,
+		'finding_repository'      => $finding_repository,
+		'chunk_result_repository' => $chunk_result_repository,
+		'suppression_repository'  => $suppression_repository,
+		'wpdb'                    => $wpdb,
 	);
 }
 
@@ -305,17 +535,99 @@ function wpcv_test_inject_run_coordinator( $coordinator = null ) {
 }
 
 /**
- * `WPCV_Plugin::repository()` が返すインスタンスを差し替える
+ * `WPCV_Plugin::run_repository()` が返すインスタンスを差し替える
  * (private static プロパティへのリフレクション。`wpcv_test_inject_run_coordinator()`
  * と同じ手法. v0.3 §Step6の `WPCV_Scheduler::handle_event()` が
- * `WPCV_Plugin::repository()->sweep_stale_running()` を呼ぶため、実 `global $wpdb`
+ * `WPCV_Plugin::run_repository()` 経由でDBへアクセスするため、実 `global $wpdb`
  * 無しでテストするのに必要).
  *
- * @param WPCV_Repository|null $repository 差し替え先. 省略時はキャッシュを空に戻す.
+ * @param WPCV_Run_Repository|null $repository 差し替え先. 省略時はキャッシュを空に戻す.
  * @return void
  */
-function wpcv_test_inject_repository( $repository = null ) {
-	$property = new ReflectionProperty( WPCV_Plugin::class, 'repository' );
+function wpcv_test_inject_run_repository( $repository = null ) {
+	$property = new ReflectionProperty( WPCV_Plugin::class, 'run_repository' );
+	$property->setAccessible( true );
+	$property->setValue( null, $repository );
+}
+
+/**
+ * `WPCV_Plugin::target_run_repository()` が返すインスタンスを差し替える
+ * (`wpcv_test_inject_run_repository()` と同じ手法. v0.4.0 §Step1).
+ *
+ * @param WPCV_Target_Run_Repository|null $repository 差し替え先. 省略時はキャッシュを空に戻す.
+ * @return void
+ */
+function wpcv_test_inject_target_run_repository( $repository = null ) {
+	$property = new ReflectionProperty( WPCV_Plugin::class, 'target_run_repository' );
+	$property->setAccessible( true );
+	$property->setValue( null, $repository );
+}
+
+/**
+ * `WPCV_Plugin::finding_repository()` が返すインスタンスを差し替える
+ * (`wpcv_test_inject_run_repository()` と同じ手法. v0.4.0 §Step1).
+ *
+ * @param WPCV_Finding_Repository|null $repository 差し替え先. 省略時はキャッシュを空に戻す.
+ * @return void
+ */
+function wpcv_test_inject_finding_repository( $repository = null ) {
+	$property = new ReflectionProperty( WPCV_Plugin::class, 'finding_repository' );
+	$property->setAccessible( true );
+	$property->setValue( null, $repository );
+}
+
+/**
+ * `WPCV_Plugin::chunk_result_repository()` が返すインスタンスを差し替える
+ * (`wpcv_test_inject_run_repository()` と同じ手法. v0.4.0 §Step5).
+ *
+ * @param WPCV_Chunk_Result_Repository|null $repository 差し替え先. 省略時はキャッシュを空に戻す.
+ * @return void
+ */
+function wpcv_test_inject_chunk_result_repository( $repository = null ) {
+	$property = new ReflectionProperty( WPCV_Plugin::class, 'chunk_result_repository' );
+	$property->setAccessible( true );
+	$property->setValue( null, $repository );
+}
+
+/**
+ * `WPCV_Plugin::chunk_dispatcher()` が返すインスタンスを差し替える
+ * (`wpcv_test_inject_run_repository()` と同じ手法. v0.4.0 §Step5:
+ * `WPCV_Runner_Async::run_async_action()` が `WPCV_Plugin::chunk_dispatcher()` を
+ * 直接呼ぶようになったため、実 `global $wpdb` 無しでテストするのに必要).
+ *
+ * @param WPCV_Chunk_Dispatcher|null $dispatcher 差し替え先. 省略時はキャッシュを空に戻す.
+ * @return void
+ */
+function wpcv_test_inject_chunk_dispatcher( $dispatcher = null ) {
+	$property = new ReflectionProperty( WPCV_Plugin::class, 'chunk_dispatcher' );
+	$property->setAccessible( true );
+	$property->setValue( null, $dispatcher );
+}
+
+/**
+ * `WPCV_Plugin::sync_dispatcher()` が返すインスタンスを差し替える
+ * (`wpcv_test_inject_run_repository()` と同じ手法. v0.4.0 §Step6:
+ * `WPCV_Rest_Run_Controller::handle_run()` が `WPCV_Plugin::sync_dispatcher()` を
+ * 直接呼ぶようになったため、実 `global $wpdb` 無しでテストするのに必要).
+ *
+ * @param WPCV_Chunk_Dispatcher|null $dispatcher 差し替え先. 省略時はキャッシュを空に戻す.
+ * @return void
+ */
+function wpcv_test_inject_sync_dispatcher( $dispatcher = null ) {
+	$property = new ReflectionProperty( WPCV_Plugin::class, 'sync_dispatcher' );
+	$property->setAccessible( true );
+	$property->setValue( null, $dispatcher );
+}
+
+/**
+ * `WPCV_Plugin::suppression_repository()` が返すインスタンスを差し替える
+ * (`wpcv_test_inject_run_repository()` と同じ手法. v0.4.0 §Step8).
+ *
+ * @param WPCV_Suppression_Repository|null $repository 差し替え先. 省略時はキャッシュを空に戻す.
+ * @return void
+ */
+function wpcv_test_inject_suppression_repository( $repository = null ) {
+	$property = new ReflectionProperty( WPCV_Plugin::class, 'suppression_repository' );
 	$property->setAccessible( true );
 	$property->setValue( null, $repository );
 }
@@ -368,6 +680,30 @@ function wpcv_test_make_finding( array $overrides = array() ) {
 			'expected_hash'  => str_repeat( 'a', 64 ),
 			'actual_hash'    => str_repeat( 'b', 64 ),
 			'file_size'      => 123,
+		),
+		$overrides
+	);
+}
+
+/**
+ * `wpcv_findings` の1行分(`run_id`・`suppressed_by`・`suppression_id`・
+ * `closed_at`・`closed_reason`込み)を作る(v0.4.0 §Step7:
+ * `WPCV_Finding_Repository::query()` のテスト用。`wpcv_test_make_finding()` は
+ * `save_findings()` が挿入する列のみを持つため、`run_id` 等はここで別途持つ).
+ *
+ * @param array $overrides 上書きするフィールド.
+ * @return array
+ */
+function wpcv_test_make_finding_row( array $overrides = array() ) {
+	return array_merge(
+		wpcv_test_make_finding(),
+		array(
+			'run_id'          => 1,
+			'target_run_id'   => 1,
+			'suppressed_by'   => null,
+			'suppression_id'  => null,
+			'closed_at'       => null,
+			'closed_reason'   => null,
 		),
 		$overrides
 	);
