@@ -280,14 +280,23 @@ class WPCV_Target_Run_Repository {
 		$files_verified = (int) $current['files_verified'] + (int) $chunk_result['files_verified_delta'];
 		$findings_total = (int) $current['findings_total'] + count( $chunk_result['findings'] );
 
+		// v0.4.0コードレビューCR-08是正の実地検証で発見: `WPCV_Target_Run_Repository::
+		// mark_scan_incomplete()`(walk予算切れ)が記録した`error_code`
+		// (`WPCV_Error_Code::TIMEOUT`)が、その後このtarget_runが実際に
+		// (`completed: true`で)成功しても消えずに残り、`status=success`なのに
+		// `error_code=timeout`が表示され続ける不整合が実機で確認された。
+		// `update_chunk_progress()`が呼ばれる=chunk_verifierが実際に走って結果を
+		// 返した(=以前の`error_code`は陳腐化した)ことを意味するため、
+		// `completed`の真偽に関わらず常にクリアする.
 		$data   = array(
 			'cursor_path'          => $chunk_result['cursor_path'],
 			'manifest_fingerprint' => $chunk_result['manifest_fingerprint'],
 			'files_total'          => (int) $chunk_result['files_total'],
 			'files_verified'       => $files_verified,
 			'findings_total'       => $findings_total,
+			'error_code'           => null,
 		);
-		$format = array( '%s', '%s', '%d', '%d', '%d' );
+		$format = array( '%s', '%s', '%d', '%d', '%d', '%s' );
 
 		if ( isset( $chunk_result['manifest_status'] ) ) {
 			$data['manifest_status'] = (string) $chunk_result['manifest_status'];
@@ -393,6 +402,11 @@ class WPCV_Target_Run_Repository {
 	public function reset_for_retry( $target_run_id, $manifest_fingerprint, $version, $lease_owner, $manifest_status = false ) {
 		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
 
+		// v0.4.0コードレビューCR-08是正の実地検証で発見した問題
+		// (`update_chunk_progress()` の同じコメント参照)と同じ理由で、ここに
+		// 到達する時点でchunk_verifierは実際に走っている(fingerprint/version
+		// drift検知はchunk_verifierの実行結果)ため、以前の`mark_scan_incomplete()`
+		// 等が残した陳腐化した`error_code`をクリアする.
 		$data   = array(
 			'status'               => WPCV_Target_Status::RETRY,
 			'cursor_path'          => null,
@@ -403,8 +417,9 @@ class WPCV_Target_Run_Repository {
 			'lease_owner'          => null,
 			'lease_expires_at'     => null,
 			'retry_after'          => null,
+			'error_code'           => null,
 		);
-		$format = array( '%s', '%s', '%s', '%d', '%d', '%d', '%s', '%s', '%s' );
+		$format = array( '%s', '%s', '%s', '%d', '%d', '%d', '%s', '%s', '%s', '%s' );
 
 		if ( false !== $version ) {
 			$data['version'] = $version;

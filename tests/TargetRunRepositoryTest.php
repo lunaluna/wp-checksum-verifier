@@ -215,6 +215,70 @@ class TargetRunRepositoryTest extends TestCase {
 	}
 
 	/**
+	 * `error_code` に前回の残骸(`mark_scan_incomplete()` が残した
+	 * `WPCV_Error_Code::TIMEOUT` 等)が入っていても、`update_chunk_progress()`が
+	 * 呼ばれた時点でクリアされることを確認する(v0.4.0コードレビューCR-08是正の
+	 * 実地検証〔test-armfu.local〕で発見: walk予算切れ→retry→次回dispatchで
+	 * 正常完走、という経路で `status=success` なのに `error_code=timeout` が
+	 * 残り続ける不整合が実機で確認された)。`completed: true`/`false` どちらの
+	 * 分岐でもクリアされることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_update_chunk_progress_clears_stale_error_code() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$target_run_ids = $repository->save_target_runs(
+			1,
+			array(
+				wpcv_test_make_target_run(
+					array( 'status' => WPCV_Target_Status::RUNNING )
+				),
+			)
+		);
+		$target_run_id = $target_run_ids['core'];
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['lease_owner']  = 'lease-1';
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['error_code']   = WPCV_Error_Code::TIMEOUT;
+
+		// completed: true(success)の分岐.
+		$repository->update_chunk_progress(
+			$target_run_id,
+			array(
+				'cursor_path'          => null,
+				'manifest_fingerprint' => 'abc123',
+				'files_total'          => 5,
+				'files_verified_delta' => 5,
+				'findings'             => array(),
+				'completed'            => true,
+			),
+			'lease-1'
+		);
+
+		$this->assertNull( $wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['error_code'] );
+
+		// completed: false(yield)の分岐でも同様にクリアされることを確認する.
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['status']      = WPCV_Target_Status::RUNNING;
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['lease_owner'] = 'lease-2';
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['error_code']  = WPCV_Error_Code::TIMEOUT;
+
+		$repository->update_chunk_progress(
+			$target_run_id,
+			array(
+				'cursor_path'          => 'wp-admin/index.php',
+				'manifest_fingerprint' => 'abc123',
+				'files_total'          => 5,
+				'files_verified_delta' => 2,
+				'findings'             => array(),
+				'completed'            => false,
+			),
+			'lease-2'
+		);
+
+		$this->assertNull( $wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['error_code'] );
+	}
+
+	/**
 	 * `$chunk_result['manifest_status']` が設定されている場合、`manifest_status`列も
 	 * あわせて更新することを確認する(v0.4.0コードレビューCR-09是正。
 	 * `WPCV_Chunk_Dispatcher::process_manifest_chunk()`からの呼び出しを模す).
@@ -532,6 +596,34 @@ class TargetRunRepositoryTest extends TestCase {
 
 		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ];
 		$this->assertSame( 'ok', $row['manifest_status'] );
+	}
+
+	/**
+	 * `error_code` に前回の残骸(`mark_scan_incomplete()` が残した
+	 * `WPCV_Error_Code::TIMEOUT` 等)が入っていても、`reset_for_retry()`が
+	 * 呼ばれた時点でクリアされることを確認する(v0.4.0コードレビューCR-08是正の
+	 * 実地検証で発見した不整合の回帰防止。`update_chunk_progress()`の同名テスト
+	 * 参照)。
+	 *
+	 * @return void
+	 */
+	public function test_reset_for_retry_clears_stale_error_code() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$target_run_ids = $repository->save_target_runs(
+			1,
+			array(
+				wpcv_test_make_target_run( array( 'status' => 'running' ) )
+			)
+		);
+		$target_run_id = $target_run_ids['core'];
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['lease_owner'] = 'lease-1';
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['error_code']  = WPCV_Error_Code::TIMEOUT;
+
+		$repository->reset_for_retry( $target_run_id, 'new-fingerprint', false, 'lease-1' );
+
+		$this->assertNull( $wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['error_code'] );
 	}
 
 	/**
