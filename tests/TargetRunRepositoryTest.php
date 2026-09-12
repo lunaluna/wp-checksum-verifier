@@ -215,6 +215,93 @@ class TargetRunRepositoryTest extends TestCase {
 	}
 
 	/**
+	 * `$chunk_result['manifest_status']` が設定されている場合、`manifest_status`列も
+	 * あわせて更新することを確認する(v0.4.0コードレビューCR-09是正。
+	 * `WPCV_Chunk_Dispatcher::process_manifest_chunk()`からの呼び出しを模す).
+	 *
+	 * @return void
+	 */
+	public function test_update_chunk_progress_updates_manifest_status_when_present() {
+		$fake_wpdb  = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $fake_wpdb );
+
+		$target_run_ids = $repository->save_target_runs(
+			1,
+			array(
+				wpcv_test_make_target_run(
+					array(
+						'status'          => WPCV_Target_Status::RUNNING,
+						'manifest_status' => 'missing',
+					)
+				),
+			)
+		);
+		$target_run_id = $target_run_ids['core'];
+		$fake_wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['lease_owner'] = 'lease-1';
+
+		$repository->update_chunk_progress(
+			$target_run_id,
+			array(
+				'cursor_path'          => null,
+				'manifest_fingerprint' => 'abc123',
+				'manifest_status'      => 'ok',
+				'files_total'          => 5,
+				'files_verified_delta' => 5,
+				'findings'             => array(),
+				'completed'            => true,
+			),
+			'lease-1'
+		);
+
+		$row = $fake_wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ];
+		$this->assertSame( 'ok', $row['manifest_status'] );
+	}
+
+	/**
+	 * `$chunk_result` に `manifest_status` キーが無い(未知ファイル走査からの
+	 * 呼び出し)場合、`manifest_status`列には触れず既存値のままであることを
+	 * 確認する(v0.4.0コードレビューCR-09是正の回帰防止。既に読み込んだ
+	 * `test_update_chunk_progress_accumulates_verified_and_findings_counts`と
+	 * 同じ入力形だが、manifest_statusを明示的に確認する).
+	 *
+	 * @return void
+	 */
+	public function test_update_chunk_progress_leaves_manifest_status_untouched_when_absent() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$target_run_ids = $repository->save_target_runs(
+			1,
+			array(
+				wpcv_test_make_target_run(
+					array(
+						'status'          => WPCV_Target_Status::RUNNING,
+						'manifest_status' => 'missing',
+					)
+				),
+			)
+		);
+		$target_run_id = $target_run_ids['core'];
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['lease_owner'] = 'lease-1';
+
+		$repository->update_chunk_progress(
+			$target_run_id,
+			array(
+				'cursor_path'          => 'wp-content/mu-plugins/evil.php',
+				'manifest_fingerprint' => 'abc123',
+				'files_total'          => 5,
+				'files_verified_delta' => 0,
+				'findings'             => array(),
+				'completed'            => true,
+			),
+			'lease-1'
+		);
+
+		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ];
+		$this->assertSame( 'missing', $row['manifest_status'] );
+	}
+
+	/**
 	 * 対象行が存在しない場合、`update_chunk_progress()` は false を返すことを確認する.
 	 *
 	 * @return void
@@ -410,6 +497,41 @@ class TargetRunRepositoryTest extends TestCase {
 		$this->assertSame( 0, $row['files_total'] );
 		$this->assertSame( 0, $row['files_verified'] );
 		$this->assertSame( 0, $row['findings_total'] );
+		// $manifest_status を省略(既定 false)した場合、manifest_status列には
+		// 触れない(v0.4.0コードレビューCR-09是正の回帰防止).
+		$this->assertSame( 'ok', $row['manifest_status'] );
+	}
+
+	/**
+	 * `reset_for_retry()` の第5引数 `$manifest_status` に `false` 以外を渡すと、
+	 * `manifest_status`列も更新されることを確認する(v0.4.0コードレビューCR-09是正。
+	 * `needs_retry: true`はmanifest取得自体には成功した場合にのみ起こりうるため、
+	 * retry中もmanifest_statusを最新化してよいという設計判断).
+	 *
+	 * @return void
+	 */
+	public function test_reset_for_retry_updates_manifest_status_when_given() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$target_run_ids = $repository->save_target_runs(
+			1,
+			array(
+				wpcv_test_make_target_run(
+					array(
+						'status'          => 'running',
+						'manifest_status' => 'missing',
+					)
+				),
+			)
+		);
+		$target_run_id = $target_run_ids['core'];
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['lease_owner'] = 'lease-1';
+
+		$repository->reset_for_retry( $target_run_id, 'new-fingerprint', false, 'lease-1', 'ok' );
+
+		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ];
+		$this->assertSame( 'ok', $row['manifest_status'] );
 	}
 
 	/**

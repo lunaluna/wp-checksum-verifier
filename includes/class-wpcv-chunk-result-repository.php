@@ -117,7 +117,10 @@ class WPCV_Chunk_Result_Repository {
 	 * @param string       $target_id     対象の target_id(`save_findings()` の
 	 *                                    `target_id => target_run_id` 対応表の組み立てに使う).
 	 * @param array        $chunk_result  `WPCV_Chunk_Verifier::verify_manifest_chunk()`/
-	 *                                    `verify_unknown_files_chunk()` の戻り値.
+	 *                                    `verify_unknown_files_chunk()` の戻り値。
+	 *                                    manifestベースの呼び出し元は`manifest_status`
+	 *                                    (v0.4.0コードレビューCR-09是正)を追加して
+	 *                                    渡すことができる(省略可).
 	 * @param string       $lease_owner   `claim_next()` がこの処理エピソードに割り当てた
 	 *                                    lease owner(fencingに使う).
 	 * @param string|false $new_version   `needs_retry: true` のとき
@@ -147,7 +150,20 @@ class WPCV_Chunk_Result_Repository {
 
 		try {
 			if ( $chunk_result['needs_retry'] ) {
-				$committed = $this->target_run_repository->reset_for_retry( $target_run_id, $chunk_result['manifest_fingerprint'], $new_version, $lease_owner );
+				// v0.4.0コードレビューCR-09是正: needs_retryはmanifest取得自体には
+				// 成功した場合にのみ起こりうる(呼び出し元の`process_manifest_chunk()`が
+				// error_codeチェックを通過済み)ため、manifest_statusも最新の値へ
+				// 更新してよい(`$new_version`と同じ考え方。`reset_for_retry()`の
+				// docblock参照)。`isset()`で分岐するのは、未知ファイル走査からの
+				// 呼び出し(`$chunk_result`に`manifest_status`キーが無い)では
+				// `false`(既定。列を変更しない)のまま渡すため.
+				$committed = $this->target_run_repository->reset_for_retry(
+					$target_run_id,
+					$chunk_result['manifest_fingerprint'],
+					$new_version,
+					$lease_owner,
+					$chunk_result['manifest_status'] ?? false
+				);
 
 				if ( $committed ) {
 					// cursor・集計値のリセットに成功した(=fencingに勝った)場合のみ、

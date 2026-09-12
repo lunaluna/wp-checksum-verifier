@@ -692,6 +692,14 @@ class WPCV_Chunk_Dispatcher {
 			)
 		);
 
+		// v0.4.0コードレビューCR-09是正: manifestを実際に取得できた(=ここまで到達した)
+		// ことを`manifest_status`として確定させ、chunk_result_repositoryにcursor・
+		// 集計値と同じ更新で永続化させる。これが無いと、成功したtarget_runでも
+		// planner挿入時の既定値`missing`(`WPCV_Run_Planner`のクラスdocblock参照)の
+		// まま残り、成功しているのに「manifest無し」を示す矛盾した記録になっていた
+		// (レビュー指摘).
+		$chunk_result['manifest_status'] = $manifest['manifest_status'];
+
 		$this->chunk_result_repository->commit_chunk( $run_id, $target_run['id'], $target_run['target_id'], $chunk_result, $target_run['lease_owner'], $version );
 	}
 

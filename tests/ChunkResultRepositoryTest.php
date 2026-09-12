@@ -102,7 +102,10 @@ class ChunkResultRepositoryTest extends TestCase {
 			1,
 			array(
 				wpcv_test_make_target_run(
-					array( 'status' => 'running' )
+					array(
+						'status'          => 'running',
+						'manifest_status' => 'missing',
+					)
 				),
 			)
 		);
@@ -120,6 +123,7 @@ class ChunkResultRepositoryTest extends TestCase {
 				'files_total'          => 10,
 				'completed'            => false,
 				'manifest_fingerprint' => 'new-fingerprint',
+				'manifest_status'      => 'ok',
 				'fingerprint_changed'  => true,
 				'version_changed'      => false,
 				'needs_retry'          => true,
@@ -132,6 +136,9 @@ class ChunkResultRepositoryTest extends TestCase {
 		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ];
 		$this->assertSame( WPCV_Target_Status::RETRY, $row['status'] );
 		$this->assertSame( 'new-fingerprint', $row['manifest_fingerprint'] );
+		// needs_retryでもmanifest取得自体には成功しているため、manifest_statusは
+		// 最新化される(v0.4.0コードレビューCR-09是正).
+		$this->assertSame( 'ok', $row['manifest_status'] );
 
 		$this->assertContains( 'START TRANSACTION', $wpdb->query_calls );
 		$this->assertContains( 'COMMIT', $wpdb->query_calls );

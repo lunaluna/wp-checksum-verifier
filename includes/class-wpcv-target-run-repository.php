@@ -237,9 +237,20 @@ class WPCV_Target_Run_Repository {
 	 * 既に変わっている(または`status`がrunningでなくなっている)ため0行しか
 	 * 更新されず、cursorの後退・集計の二重加算・新workerの結果の上書きを防げる.
 	 *
+	 * v0.4.0コードレビューCR-09是正: `$chunk_result['manifest_status']`が
+	 * 設定されている場合(=`process_manifest_chunk()`。manifestを実際に取得
+	 * できたことが前提の呼び出し元)、`manifest_status`列もあわせて更新する。
+	 * これが無いと、manifest取得に成功して`success`まで完了したtarget_runでも
+	 * planner挿入時の既定値`missing`のまま残り続け、成功しているのに監査情報が
+	 * 「manifest無し」を示す矛盾が起きていた(レビュー指摘)。未知ファイル走査
+	 * (`process_scan_chunk()`。manifestの概念が無い)からの呼び出しでは
+	 * `manifest_status`キー自体が無いため、この列には触れない.
+	 *
 	 * @param int    $target_run_id 対象の target_run の id.
 	 * @param array  $chunk_result  `WPCV_Chunk_Verifier::verify_*_chunk()` の戻り値
-	 *                              (`needs_retry: false` のもの).
+	 *                              (`needs_retry: false` のもの)に、manifestベースの
+	 *                              呼び出し元が `manifest_status` を追加したもの
+	 *                              (省略可。未知ファイル走査からの呼び出しには無い).
 	 * @param string $lease_owner   `claim_next()` がこの処理エピソードに割り当てた
 	 *                               lease owner(呼び出し元が保持しているclaim結果の値).
 	 * @return bool 更新できたら true。false は対象行が見つからなかった、または
@@ -277,6 +288,11 @@ class WPCV_Target_Run_Repository {
 			'findings_total'       => $findings_total,
 		);
 		$format = array( '%s', '%s', '%d', '%d', '%d' );
+
+		if ( isset( $chunk_result['manifest_status'] ) ) {
+			$data['manifest_status'] = (string) $chunk_result['manifest_status'];
+			$format[]                = '%s';
+		}
 
 		if ( $chunk_result['completed'] ) {
 			$data['status']      = WPCV_Target_Status::SUCCESS;
@@ -348,6 +364,14 @@ class WPCV_Target_Run_Repository {
 	 * fencingする理由は `update_chunk_progress()` と同じ(v0.4.0コードレビュー
 	 * CR-02是正。クラスdocblock参照).
 	 *
+	 * v0.4.0コードレビューCR-09是正: 第5引数 `$manifest_status` を追加した。
+	 * `needs_retry: true` はmanifestの取得自体には成功した(=呼び出し元の
+	 * `process_manifest_chunk()`が`error_code`チェックを通過した)場合にのみ
+	 * 起こりうるため、retryへ戻す際にも`manifest_status`を最新の値へ更新して
+	 * よい(`$version`と同じ「実行時点で観測した最新の値で基準を更新する」
+	 * 考え方。§Step4)。`$version`と同じく`false`(既定)は「呼び出し元がこの
+	 * 値を持たない(未知ファイル走査target等)ため列を変更しない」を表す.
+	 *
 	 * @param int          $target_run_id        対象の target_run の id.
 	 * @param string|null  $manifest_fingerprint 今回計算し直した fingerprint
 	 *                                           (次回の照合基準として保存しておく).
@@ -356,6 +380,9 @@ class WPCV_Target_Run_Repository {
 	 *                                           変更しない.
 	 * @param string       $lease_owner          `claim_next()` がこの処理エピソードに
 	 *                                           割り当てた lease owner.
+	 * @param string|false $manifest_status      新しい基準として保存する
+	 *                                           manifest_status。`false`(既定)なら
+	 *                                           manifest_status列は変更しない.
 	 * @return bool 更新できたら true。false は対象行が見つからなかった、または
 	 *              既に別workerに再claimされていた(fencing失敗)ことを意味する.
 	 *
@@ -363,7 +390,7 @@ class WPCV_Target_Run_Repository {
 	 *                          場合(v0.4.0コードレビューCR-03是正。理由は
 	 *                          `update_chunk_progress()` の同じ `@throws` 参照).
 	 */
-	public function reset_for_retry( $target_run_id, $manifest_fingerprint, $version, $lease_owner ) {
+	public function reset_for_retry( $target_run_id, $manifest_fingerprint, $version, $lease_owner, $manifest_status = false ) {
 		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
 
 		$data   = array(
@@ -382,6 +409,11 @@ class WPCV_Target_Run_Repository {
 		if ( false !== $version ) {
 			$data['version'] = $version;
 			$format[]        = '%s';
+		}
+
+		if ( false !== $manifest_status ) {
+			$data['manifest_status'] = $manifest_status;
+			$format[]                = '%s';
 		}
 
 		$updated = $this->wpdb->update(

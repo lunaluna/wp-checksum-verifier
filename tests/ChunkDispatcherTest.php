@@ -559,6 +559,43 @@ class ChunkDispatcherTest extends TestCase {
 	}
 
 	/**
+	 * Manifestを正常取得して `success` まで完了したtarget_runは、`manifest_status`が
+	 * plannerの既定値 `missing` のまま残らず、manifest sourceが返した値(`ok`)へ
+	 * 更新されることを確認する(v0.4.0コードレビューCR-09是正)。`wpcv_test_make_target_run()`の
+	 * 既定値は `manifest_status: 'ok'` だとこの不具合を検出できないため、実際の
+	 * `WPCV_Run_Planner::queued_target_run()` と同じ `missing` を明示的に与える.
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_updates_manifest_status_from_missing_to_ok_on_success() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
+		$run_id       = $reservation['run_id'];
+
+		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
+			$run_id,
+			array(
+				wpcv_test_make_target_run(
+					array(
+						'status'          => WPCV_Target_Status::QUEUED,
+						'manifest_status' => 'missing',
+					)
+				),
+			)
+		);
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array(), $continuation_calls );
+
+		$dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_ids['core'] ];
+		$this->assertSame( WPCV_Target_Status::SUCCESS, $row['status'] );
+		$this->assertSame( 'ok', $row['manifest_status'] );
+	}
+
+	/**
 	 * Coreのmanifest取得が失敗した場合、`unverifiable` かつ manifest source の
 	 * `error_code` がそのまま記録されることを確認する.
 	 *
