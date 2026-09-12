@@ -4,6 +4,100 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-12
+
+Feature release: file-level chunked execution with persistent cursor and
+resume (replacing the "1 action = 1 run" model for the async/external-HTTP
+paths), a run-level deadline (`aborted` status), a three-layer suppression
+engine with a strict mode setting, new REST read endpoints, and three new
+admin screens (Findings, Suppressions, Run History).
+
+### Added
+
+- **File-level chunked execution with persistent cursor and resume.** Runs
+  enumerate every target up front, then process each one a bounded batch of
+  files at a time (bounded by count, elapsed time, and memory headroom),
+  saving a cursor after each chunk. A target whose manifest fingerprint or
+  version changed since the cursor was saved is reset and retried from
+  scratch instead of silently continuing with mismatched data. WP-Cron, CLI
+  `--async`, and `POST /run` now drive this dispatcher via Action Scheduler
+  actions (or the caller's next poll); synchronous CLI and the admin "Run
+  now" button loop it in-process, so results stay identical across every
+  mode.
+- **Run-level deadline (`aborted` status).** A run that has not reached a
+  terminal state within 6 hours (and any of its still-non-terminal targets)
+  is marked `aborted`, so a stuck run can no longer block the next
+  scheduled run indefinitely.
+- **Suppression engine** with three rule types — `exclude_target` (skip
+  verification of a plugin/core/MU-plugin entirely), `exclude_path`
+  (suppress findings for a specific path within a target), and
+  `allowlist_hash` (approve one specific file hash for one specific
+  version) — plus a global **strict mode** setting (off by default) that,
+  when enabled, stops treating `readme.txt`/`readme.md` changes as a
+  suppressed low-risk "soft change".
+- **New admin screens**: **Findings** (per-run findings list with
+  dimension/status/severity filters and one-click "exclude path" /
+  "approve hash" / "exclude target" actions, each requiring a reason and
+  taking effect from the next run onward), **Suppressions** (every rule
+  ever created, with revoke), and **Run History** (every run with a
+  per-target detail view, including translated `error_code` reasons).
+- **REST read API**: `GET /wp-json/wpcv/v1/status` (current/last run
+  summaries, target-status tallies, next scheduled time) and
+  `GET /wp-json/wpcv/v1/findings` (filterable, sortable, paginated), both
+  behind a new **read**-scoped bearer token independent of the existing
+  **run**-scoped token.
+- **Settings screen status panel**: current/last run summaries, next
+  scheduled time, WP-Cron/Action Scheduler availability, and the most
+  recent CLI-triggered run, without needing to call the REST API.
+
+### Changed
+
+- **`POST /wp-json/wpcv/v1/run` is now meant to be polled**, not called
+  once per run. If a run is in progress, it advances that run's chunked
+  execution for a configurable time budget (default 20s) and returns; if
+  none is in progress, it only starts one if the configured daily run time
+  has passed and no run exists yet for today. The response now includes
+  `pending_targets`, `retry_targets`, and `next_retry_at` in addition to
+  `run_id`/`status`.
+- The REST time-budget setting is now the **external HTTP time budget**
+  for this polling behavior (distinct from the run-level deadline above),
+  replacing the REST queue-draining budget removed in 0.3.1.
+
+### Fixed
+
+Issues found during code review of the chunked-execution work
+(`docs/reviews/0.4.0-code-review.md`), all verified against a real
+database and filesystem before release:
+
+- A run still in the planning stage (targets not yet enumerated) could be
+  reported as complete by a concurrent dispatch call instead of waiting
+  for planning to finish.
+- A worker whose lease had already expired and been reassigned to another
+  worker could still overwrite that other worker's result (no fencing on
+  stale writes).
+- A failed `$wpdb` insert/update/query (e.g. a value too long for its
+  column) was treated as success, committing incomplete data instead of
+  rolling back and raising an error.
+- Findings from a previous manifest/version were not deleted when a target
+  was reset and retried after a mid-run fingerprint/version change,
+  leaving stale findings alongside the new ones.
+- A failed schema migration could still advance the stored DB version,
+  permanently skipping the migration on every later request.
+- A failed Action Scheduler enqueue for the next chunk was not detected,
+  silently stalling the run instead of failing it.
+- The old 3-hour "stale running" sweep (a leftover from the pre-chunking
+  "1 action = 1 run" model) could fail a run that was still legitimately
+  in progress under the new 6-hour deadline; it has been removed along
+  with its dead code.
+- Unknown-file scanning ignored the chunk's time/memory budget, risking a
+  timeout or out-of-memory error on a target with a very large number of
+  files; it now respects the same budget as manifest comparison and yields
+  a retry instead.
+- A target that finished a manifest comparison successfully did not have
+  its `manifest_status` updated from the initial placeholder value.
+- Strict mode could only be toggled by editing the database option
+  directly; the Settings screen now has a checkbox for it.
+
 ## [0.3.1] - 2026-09-10
 
 Patch release: fixes run-lifecycle bugs found while reviewing v0.3.0

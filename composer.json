@@ -2,7 +2,7 @@
     "name": "lunaluna/wp-checksum-verifier",
     "description": "WordPress コア・プラグイン・テーマ・MU プラグインの checksum を日次で検証し、改ざんを検出するプラグイン.",
     "type": "wordpress-plugin",
-    "version": "0.3.1",
+    "version": "0.4.0",
     "license": "GPL-2.0-or-later",
     "require": {
         "php": ">=7.4",

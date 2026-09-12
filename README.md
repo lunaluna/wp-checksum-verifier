@@ -5,11 +5,13 @@ tampering by comparing installed files against official checksum manifests
 (wp.org core/plugin checksums) and reports unknown files not present in any
 manifest.
 
-> **Status**: v0.3.1. The verification engine and all planned execution
-> model entry points (WP-CLI, WP-Cron, admin "Run now" button, REST API)
-> are implemented. Official theme verification and GitHub-hosted
-> plugin/theme verification are not implemented yet. See `CHANGELOG.md` for
-> details.
+> **Status**: v0.4.0. The verification engine, all planned execution model
+> entry points (WP-CLI, WP-Cron, admin "Run now" button, REST API),
+> file-level chunked execution with resume, the suppression engine
+> (`exclude_target`/`exclude_path`/`allowlist_hash` plus strict mode), and
+> the Findings/Suppressions/Run History admin screens are implemented.
+> Official theme verification and GitHub-hosted plugin/theme verification
+> are not implemented yet. See `CHANGELOG.md` for details.
 
 ## Verification targets
 
