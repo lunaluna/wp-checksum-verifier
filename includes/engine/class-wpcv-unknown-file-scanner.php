@@ -19,6 +19,20 @@ if ( ! defined( 'ABSPATH' ) ) {
  * (非再帰)・MU プラグインディレクトリ配下のいずれについても、走査対象ディレクトリと
  * 「既知のパス集合」を受け取って比較する汎用エンジンとして実装する(どの既知パス
  * 集合を渡すか・どのディレクトリを渡すかは呼び出し側の責務とする).
+ *
+ * v0.4.0コードレビューCR-08是正: `scan()` はディレクトリツリー全体を再帰的に
+ * `walk()` した後でまとめて結果配列を組み立てる設計だったため、対象ディレクトリに
+ * 大量のファイルがある場合(攻撃者が大量のダミーファイルを設置して検出を妨害する
+ * ケースを含む)、chunk dispatcherの時間・メモリ予算を確認する前にtimeout/OOMする
+ * 恐れがあった。`$args['budget']`(`WPCV_Chunk_Budget::exceeded()` と同じ形。
+ * `max_seconds`/`memory_limit_bytes` のみ意味を持つ。`max_files` は「見つかった
+ * 未知ファイル件数」ではなく「walkが訪れた全エントリ数」に対して誤って適用すると
+ * 通常規模のインストールでも即座に打ち切られてしまうため、呼び出し元は渡さない
+ * こと)を受け取り、`walk()` 自身が予算超過を検知したら即座に走査を打ち切って
+ * `truncated: true` を返す。呼び出し元(`WPCV_Chunk_Dispatcher`)は `truncated` の
+ * 場合、この不完全な結果集合を fingerprint 計算・chunk 処理には使わず、target_run を
+ * 進捗を変えずに retry へ戻す責務を持つ(`WPCV_Target_Run_Repository::
+ * mark_scan_incomplete()` 参照)。
  */
 class WPCV_Unknown_File_Scanner {
 
@@ -42,6 +56,35 @@ class WPCV_Unknown_File_Scanner {
 	const PHP_LIKE_EXTENSIONS = array( 'php', 'phtml', 'phar', 'php5', 'php7', 'inc' );
 
 	/**
+	 * 現在時刻を秒(float。`microtime( true )` 相当)で返す callable(walkの時間予算判定に使う).
+	 *
+	 * @var callable
+	 */
+	private $now;
+
+	/**
+	 * 現在のメモリ使用量をバイト数(`memory_get_usage( true )` 相当)で返す callable.
+	 *
+	 * @var callable
+	 */
+	private $memory_usage;
+
+	/**
+	 * コンストラクタ.
+	 *
+	 * @param callable|null $now          省略時は `microtime( true )`.
+	 * @param callable|null $memory_usage 省略時は `memory_get_usage( true )`.
+	 */
+	public function __construct( ?callable $now = null, ?callable $memory_usage = null ) {
+		$this->now          = $now ?? static function () {
+			return microtime( true );
+		};
+		$this->memory_usage = $memory_usage ?? static function () {
+			return memory_get_usage( true );
+		};
+	}
+
+	/**
 	 * 指定ディレクトリ配下を走査し、$known_files に無い実在ファイルを検出する.
 	 *
 	 * @param string $base_dir    走査対象ディレクトリの絶対パス.
@@ -62,26 +105,41 @@ class WPCV_Unknown_File_Scanner {
 	 *     @type string[] $extra_excluded_paths 既定除外に加えて無視する ABSPATH 相対
 	 *                                           パスの一覧(例: ABSPATH 直下の
 	 *                                           `.htaccess` / `wp-config.php`).
+	 *     @type array    $budget               walk自体の時間・メモリ予算(クラス
+	 *                                           docblock「CR-08是正」参照。省略時は
+	 *                                           無制限. `max_files` は指定しないこと).
 	 * }
-	 * @return array 検出項目の配列。各要素は
-	 *               `array( 'path' => ABSPATH 相対パス, 'severity' => string )`.
+	 * @return array {
+	 *     @type array $items      検出項目の配列。各要素は
+	 *                             `array( 'path' => ABSPATH 相対パス, 'severity' => string )`.
+	 *     @type bool  $truncated  walkが予算超過で完了できなかった場合 true(この
+	 *                             場合 `items` は不完全な部分集合であり、呼び出し元は
+	 *                             fingerprint計算・chunk処理に使ってはならない).
+	 * }
 	 */
 	public function scan( $base_dir, array $known_files, array $args = array() ) {
 		$recursive        = array_key_exists( 'recursive', $args ) ? (bool) $args['recursive'] : true;
 		$php_severity     = isset( $args['php_severity'] ) ? (string) $args['php_severity'] : 'high';
 		$non_php_severity = isset( $args['non_php_severity'] ) ? (string) $args['non_php_severity'] : 'high';
 		$extra_excluded   = isset( $args['extra_excluded_paths'] ) ? (array) $args['extra_excluded_paths'] : array();
+		$budget           = isset( $args['budget'] ) ? (array) $args['budget'] : array();
 
 		$normalized_base = rtrim( WPCV_Path_Normalizer::to_forward_slashes( $base_dir ), '/' );
 
 		if ( '' === $normalized_base || ! is_dir( $normalized_base ) ) {
-			return array();
+			return array(
+				'items'     => array(),
+				'truncated' => false,
+			);
 		}
 
 		$base_relative = self::relative_base( $normalized_base );
 
 		$found_paths = array();
-		self::walk( $normalized_base, $base_relative, $recursive, $found_paths );
+		$truncated   = false;
+		$start       = call_user_func( $this->now );
+
+		$this->walk( $normalized_base, $base_relative, $recursive, $found_paths, $start, $budget, $truncated );
 
 		$items = array();
 
@@ -100,7 +158,10 @@ class WPCV_Unknown_File_Scanner {
 			);
 		}
 
-		return $items;
+		return array(
+			'items'     => $items,
+			'truncated' => $truncated,
+		);
 	}
 
 	/**
@@ -127,15 +188,29 @@ class WPCV_Unknown_File_Scanner {
 	/**
 	 * ディレクトリを走査し、見つかったファイルの ABSPATH 相対パスを $results に集める.
 	 *
+	 * `$budget`(`max_seconds`/`memory_limit_bytes`のみ
+	 * 意味を持つ。クラスdocblock参照)を毎エントリ確認し、超過を検知したら
+	 * `$truncated` を立てて即座に(再帰呼び出しも含め)走査を打ち切る。`$results`は
+	 * 打ち切り時点までに見つかった分がそのまま残る(呼び出し元 `scan()` は
+	 * `$truncated` が真の場合これを不完全な部分集合として扱う).
+	 *
 	 * @param string $absolute_dir    走査中ディレクトリの絶対パス(スラッシュ区切り済み・
 	 *                                末尾スラッシュ無し).
 	 * @param string $relative_prefix ここまでの ABSPATH 相対パス(末尾スラッシュ無し。
 	 *                                ABSPATH 自身なら空文字).
 	 * @param bool   $recursive       サブディレクトリに降りるか.
 	 * @param array  $results         結果を追記する配列(参照渡し).
+	 * @param float  $start           walk開始時刻(`$this->now`の戻り値).
+	 * @param array  $budget          `max_seconds`/`memory_limit_bytes`/
+	 *                                `memory_threshold_ratio`(いずれも省略可).
+	 * @param bool   $truncated       予算超過を検知したら true にする(参照渡し).
 	 * @return void
 	 */
-	private static function walk( $absolute_dir, $relative_prefix, $recursive, array &$results ) {
+	private function walk( $absolute_dir, $relative_prefix, $recursive, array &$results, $start, array $budget, bool &$truncated ) {
+		if ( $truncated ) {
+			return;
+		}
+
 		// 権限エラー等で読めないディレクトリはスキップする(例外にしない。未知ファイル
 		// 検出という性質上、読めないこと自体は致命的ではなく、他の対象の走査を
 		// 継続すべきため).
@@ -147,6 +222,10 @@ class WPCV_Unknown_File_Scanner {
 		}
 
 		foreach ( $entries as $entry ) {
+			if ( $truncated ) {
+				return;
+			}
+
 			if ( '.' === $entry || '..' === $entry ) {
 				continue;
 			}
@@ -160,12 +239,16 @@ class WPCV_Unknown_File_Scanner {
 
 			if ( is_dir( $absolute_path ) ) {
 				if ( $recursive ) {
-					self::walk( $absolute_path, $relative_path, true, $results );
+					$this->walk( $absolute_path, $relative_path, true, $results, $start, $budget, $truncated );
 				}
-				continue;
+			} else {
+				$results[] = $relative_path;
 			}
 
-			$results[] = $relative_path;
+			if ( WPCV_Chunk_Budget::exceeded( $start, 0, $budget, $this->now, $this->memory_usage ) ) {
+				$truncated = true;
+				return;
+			}
 		}
 	}
 

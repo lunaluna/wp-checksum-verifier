@@ -508,4 +508,101 @@ class TargetRunRepositoryTest extends TestCase {
 		$this->assertFalse( $updated );
 		$this->assertSame( WPCV_Target_Status::RUNNING, $wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['status'] );
 	}
+
+	/**
+	 * `mark_scan_incomplete()`(v0.4.0コードレビューCR-08是正)が claim済み
+	 * (`running`+一致する `lease_owner`)の行を `retry`/`WPCV_Error_Code::TIMEOUT`
+	 * へ更新し、`cursor_path`/`files_total`等の進捗は一切変更しないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_mark_scan_incomplete_updates_claimed_row_without_touching_progress() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$target_run_ids = $repository->save_target_runs(
+			1,
+			array(
+				wpcv_test_make_target_run(
+					array(
+						'status'         => WPCV_Target_Status::RUNNING,
+						'files_total'    => 10,
+						'files_verified' => 7,
+						'findings_total' => 2,
+					)
+				),
+			)
+		);
+		$target_run_id = $target_run_ids['core'];
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['lease_owner']      = 'lease-1';
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['cursor_path']      = 'wp-admin/existing.php';
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['attempt_count']    = 0;
+
+		$updated = $repository->mark_scan_incomplete( $target_run_id, 'lease-1' );
+
+		$this->assertTrue( $updated );
+
+		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ];
+		$this->assertSame( WPCV_Target_Status::RETRY, $row['status'] );
+		$this->assertSame( WPCV_Error_Code::TIMEOUT, $row['error_code'] );
+		$this->assertNull( $row['lease_owner'] );
+		$this->assertNull( $row['lease_expires_at'] );
+		$this->assertNull( $row['retry_after'] );
+		// walk自体が予算切れで打ち切られただけで、chunk_verifierによる比較・確定は
+		// 一切行われていないため、以下の進捗値は変わらない.
+		$this->assertSame( 'wp-admin/existing.php', $row['cursor_path'] );
+		$this->assertSame( 10, $row['files_total'] );
+		$this->assertSame( 7, $row['files_verified'] );
+		$this->assertSame( 2, $row['findings_total'] );
+		$this->assertSame( 0, $row['attempt_count'] );
+	}
+
+	/**
+	 * `mark_scan_incomplete()` が、`lease_owner`が一致しない(既に別workerに
+	 * 再claimされていた)場合にfalseを返し、行を変更しないことを確認する
+	 * (`finalize_immediate()`等と同じfencing。v0.4.0コードレビューCR-02是正参照).
+	 *
+	 * @return void
+	 */
+	public function test_mark_scan_incomplete_returns_false_when_lease_owner_mismatched() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$target_run_ids = $repository->save_target_runs(
+			1,
+			array( wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::RUNNING ) ) )
+		);
+		$target_run_id = $target_run_ids['core'];
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['lease_owner'] = 'worker-b';
+
+		$updated = $repository->mark_scan_incomplete( $target_run_id, 'worker-a' );
+
+		$this->assertFalse( $updated );
+		$this->assertSame( WPCV_Target_Status::RUNNING, $wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['status'] );
+	}
+
+	/**
+	 * `mark_scan_incomplete()` が、`$wpdb->update()` がSQLエラーで `false` を返した
+	 * 場合に `RuntimeException` を投げることを確認する(v0.4.0コードレビューCR-03是正
+	 * と同じ理由).
+	 *
+	 * @return void
+	 */
+	public function test_mark_scan_incomplete_throws_when_wpdb_update_fails() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$target_run_ids = $repository->save_target_runs(
+			1,
+			array( wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::RUNNING ) ) )
+		);
+		$target_run_id = $target_run_ids['core'];
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['lease_owner'] = 'lease-1';
+
+		$wpdb->update_should_fail = true;
+
+		$this->expectException( RuntimeException::class );
+
+		$repository->mark_scan_incomplete( $target_run_id, 'lease-1' );
+	}
 }

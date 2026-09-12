@@ -38,17 +38,6 @@ if ( ! defined( 'ABSPATH' ) ) {
 class WPCV_Chunk_Verifier {
 
 	/**
-	 * メモリ予算判定の既定閾値(`memory_limit_bytes` に対する割合).
-	 *
-	 * `lib/action-scheduler` の `ActionScheduler_Abstract_QueueRunner::memory_exceeded()`
-	 * が使う閾値(90%)を踏襲した(実測ではなく、既存の類似実装との整合を優先した値.
-	 * 未実測であることに注意. 実際の閾値超過時の挙動が問題になれば見直すこと).
-	 *
-	 * @var float
-	 */
-	const DEFAULT_MEMORY_THRESHOLD_RATIO = 0.9;
-
-	/**
 	 * 現在時刻を秒(float。`microtime( true )` 相当)で返す callable.
 	 *
 	 * @var callable
@@ -306,23 +295,6 @@ class WPCV_Chunk_Verifier {
 	 * @return bool
 	 */
 	private function budget_exceeded( $start_time, $processed, array $budget ) {
-		if ( isset( $budget['max_files'] ) && $processed >= (int) $budget['max_files'] ) {
-			return true;
-		}
-
-		if ( isset( $budget['max_seconds'] ) && ( call_user_func( $this->now ) - $start_time ) >= (float) $budget['max_seconds'] ) {
-			return true;
-		}
-
-		if ( isset( $budget['memory_limit_bytes'] ) ) {
-			$ratio     = isset( $budget['memory_threshold_ratio'] ) ? (float) $budget['memory_threshold_ratio'] : self::DEFAULT_MEMORY_THRESHOLD_RATIO;
-			$threshold = (int) $budget['memory_limit_bytes'] * $ratio;
-
-			if ( call_user_func( $this->memory_usage ) >= $threshold ) {
-				return true;
-			}
-		}
-
-		return false;
+		return WPCV_Chunk_Budget::exceeded( $start_time, $processed, $budget, $this->now, $this->memory_usage );
 	}
 }

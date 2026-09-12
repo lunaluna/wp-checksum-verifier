@@ -126,6 +126,12 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-c
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-wporg-plugin.php';
 
 /**
+ * Chunk予算(時間・件数・メモリ)判定の共有ロジック(v0.4.0コードレビューCR-08是正)。
+ * `WPCV_Unknown_File_Scanner`・`WPCV_Chunk_Verifier` の両方より前に読み込む必要がある.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-chunk-budget.php';
+
+/**
  * 未知ファイル検出(§3.6の土台)と検証エンジン本体.
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-unknown-file-scanner.php';

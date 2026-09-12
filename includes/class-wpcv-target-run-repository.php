@@ -411,6 +411,67 @@ class WPCV_Target_Run_Repository {
 	}
 
 	/**
+	 * `WPCV_Unknown_File_Scanner::scan()` 自体が時間・メモリ予算内に完了できなかった
+	 * (walkが打ち切られた)場合に呼ぶ(v0.4.0コードレビューCR-08是正)。
+	 *
+	 * `update_chunk_progress()`(`completed: false`)とは異なり、この経路では
+	 * chunk_verifierによる比較・finding化が1件も行われていない(walkそのものが
+	 * 予算切れで中断し、fingerprint計算に使える完全な集合が無い)。そのため
+	 * `cursor_path`/`manifest_fingerprint`/`files_total`等は一切更新せず、次回
+	 * dispatchで最初から(今回と同じ内容で)再走査させる。`WPCV_Error_Code::TIMEOUT`
+	 * を記録することで、「lease切れ(worker異常。`sweep_expired_leases()`参照)」とは
+	 * 異なる理由であることを運用者が区別できるようにする。`attempt_count`は
+	 * 加算しない(`update_chunk_progress()`の`completed:false`分岐と同じ理由 ――
+	 * walk予算切れは正常な yield であり、workerクラッシュのような異常系ではないため).
+	 *
+	 * `$lease_owner`を(`id`に加えて)`status = running`とともにWHEREへ含めてfencing
+	 * する理由は `update_chunk_progress()` と同じ(v0.4.0コードレビューCR-02是正参照).
+	 *
+	 * @param int    $target_run_id 対象の target_run の id.
+	 * @param string $lease_owner   `claim_next()` がこの処理エピソードに割り当てた
+	 *                              lease owner.
+	 * @return bool 更新できたら true。false は対象行が見つからなかった、または
+	 *              既に別workerに再claimされていた(fencing失敗)ことを意味する.
+	 *
+	 * @throws RuntimeException `$wpdb->update()` がSQLエラーで `false` を返した
+	 *                          場合(v0.4.0コードレビューCR-03是正と同じ理由).
+	 */
+	public function mark_scan_incomplete( $target_run_id, $lease_owner ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
+
+		$updated = $this->wpdb->update(
+			$table,
+			array(
+				'status'           => WPCV_Target_Status::RETRY,
+				'error_code'       => WPCV_Error_Code::TIMEOUT,
+				'lease_owner'      => null,
+				'lease_expires_at' => null,
+				'retry_after'      => null,
+			),
+			array(
+				'id'          => (int) $target_run_id,
+				'status'      => WPCV_Target_Status::RUNNING,
+				'lease_owner' => (string) $lease_owner,
+			),
+			array( '%s', '%s', '%s', '%s', '%s' ),
+			array( '%d', '%s' )
+		);
+
+		if ( false === $updated ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf(
+						'WPCV_Target_Run_Repository::mark_scan_incomplete() の update に失敗しました: %s',
+						(string) $this->wpdb->last_error
+					)
+				)
+			);
+		}
+
+		return $updated > 0;
+	}
+
+	/**
 	 * 指定 run に属する、claim可能(`WPCV_Target_Status::SCHEDULABLE`。かつ
 	 * `retry_after` が未来でない)な target_run を1件、原子的に claim する
 	 * (v0.4.0 §Step4: `WPCV_Chunk_Dispatcher` から呼ぶ).

@@ -10,6 +10,7 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-error-code.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-file-hasher.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-path-normalizer.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-budget.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-unknown-file-scanner.php';
 require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-source.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-verifier.php';

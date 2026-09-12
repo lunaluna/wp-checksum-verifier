@@ -12,6 +12,7 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-path-normalizer.p
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-budget.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-unknown-file-scanner.php';
 require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-source.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-verifier.php';
@@ -59,7 +60,33 @@ class WPCV_Test_Fake_Scanner_Queue extends WPCV_Unknown_File_Scanner {
 	public function scan( $base_dir, array $known_files, array $args = array() ) {
 		unset( $base_dir, $known_files, $args );
 
-		return array_shift( $this->queue ) ?? array();
+		return array(
+			'items'     => array_shift( $this->queue ) ?? array(),
+			'truncated' => false,
+		);
+	}
+}
+
+/**
+ * `scan()` が常に `truncated: true` を返すフェイク(v0.4.0コードレビューCR-08是正の
+ * テスト用。walk自体が予算切れで完了しなかったケースを実ファイルシステムに
+ * 依存せず再現する).
+ */
+class WPCV_Test_Fake_Scanner_Truncated extends WPCV_Unknown_File_Scanner {
+
+	/**
+	 * @param string $base_dir    無視する.
+	 * @param array  $known_files 無視する.
+	 * @param array  $args        無視する.
+	 * @return array
+	 */
+	public function scan( $base_dir, array $known_files, array $args = array() ) {
+		unset( $base_dir, $known_files, $args );
+
+		return array(
+			'items'     => array( array( 'path' => 'wp-admin/should-not-be-used.php', 'severity' => 'high' ) ),
+			'truncated' => true,
+		);
 	}
 }
 
@@ -673,6 +700,64 @@ class ChunkDispatcherTest extends TestCase {
 		$this->assertCount( 1, $findings );
 		$this->assertSame( 'wporg', $findings[0]['source'] );
 		$this->assertSame( 'added', $findings[0]['status'] );
+	}
+
+	/**
+	 * `core:_scan` は、未知ファイル走査(walk)自体が時間・メモリ予算内に完了できな
+	 * かった場合、chunk_verifierを呼ばず(=fingerprint計算・cursor更新を行わず)
+	 * target_runを進捗を変えずにretryへ戻すことを確認する(v0.4.0コードレビュー
+	 * CR-08是正)。
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_marks_core_scan_retry_when_walk_is_truncated() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
+		$run_id       = $reservation['run_id'];
+
+		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
+			$run_id,
+			array(
+				wpcv_test_make_target_run(
+					array(
+						'target_id' => 'core:_scan',
+						'slug'      => '_scan',
+						'status'    => WPCV_Target_Status::QUEUED,
+					)
+				),
+			)
+		);
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher(
+			$repositories,
+			$wpdb,
+			array(
+				'scanner' => new WPCV_Test_Fake_Scanner_Truncated(),
+			),
+			$continuation_calls
+		);
+
+		$dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_ids['core:_scan'] ];
+		$this->assertSame( WPCV_Target_Status::RETRY, $row['status'] );
+		$this->assertSame( WPCV_Error_Code::TIMEOUT, $row['error_code'] );
+		$this->assertNull( $row['lease_owner'] );
+		// 進捗(files_total)はhelperの既定値(10)のまま変わっていないことを確認
+		// (walkが打ち切られたため chunk_verifier 自体を呼んでいない).
+		$this->assertSame( 10, $row['files_total'] );
+		$this->assertSame( 0, (int) ( $row['attempt_count'] ?? 0 ) );
+
+		$this->assertSame( array(), $wpdb->rows['wp_wpcv_findings'] ?? array() );
+
+		// 次回dispatchですぐ再claimできるよう、継続を即時(delay=0)でenqueueして
+		// いることも確認する(lease切れ検知〔backoff付き〕とは異なる経路であるため).
+		$this->assertSame(
+			array( array( 'run_id' => $run_id, 'delay_seconds' => 0 ) ),
+			$continuation_calls
+		);
 	}
 
 	/**

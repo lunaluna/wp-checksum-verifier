@@ -510,7 +510,22 @@ class WPCV_Chunk_Dispatcher {
 		$scan_items = array();
 
 		foreach ( WPCV_Verifier::core_unknown_file_areas() as $area ) {
-			$scan_items = array_merge( $scan_items, $this->scanner->scan( $area['dir'], $manifest['files'], $area['args'] ) );
+			$area_args           = $area['args'];
+			$area_args['budget'] = $this->walk_budget();
+
+			$scan_result = $this->scanner->scan( $area['dir'], $manifest['files'], $area_args );
+
+			if ( $scan_result['truncated'] ) {
+				// v0.4.0コードレビューCR-08是正: ここまでの $scan_items は複数
+				// 領域(wp-admin/wp-includes等)の一部でしかなく、この不完全な
+				// 集合でfingerprintを計算・確定させると次回以降の drift 検知が
+				// 意味を失う。chunk_verifierには渡さず、進捗を変えずに retry へ
+				// 戻す(次回dispatchで最初から同じ内容を再走査する).
+				$this->target_run_repository->mark_scan_incomplete( $target_run['id'], $target_run['lease_owner'] );
+				return;
+			}
+
+			$scan_items = array_merge( $scan_items, $scan_result['items'] );
 		}
 
 		$this->process_scan_chunk( $run_id, $target_run, $scan_items, (string) $context['version'], 'wporg' );
@@ -541,19 +556,27 @@ class WPCV_Chunk_Dispatcher {
 		$mu_plugins  = isset( $context['mu_plugins'] ) ? (array) $context['mu_plugins'] : array();
 		$known_files = WPCV_Verifier::known_muplugin_loader_files( $mu_plugin_dir, array_keys( $mu_plugins ) );
 
-		$scan_items = $this->scanner->scan(
+		$scan_result = $this->scanner->scan(
 			$mu_plugin_dir,
 			$known_files,
 			array(
 				'recursive'        => true,
 				'php_severity'     => 'high',
 				'non_php_severity' => 'medium',
+				'budget'           => $this->walk_budget(),
 			)
 		);
 
+		if ( $scan_result['truncated'] ) {
+			// v0.4.0コードレビューCR-08是正: core:_scanと同じ理由(直上の
+			// process_core_scan()参照)で、不完全な走査結果は使わず retry へ戻す.
+			$this->target_run_repository->mark_scan_incomplete( $target_run['id'], $target_run['lease_owner'] );
+			return;
+		}
+
 		// §5.5: findings.version は NOT NULL のため空文字列にする
 		// (`WPCV_Verifier::verify_muplugin_area()` の合成targetと同じ規約).
-		$this->process_scan_chunk( $run_id, $target_run, $scan_items, '', 'none' );
+		$this->process_scan_chunk( $run_id, $target_run, $scan_result['items'], '', 'none' );
 	}
 
 	/**
@@ -716,6 +739,26 @@ class WPCV_Chunk_Dispatcher {
 		if ( null !== $memory_limit_bytes ) {
 			$budget['memory_limit_bytes'] = $memory_limit_bytes;
 		}
+
+		return $budget;
+	}
+
+	/**
+	 * `WPCV_Unknown_File_Scanner::scan()` の walk 自体に渡す予算を組み立てる
+	 * (v0.4.0コードレビューCR-08是正).
+	 *
+	 * `default_budget()` の `max_files`(既定500)は「chunk_verifierが1回で
+	 * 比較・finding化する件数」の上限であり、walkが訪れる全エントリ数(既知ファイル
+	 * 含む。core領域だけで数千件が普通)に対して同じ値を適用すると、通常規模の
+	 * インストールでも即座に打ち切られ続けてしまう。そのため `max_files` を除いた
+	 * `max_seconds`/`memory_limit_bytes` のみを walk へ渡す.
+	 *
+	 * @return array `max_seconds`/`memory_limit_bytes`(取得できる場合のみ).
+	 */
+	private function walk_budget() {
+		$budget = $this->default_budget();
+
+		unset( $budget['max_files'] );
 
 		return $budget;
 	}

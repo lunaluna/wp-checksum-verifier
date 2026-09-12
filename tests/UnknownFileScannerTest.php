@@ -6,6 +6,7 @@
  */
 
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-path-normalizer.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-budget.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-unknown-file-scanner.php';
 
 use PHPUnit\Framework\TestCase;
@@ -106,7 +107,7 @@ class UnknownFileScannerTest extends TestCase {
 	/**
 	 * $items から 'path' の一覧だけを取り出す(assertSame の比較を読みやすくする).
 	 *
-	 * @param array $items scan() の戻り値.
+	 * @param array $items scan() の戻り値の `items`.
 	 * @return string[]
 	 */
 	private function paths_of( array $items ) {
@@ -123,13 +124,14 @@ class UnknownFileScannerTest extends TestCase {
 		$this->put_fixture_file( 'wp-admin/evil.php' );
 
 		$scanner = new WPCV_Unknown_File_Scanner();
-		$items   = $scanner->scan(
+		$result  = $scanner->scan(
 			ABSPATH . 'wp-admin',
 			array( 'wp-admin/index.php' => array() )
 		);
 
-		$this->assertSame( array( 'wp-admin/evil.php' ), $this->paths_of( $items ) );
-		$this->assertSame( 'high', $items[0]['severity'] );
+		$this->assertFalse( $result['truncated'] );
+		$this->assertSame( array( 'wp-admin/evil.php' ), $this->paths_of( $result['items'] ) );
+		$this->assertSame( 'high', $result['items'][0]['severity'] );
 	}
 
 	/**
@@ -141,12 +143,12 @@ class UnknownFileScannerTest extends TestCase {
 		$this->put_fixture_file( 'wp-admin/index.php' );
 
 		$scanner = new WPCV_Unknown_File_Scanner();
-		$items   = $scanner->scan(
+		$result  = $scanner->scan(
 			ABSPATH . 'wp-admin',
 			array( 'wp-admin/index.php' => array() )
 		);
 
-		$this->assertSame( array(), $items );
+		$this->assertSame( array(), $result['items'] );
 	}
 
 	/**
@@ -158,9 +160,9 @@ class UnknownFileScannerTest extends TestCase {
 		$this->put_fixture_file( 'wp-admin/includes/backdoor.php' );
 
 		$scanner = new WPCV_Unknown_File_Scanner();
-		$items   = $scanner->scan( ABSPATH . 'wp-admin', array() );
+		$result  = $scanner->scan( ABSPATH . 'wp-admin', array() );
 
-		$this->assertSame( array( 'wp-admin/includes/backdoor.php' ), $this->paths_of( $items ) );
+		$this->assertSame( array( 'wp-admin/includes/backdoor.php' ), $this->paths_of( $result['items'] ) );
 	}
 
 	/**
@@ -176,13 +178,13 @@ class UnknownFileScannerTest extends TestCase {
 		$scanner = new WPCV_Unknown_File_Scanner();
 		// fake-root/.gitkeep はこのテストクラスとは無関係に常設されているフィクス
 		// チャファイルのため、既知として除外する.
-		$items = $scanner->scan(
+		$result = $scanner->scan(
 			rtrim( ABSPATH, '/' ),
 			array( '.gitkeep' => array() ),
 			array( 'recursive' => false )
 		);
 
-		$this->assertSame( array( 'index.php' ), $this->paths_of( $items ) );
+		$this->assertSame( array( 'index.php' ), $this->paths_of( $result['items'] ) );
 	}
 
 	/**
@@ -196,7 +198,7 @@ class UnknownFileScannerTest extends TestCase {
 		$this->put_fixture_file( 'note.txt' );
 
 		$scanner = new WPCV_Unknown_File_Scanner();
-		$items   = $scanner->scan(
+		$result  = $scanner->scan(
 			rtrim( ABSPATH, '/' ),
 			array(),
 			array(
@@ -207,7 +209,7 @@ class UnknownFileScannerTest extends TestCase {
 		);
 
 		$by_path = array();
-		foreach ( $items as $item ) {
+		foreach ( $result['items'] as $item ) {
 			$by_path[ $item['path'] ] = $item['severity'];
 		}
 
@@ -226,7 +228,7 @@ class UnknownFileScannerTest extends TestCase {
 		$this->put_fixture_file( '.user.ini' );
 
 		$scanner = new WPCV_Unknown_File_Scanner();
-		$items   = $scanner->scan(
+		$result  = $scanner->scan(
 			rtrim( ABSPATH, '/' ),
 			array(),
 			array(
@@ -237,7 +239,7 @@ class UnknownFileScannerTest extends TestCase {
 		);
 
 		$by_path = array();
-		foreach ( $items as $item ) {
+		foreach ( $result['items'] as $item ) {
 			$by_path[ $item['path'] ] = $item['severity'];
 		}
 
@@ -260,7 +262,7 @@ class UnknownFileScannerTest extends TestCase {
 		$scanner = new WPCV_Unknown_File_Scanner();
 		// fake-root/.gitkeep はこのテストクラスとは無関係に常設されているフィクス
 		// チャファイルのため、既知として除外する.
-		$items = $scanner->scan(
+		$result = $scanner->scan(
 			rtrim( ABSPATH, '/' ),
 			array( '.gitkeep' => array() ),
 			array(
@@ -269,7 +271,7 @@ class UnknownFileScannerTest extends TestCase {
 			)
 		);
 
-		$this->assertSame( array( 'index.php' ), $this->paths_of( $items ) );
+		$this->assertSame( array( 'index.php' ), $this->paths_of( $result['items'] ) );
 	}
 
 	/**
@@ -285,9 +287,9 @@ class UnknownFileScannerTest extends TestCase {
 		$this->put_fixture_file( 'wp-content/mu-plugins/real-backdoor.php' );
 
 		$scanner = new WPCV_Unknown_File_Scanner();
-		$items   = $scanner->scan( ABSPATH . 'wp-content/mu-plugins', array() );
+		$result  = $scanner->scan( ABSPATH . 'wp-content/mu-plugins', array() );
 
-		$this->assertSame( array( 'wp-content/mu-plugins/real-backdoor.php' ), $this->paths_of( $items ) );
+		$this->assertSame( array( 'wp-content/mu-plugins/real-backdoor.php' ), $this->paths_of( $result['items'] ) );
 	}
 
 	/**
@@ -298,8 +300,85 @@ class UnknownFileScannerTest extends TestCase {
 	 */
 	public function test_returns_empty_array_for_nonexistent_base_dir() {
 		$scanner = new WPCV_Unknown_File_Scanner();
-		$items   = $scanner->scan( ABSPATH . 'no-such-directory', array() );
+		$result  = $scanner->scan( ABSPATH . 'no-such-directory', array() );
 
-		$this->assertSame( array(), $items );
+		$this->assertSame( array(), $result['items'] );
+		$this->assertFalse( $result['truncated'] );
+	}
+
+	/**
+	 * `budget.max_seconds` を超えると walk 自体が打ち切られ、`truncated: true` を
+	 * 返すことを確認する(v0.4.0コードレビューCR-08是正。`$now` callable を注入して
+	 * 経過時間を制御する).
+	 *
+	 * @return void
+	 */
+	public function test_scan_truncates_when_walk_exceeds_max_seconds_budget() {
+		$this->put_fixture_file( 'wp-admin/a.php' );
+		$this->put_fixture_file( 'wp-admin/b.php' );
+
+		// 1回目(開始時刻)は 0.0、以降は常に 100.0(経過100秒)を返す.
+		$call_count = 0;
+		$now        = function () use ( &$call_count ) {
+			return 0 === $call_count++ ? 0.0 : 100.0;
+		};
+
+		$scanner = new WPCV_Unknown_File_Scanner( $now );
+		$result  = $scanner->scan(
+			ABSPATH . 'wp-admin',
+			array(),
+			array( 'budget' => array( 'max_seconds' => 10 ) )
+		);
+
+		$this->assertTrue( $result['truncated'] );
+	}
+
+	/**
+	 * `budget.memory_limit_bytes` を超えても walk 自体が打ち切られることを確認する
+	 * (`$memory_usage` callable を注入).
+	 *
+	 * @return void
+	 */
+	public function test_scan_truncates_when_walk_exceeds_memory_budget() {
+		$this->put_fixture_file( 'wp-admin/a.php' );
+		$this->put_fixture_file( 'wp-admin/b.php' );
+
+		$scanner = new WPCV_Unknown_File_Scanner(
+			null,
+			static function () {
+				return 950;
+			}
+		);
+
+		$result = $scanner->scan(
+			ABSPATH . 'wp-admin',
+			array(),
+			array(
+				'budget' => array(
+					'memory_limit_bytes'     => 1000,
+					'memory_threshold_ratio' => 0.9,
+				),
+			)
+		);
+
+		$this->assertTrue( $result['truncated'] );
+	}
+
+	/**
+	 * budget を指定しない(既定)場合は打ち切られず、ディレクトリの規模に関わらず
+	 * 常に完走することを確認する(既存の呼び出し元との後方互換).
+	 *
+	 * @return void
+	 */
+	public function test_scan_does_not_truncate_without_budget() {
+		$this->put_fixture_file( 'wp-admin/a.php' );
+		$this->put_fixture_file( 'wp-admin/b.php' );
+		$this->put_fixture_file( 'wp-admin/c.php' );
+
+		$scanner = new WPCV_Unknown_File_Scanner();
+		$result  = $scanner->scan( ABSPATH . 'wp-admin', array() );
+
+		$this->assertFalse( $result['truncated'] );
+		$this->assertCount( 3, $result['items'] );
 	}
 }
