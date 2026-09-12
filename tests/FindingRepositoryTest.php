@@ -84,6 +84,54 @@ class FindingRepositoryTest extends TestCase {
 	}
 
 	/**
+	 * `delete_by_target_run_id()` が指定 target_run_id の finding だけを削除し、
+	 * 他の target_run_id の finding は残すことを確認する(v0.4.0コードレビュー
+	 * CR-04是正: fingerprint/version変更時に前世代のfindingsを削除するために追加).
+	 *
+	 * @return void
+	 */
+	public function test_delete_by_target_run_id_removes_only_matching_rows() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$repository->save_findings(
+			42,
+			array( 'core' => 7 ),
+			array( wpcv_test_make_finding( array( 'target_id' => 'core' ) ) )
+		);
+		$repository->save_findings(
+			42,
+			array( 'plugin:akismet' => 8 ),
+			array( wpcv_test_make_finding( array( 'target_id' => 'plugin:akismet' ) ) )
+		);
+
+		$repository->delete_by_target_run_id( 7 );
+
+		$remaining = array_values( $wpdb->rows['wp_wpcv_findings'] );
+		$this->assertCount( 1, $remaining );
+		$this->assertSame( 8, $remaining[0]['target_run_id'] );
+	}
+
+	/**
+	 * `delete_by_target_run_id()` が、`$wpdb->delete()` の失敗(`false`)を検知して
+	 * `RuntimeException` を投げることを確認する(v0.4.0コードレビューCR-03是正と
+	 * 同じ理由。これを確認しないと、削除したつもりで実際には旧世代findingsが
+	 * 残ったままcursorだけリセットされる不整合が起こり得る).
+	 *
+	 * @return void
+	 */
+	public function test_delete_by_target_run_id_throws_when_delete_fails() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$wpdb->delete_should_fail = true;
+
+		$this->expectException( RuntimeException::class );
+
+		$repository->delete_by_target_run_id( 7 );
+	}
+
+	/**
 	 * `query()` が指定 run_id 以外の finding を含めないことを確認する
 	 * (v0.4.0 §Step7).
 	 *

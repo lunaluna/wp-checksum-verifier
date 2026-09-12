@@ -51,11 +51,12 @@ class WPCV_Finding_Repository {
 	const SORTABLE_COLUMNS = array( 'id', 'path', 'severity', 'status', 'version' );
 
 	/**
-	 * `$wpdb` 相当のオブジェクト(`insert()` / `get_results()` / `prepare()` /
-	 * `base_prefix` / `last_error` を持つもの).
+	 * `$wpdb` 相当のオブジェクト(`insert()` / `delete()` / `get_results()` /
+	 * `prepare()` / `base_prefix` / `last_error` を持つもの).
 	 *
 	 * `last_error` は v0.4.0コードレビューCR-03是正で追加した要件(`save_findings()`
-	 * が `insert()` 失敗時の例外メッセージに使う).
+	 * が `insert()` 失敗時の例外メッセージに使う)。`delete()` は同CR-04是正で
+	 * 追加した要件(`delete_by_target_run_id()` が使う).
 	 *
 	 * @var object
 	 */
@@ -144,6 +145,49 @@ class WPCV_Finding_Repository {
 					)
 				);
 			}
+		}
+	}
+
+	/**
+	 * 指定 target_run_id を持つ findings をすべて削除する(v0.4.0コードレビュー
+	 * CR-04是正)。
+	 *
+	 * `WPCV_Target_Run_Repository::reset_for_retry()`(fingerprint/version不一致を
+	 * 検知したtargetのcursor・集計値をリセットする)と対にして呼ぶ想定
+	 * (`WPCV_Chunk_Result_Repository::commit_chunk()` 参照)。cursor・集計値だけを
+	 * 0へ戻して旧世代のfindings行を残したままにすると、再走査後に重複・陳腐化した
+	 * findingが表示され、`findings_total`(リセット後0から積み直す)と
+	 * `wpcv_findings`の実件数(旧世代分がそのまま残る)が食い違う不整合になる
+	 * (レビュー指摘の実害).
+	 *
+	 * @param int $target_run_id 対象の target_run の id.
+	 * @return void
+	 *
+	 * @throws RuntimeException `$wpdb->delete()` が失敗した場合(v0.4.0コード
+	 *                          レビューCR-03是正と同じ理由。ここを確認せずに
+	 *                          `reset_for_retry()`のcursorリセットだけをCOMMIT
+	 *                          すると、旧世代findingが削除されないまま「削除した
+	 *                          つもり」の状態になり、このメソッドを追加した目的
+	 *                          そのものが達成できなくなる).
+	 */
+	public function delete_by_target_run_id( $target_run_id ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_findings';
+
+		$deleted = $this->wpdb->delete(
+			$table,
+			array( 'target_run_id' => (int) $target_run_id ),
+			array( '%d' )
+		);
+
+		if ( false === $deleted ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf(
+						'WPCV_Finding_Repository::delete_by_target_run_id() の delete に失敗しました: %s',
+						(string) $this->wpdb->last_error
+					)
+				)
+			);
 		}
 	}
 

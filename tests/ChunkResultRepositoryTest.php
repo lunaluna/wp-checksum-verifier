@@ -138,6 +138,119 @@ class ChunkResultRepositoryTest extends TestCase {
 	}
 
 	/**
+	 * `needs_retry: true` のとき、この target_run に紐づく既存(前世代)の
+	 * findingsが削除されることを確認する(v0.4.0コードレビューCR-04是正:
+	 * fingerprint/version変更を検知してcursor・集計値をリセットしても、旧世代
+	 * のfindingsが残ったままだと再走査後に重複・陳腐化したfindingが表示される
+	 * 不整合が起きていた)。他のtarget_runのfindingは削除されないことも確認する.
+	 *
+	 * @return void
+	 */
+	public function test_commit_chunk_deletes_stale_findings_when_needs_retry() {
+		$wpdb                  = new WPCV_Test_Fake_WPDB();
+		$target_run_repository = new WPCV_Target_Run_Repository( $wpdb );
+		$finding_repository    = new WPCV_Finding_Repository( $wpdb );
+		$repository            = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, $finding_repository, new WPCV_Suppression_Repository( $wpdb ) );
+
+		$target_run_ids      = $target_run_repository->save_target_runs(
+			1,
+			array(
+				wpcv_test_make_target_run( array( 'status' => 'running' ) ),
+				wpcv_test_make_target_run(
+					array(
+						'target_id' => 'plugin:akismet',
+						'dimension' => 'plugin',
+						'slug'      => 'akismet',
+						'status'    => 'running',
+					)
+				),
+			)
+		);
+		$target_run_id       = $target_run_ids['core'];
+		$other_target_run_id = $target_run_ids['plugin:akismet'];
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['lease_owner']       = 'lease-1';
+		$wpdb->rows['wp_wpcv_target_runs'][ $other_target_run_id ]['lease_owner'] = 'lease-2';
+
+		// 前回のchunk呼び出しまでに保存済みの、この target_run のfinding
+		// (=fingerprint/versionが変わる前の旧世代).
+		$finding_repository->save_findings( 1, array( 'core' => $target_run_id ), array( wpcv_test_make_finding() ) );
+		// 別targetのfinding(削除されてはいけない).
+		$finding_repository->save_findings( 1, array( 'plugin:akismet' => $other_target_run_id ), array( wpcv_test_make_finding( array( 'target_id' => 'plugin:akismet' ) ) ) );
+
+		$repository->commit_chunk(
+			1,
+			$target_run_id,
+			'core',
+			array(
+				'findings'             => array(),
+				'cursor_path'          => null,
+				'files_verified_delta' => 0,
+				'files_total'          => 10,
+				'completed'            => false,
+				'manifest_fingerprint' => 'new-fingerprint',
+				'fingerprint_changed'  => true,
+				'version_changed'      => false,
+				'needs_retry'          => true,
+			),
+			'lease-1'
+		);
+
+		$remaining = array_values( $wpdb->rows['wp_wpcv_findings'] );
+		$this->assertCount( 1, $remaining );
+		$this->assertSame( $other_target_run_id, $remaining[0]['target_run_id'] );
+	}
+
+	/**
+	 * `needs_retry: true` でも、`reset_for_retry()` がfencingに失敗した(既に
+	 * 別workerに再claimされていた)場合は既存findingsを削除しないことを確認する
+	 * (v0.4.0コードレビューCR-04是正)。fencing負けした古いworkerが、既に
+	 * 別workerが再claimして進めているfindingsを誤って消してしまわないため.
+	 *
+	 * @return void
+	 */
+	public function test_commit_chunk_does_not_delete_findings_when_needs_retry_fencing_fails() {
+		$wpdb                  = new WPCV_Test_Fake_WPDB();
+		$target_run_repository = new WPCV_Target_Run_Repository( $wpdb );
+		$finding_repository    = new WPCV_Finding_Repository( $wpdb );
+		$repository            = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, $finding_repository, new WPCV_Suppression_Repository( $wpdb ) );
+
+		$target_run_ids = $target_run_repository->save_target_runs(
+			1,
+			array(
+				wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::RUNNING ) ),
+			)
+		);
+		$target_run_id  = $target_run_ids['core'];
+		// worker Bが既に再claimしている(lease_ownerが変わっている)状況を模す.
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['lease_owner'] = 'worker-b';
+
+		// worker Bが既に保存したfinding(worker A〔fencing負け〕に消されてはいけない).
+		$finding_repository->save_findings( 1, array( 'core' => $target_run_id ), array( wpcv_test_make_finding() ) );
+
+		// worker A(古いlease)が遅れてneeds_retryを確定しようとする状況を模す.
+		$committed = $repository->commit_chunk(
+			1,
+			$target_run_id,
+			'core',
+			array(
+				'findings'             => array(),
+				'cursor_path'          => null,
+				'files_verified_delta' => 0,
+				'files_total'          => 10,
+				'completed'            => false,
+				'manifest_fingerprint' => 'stale-fingerprint',
+				'fingerprint_changed'  => true,
+				'version_changed'      => false,
+				'needs_retry'          => true,
+			),
+			'worker-a'
+		);
+
+		$this->assertFalse( $committed );
+		$this->assertCount( 1, $wpdb->rows['wp_wpcv_findings'] );
+	}
+
+	/**
 	 * `commit_chunk()` に渡した`$lease_owner`が対象行の現在値と一致しない
 	 * (既に別workerに再claimされていた)場合、findingsのinsertが行われていても
 	 * ROLLBACKし、`false`を返すことを確認する(v0.4.0コードレビューCR-02是正:

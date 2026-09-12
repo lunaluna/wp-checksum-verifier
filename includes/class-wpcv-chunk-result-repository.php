@@ -38,6 +38,15 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 集計は古いまま、という半端な状態を防ぐため(`commit_chunk()`は`void`から
  * `bool`に変更し、確定できたかどうかを呼び出し元〔`WPCV_Chunk_Dispatcher`〕に
  * 伝える).
+ *
+ * v0.4.0コードレビューCR-04是正: `needs_retry: true`(fingerprint/version不一致を
+ * 検知し `reset_for_retry()` でcursor・集計値を0へ戻す経路)で、`reset_for_retry()`が
+ * fencingに成功した場合のみ `WPCV_Finding_Repository::delete_by_target_run_id()` で
+ * この target_run の旧世代findingsを削除するようにした。cursor・集計値だけ
+ * リセットしfindings行を残したままだと、再走査後に重複・陳腐化したfindingが
+ * 表示され `findings_total` と実件数が食い違う不整合が起きていた(レビュー指摘)。
+ * fencingに失敗した場合は削除しない ―― 既に別workerが再claimして進めている
+ * findingsを、fencing負けした古いworkerが誤って消してしまわないため.
  */
 class WPCV_Chunk_Result_Repository {
 
@@ -88,9 +97,12 @@ class WPCV_Chunk_Result_Repository {
 	 * 1回分のchunk結果を確定する.
 	 *
 	 * `$chunk_result['needs_retry']` が真の場合、findings は保存せず
-	 * `WPCV_Target_Run_Repository::reset_for_retry()` のみを行う(§Step3
+	 * `WPCV_Target_Run_Repository::reset_for_retry()` でcursor・集計値をリセット
+	 * したうえで、この target_run に紐づく旧世代のfindingsを
+	 * `WPCV_Finding_Repository::delete_by_target_run_id()` で削除する(§Step3
 	 * 「resume時にversion/fingerprintが変わっていたらchunk結果を確定せず
-	 * retryへ戻す」)。偽の場合は findings を保存してから cursor・集計値を更新する.
+	 * retryへ戻す」+ v0.4.0コードレビューCR-04是正)。偽の場合は findings を
+	 * 保存してから cursor・集計値を更新する.
 	 *
 	 * `$lease_owner`(v0.4.0コードレビューCR-02是正で追加)は、`claim_next()`が
 	 * この処理エピソードに割り当てた値をそのまま渡すこと。`WPCV_Target_Run_Repository::
@@ -136,6 +148,15 @@ class WPCV_Chunk_Result_Repository {
 		try {
 			if ( $chunk_result['needs_retry'] ) {
 				$committed = $this->target_run_repository->reset_for_retry( $target_run_id, $chunk_result['manifest_fingerprint'], $new_version, $lease_owner );
+
+				if ( $committed ) {
+					// cursor・集計値のリセットに成功した(=fencingに勝った)場合のみ、
+					// この target_run の旧世代findingsを削除する(v0.4.0コード
+					// レビューCR-04是正。クラスdocblock参照)。fencingに負けていた
+					// 場合ここには来ないため、既に別workerが再claimして進めている
+					// findingsを誤って消すことはない.
+					$this->finding_repository->delete_by_target_run_id( $target_run_id );
+				}
 			} else {
 				if ( ! empty( $chunk_result['findings'] ) ) {
 					$this->finding_repository->save_findings(

@@ -114,6 +114,16 @@ class WPCV_Test_Fake_WPDB {
 	public $query_should_fail = false;
 
 	/**
+	 * `true` にすると、以降の `delete()` 呼び出しがすべて `false` を返す
+	 * (本番の `$wpdb->delete()` がSQLエラー時に返す値を模す. v0.4.0コード
+	 * レビューCR-04是正で追加した `WPCV_Finding_Repository::delete_by_target_run_id()`
+	 * のテスト用).
+	 *
+	 * @var bool
+	 */
+	public $delete_should_fail = false;
+
+	/**
 	 * テーブルごとの行(id をキーにした連想配列).
 	 *
 	 * @var array<string, array<int, array>>
@@ -230,6 +240,53 @@ class WPCV_Test_Fake_WPDB {
 		}
 
 		return $updated;
+	}
+
+	/**
+	 * 条件に一致する行を削除する(v0.4.0コードレビューCR-04是正で追加した
+	 * `WPCV_Finding_Repository::delete_by_target_run_id()` 用).
+	 *
+	 * `$delete_should_fail` が真の場合、WHEREに一致する行の有無に関わらず一切
+	 * 削除せず `false` を返す(本番の `$wpdb->delete()` がSQLエラー時に返す値を
+	 * 模す).
+	 *
+	 * @param string     $table  テーブル名.
+	 * @param array      $where  カラム => 値(すべて一致する行を削除).
+	 * @param array|null $format 無視する.
+	 * @return int|false 削除した行数。`$delete_should_fail` が真なら `false`.
+	 */
+	public function delete( $table, $where, $format = null ) {
+		unset( $format );
+
+		if ( $this->delete_should_fail ) {
+			$this->last_error = 'WPCV_Test_Fake_WPDB: delete_should_fail が true のため delete() を失敗させました.';
+
+			return false;
+		}
+
+		$deleted = 0;
+
+		if ( ! isset( $this->rows[ $table ] ) ) {
+			return $deleted;
+		}
+
+		foreach ( $this->rows[ $table ] as $id => $row ) {
+			$matches = true;
+
+			foreach ( $where as $column => $value ) {
+				if ( ! isset( $row[ $column ] ) || $row[ $column ] !== $value ) {
+					$matches = false;
+					break;
+				}
+			}
+
+			if ( $matches ) {
+				unset( $this->rows[ $table ][ $id ] );
+				++$deleted;
+			}
+		}
+
+		return $deleted;
 	}
 
 	/**
