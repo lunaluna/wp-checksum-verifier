@@ -7,5 +7,9 @@
 # (ユーザー確認済み: リポジトリには含めない方針).
 /docs/
 
+# Claude Code のセッション用ローカルディレクトリ(メモリ・ロックファイル等)。
+# リポジトリには含めない方針(ユーザー確認済み).
+/.claude/
+
 # Action Scheduler bundled into lib/ by bin/build-zip.pre.sh ahead of staging
 /lib/action-scheduler/
