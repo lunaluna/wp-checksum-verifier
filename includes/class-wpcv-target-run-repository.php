@@ -79,8 +79,13 @@ class WPCV_Target_Run_Repository {
 	const DEFAULT_BACKOFF_MAX_SECONDS = 3600;
 
 	/**
-	 * `$wpdb` 相当のオブジェクト(`insert()` / `update()` / `get_results()` /
-	 * `base_prefix` / `insert_id` を持つもの).
+	 * `$wpdb` 相当のオブジェクト(`insert()` / `update()` / `get_results()` / `query()` /
+	 * `base_prefix` / `insert_id` / `last_error` を持つもの).
+	 *
+	 * `query()`(`START TRANSACTION`/`COMMIT`/`ROLLBACK` 用)と `last_error` は
+	 * v0.4.0コードレビューCR-03是正で追加した要件(`save_target_runs()` が
+	 * 全件を1トランザクションにまとめ、insert失敗時にROLLBACKして例外を投げる
+	 * ために使う).
 	 *
 	 * @var object
 	 */
@@ -117,34 +122,82 @@ class WPCV_Target_Run_Repository {
 	 * @param array $target_runs `WPCV_Verifier` の各 `verify_*()` が返す target_run の配列
 	 *                           (id/run_id 無し。§5.3 のスキーマに準拠).
 	 * @return array `target_id => target_run_id` の対応表(`WPCV_Finding_Repository::save_findings()` に渡す).
+	 *
+	 * @throws RuntimeException `$wpdb->insert()`/`COMMIT` が失敗した場合(v0.4.0
+	 *                          コードレビューCR-03是正)。全件を1トランザクション
+	 *                          にまとめ、1件でも失敗したらROLLBACKして再送出する
+	 *                          ―― これが無いと、target数十件のうち途中の1件だけが
+	 *                          DBエラーで欠けても「plan成功」のまま処理が続き
+	 *                          (呼び出し元は戻り値の対応表を見て初めて欠落に
+	 *                          気付ける保証が無い)、以降のchunk処理は存在しない
+	 *                          target_run_idを参照し続ける。呼び出し元
+	 *                          `WPCV_Run_Starter::plan_and_save()` は既にこの
+	 *                          メソッドからのThrowableを捕捉してrunをfailed化する
+	 *                          設計のため、ここでは投げ返すだけでよい.
+	 * @throws Throwable        上記以外の理由でtry節内で発生した例外(ROLLBACK後に
+	 *                          再送出する。現状は上記の `RuntimeException` のみが
+	 *                          該当するが、`catch ( Throwable $e )` の型に合わせて
+	 *                          記載する).
 	 */
 	public function save_target_runs( $run_id, array $target_runs ) {
 		$table          = $this->wpdb->base_prefix . 'wpcv_target_runs';
 		$target_run_ids = array();
 
-		foreach ( $target_runs as $target_run ) {
-			$this->wpdb->insert(
-				$table,
-				array(
-					'run_id'          => $run_id,
-					'target_id'       => $target_run['target_id'],
-					'dimension'       => $target_run['dimension'],
-					'slug'            => $target_run['slug'],
-					'version'         => $target_run['version'],
-					'source'          => $target_run['source'],
-					'source_ref'      => $target_run['source_ref'],
-					'manifest_status' => $target_run['manifest_status'],
-					'status'          => $target_run['status'],
-					'error_code'      => $target_run['error_code'],
-					'error_message'   => $target_run['error_message'],
-					'files_total'     => $target_run['files_total'],
-					'files_verified'  => $target_run['files_verified'],
-					'findings_total'  => $target_run['findings_total'],
-				),
-				array( '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%d' )
-			);
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- transaction control statement.
+		$this->wpdb->query( 'START TRANSACTION' );
 
-			$target_run_ids[ $target_run['target_id'] ] = (int) $this->wpdb->insert_id;
+		try {
+			foreach ( $target_runs as $target_run ) {
+				$inserted = $this->wpdb->insert(
+					$table,
+					array(
+						'run_id'          => $run_id,
+						'target_id'       => $target_run['target_id'],
+						'dimension'       => $target_run['dimension'],
+						'slug'            => $target_run['slug'],
+						'version'         => $target_run['version'],
+						'source'          => $target_run['source'],
+						'source_ref'      => $target_run['source_ref'],
+						'manifest_status' => $target_run['manifest_status'],
+						'status'          => $target_run['status'],
+						'error_code'      => $target_run['error_code'],
+						'error_message'   => $target_run['error_message'],
+						'files_total'     => $target_run['files_total'],
+						'files_verified'  => $target_run['files_verified'],
+						'findings_total'  => $target_run['findings_total'],
+					),
+					array( '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%d' )
+				);
+
+				if ( false === $inserted ) {
+					throw new RuntimeException(
+						esc_html(
+							sprintf(
+								'WPCV_Target_Run_Repository::save_target_runs() の insert に失敗しました: %s',
+								(string) $this->wpdb->last_error
+							)
+						)
+					);
+				}
+
+				$target_run_ids[ $target_run['target_id'] ] = (int) $this->wpdb->insert_id;
+			}
+
+			if ( false === $this->wpdb->query( 'COMMIT' ) ) {
+				throw new RuntimeException(
+					esc_html(
+						sprintf(
+							'WPCV_Target_Run_Repository::save_target_runs() の COMMIT に失敗しました: %s',
+							(string) $this->wpdb->last_error
+						)
+					)
+				);
+			}
+		} catch ( Throwable $e ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- transaction control statement.
+			$this->wpdb->query( 'ROLLBACK' );
+
+			throw $e;
 		}
 
 		return $target_run_ids;
@@ -193,6 +246,17 @@ class WPCV_Target_Run_Repository {
 	 *              既に別workerに再claimされていた(fencing失敗)ことを意味する
 	 *              (呼び出し元は例外を投げず、静かに諦めてよい ―― 再claimした
 	 *              側が処理を引き継ぐため).
+	 *
+	 * @throws RuntimeException `$wpdb->update()` がSQLエラーで `false` を返した
+	 *                          場合(v0.4.0コードレビューCR-03是正)。WHEREに
+	 *                          一致する行が単に無かった(fencing失敗。上記の
+	 *                          正常系)場合は整数 `0` が返るため、これとは区別する
+	 *                          ―― 区別せずどちらも`false`相当として静かに諦めると、
+	 *                          呼び出し元 `WPCV_Chunk_Result_Repository::commit_chunk()`は
+	 *                          「findingsのinsertだけ成功しcursorは古いまま」の
+	 *                          半端な状態を、fencing失敗時と同じ「正常なROLLBACK」
+	 *                          として扱ってしまい、実際にはDB異常が起きている
+	 *                          ことに誰も気付けなくなる.
 	 */
 	public function update_chunk_progress( $target_run_id, array $chunk_result, $lease_owner ) {
 		$table   = $this->wpdb->base_prefix . 'wpcv_target_runs';
@@ -242,6 +306,17 @@ class WPCV_Target_Run_Repository {
 			array( '%d', '%s', '%s' )
 		);
 
+		if ( false === $updated ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf(
+						'WPCV_Target_Run_Repository::update_chunk_progress() の update に失敗しました: %s',
+						(string) $this->wpdb->last_error
+					)
+				)
+			);
+		}
+
 		return $updated > 0;
 	}
 
@@ -283,6 +358,10 @@ class WPCV_Target_Run_Repository {
 	 *                                           割り当てた lease owner.
 	 * @return bool 更新できたら true。false は対象行が見つからなかった、または
 	 *              既に別workerに再claimされていた(fencing失敗)ことを意味する.
+	 *
+	 * @throws RuntimeException `$wpdb->update()` がSQLエラーで `false` を返した
+	 *                          場合(v0.4.0コードレビューCR-03是正。理由は
+	 *                          `update_chunk_progress()` の同じ `@throws` 参照).
 	 */
 	public function reset_for_retry( $target_run_id, $manifest_fingerprint, $version, $lease_owner ) {
 		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
@@ -316,6 +395,17 @@ class WPCV_Target_Run_Repository {
 			$format,
 			array( '%d', '%s', '%s' )
 		);
+
+		if ( false === $updated ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf(
+						'WPCV_Target_Run_Repository::reset_for_retry() の update に失敗しました: %s',
+						(string) $this->wpdb->last_error
+					)
+				)
+			);
+		}
 
 		return $updated > 0;
 	}

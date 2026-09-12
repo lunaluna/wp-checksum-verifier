@@ -55,6 +55,50 @@ class TargetRunRepositoryTest extends TestCase {
 		$this->assertSame( 42, $row['run_id'] );
 		$this->assertSame( 'plugin:akismet', $row['target_id'] );
 		$this->assertSame( 'akismet', $row['slug'] );
+
+		$this->assertContains( 'START TRANSACTION', $wpdb->query_calls );
+		$this->assertContains( 'COMMIT', $wpdb->query_calls );
+		$this->assertNotContains( 'ROLLBACK', $wpdb->query_calls );
+	}
+
+	/**
+	 * `save_target_runs()` が `$wpdb->insert()` の失敗(`false`)を検知して
+	 * `RuntimeException` を投げ、`ROLLBACK` を呼ぶことを確認する(v0.4.0コード
+	 * レビューCR-03是正: DB容量不足・接続断等で insert が `false` を返しても
+	 * 気付かず「plan成功」として処理を続けてしまう不具合への対策。全件を
+	 * 1トランザクションにまとめたことで、1件目のinsert失敗時点でROLLBACKし、
+	 * 2件目以降のinsertは一切行われない).
+	 *
+	 * @return void
+	 */
+	public function test_save_target_runs_throws_and_rolls_back_when_insert_fails() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$wpdb->insert_should_fail = true;
+
+		$this->expectException( RuntimeException::class );
+
+		try {
+			$repository->save_target_runs(
+				42,
+				array(
+					wpcv_test_make_target_run( array( 'target_id' => 'core' ) ),
+					wpcv_test_make_target_run(
+						array(
+							'target_id' => 'plugin:akismet',
+							'dimension' => 'plugin',
+							'slug'      => 'akismet',
+						)
+					),
+				)
+			);
+		} finally {
+			$this->assertArrayNotHasKey( 'wp_wpcv_target_runs', $wpdb->rows );
+			$this->assertContains( 'START TRANSACTION', $wpdb->query_calls );
+			$this->assertContains( 'ROLLBACK', $wpdb->query_calls );
+			$this->assertNotContains( 'COMMIT', $wpdb->query_calls );
+		}
 	}
 
 	/**
@@ -288,6 +332,46 @@ class TargetRunRepositoryTest extends TestCase {
 	}
 
 	/**
+	 * `update_chunk_progress()` が、`$wpdb->update()` がSQLエラーで `false` を
+	 * 返した場合に `RuntimeException` を投げることを確認する(v0.4.0コード
+	 * レビューCR-03是正)。`test_update_chunk_progress_returns_false_when_lease_owner_mismatched()`
+	 * (WHEREに一致する行が無いだけの正常系。整数 `0` が返り静かに `false` を返す)
+	 * とは区別すべき異常系であることの確認.
+	 *
+	 * @return void
+	 */
+	public function test_update_chunk_progress_throws_when_wpdb_update_fails() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$target_run_ids = $repository->save_target_runs(
+			1,
+			array(
+				wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::RUNNING ) ),
+			)
+		);
+		$target_run_id = $target_run_ids['core'];
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['lease_owner'] = 'lease-1';
+
+		$wpdb->update_should_fail = true;
+
+		$this->expectException( RuntimeException::class );
+
+		$repository->update_chunk_progress(
+			$target_run_id,
+			array(
+				'cursor_path'          => 'core/wp-includes/foo.php',
+				'manifest_fingerprint' => 'abc123',
+				'files_total'          => 10,
+				'files_verified_delta' => 5,
+				'findings'             => array(),
+				'completed'            => false,
+			),
+			'lease-1'
+		);
+	}
+
+	/**
 	 * `reset_for_retry()`(v0.4.0 §Step3)が status を `RETRY` へ戻し、
 	 * cursor・集計値をリセットすることを確認する
 	 * (§Step3「resume時にversion/fingerprintが変わっていたらchunk結果を確定せず
@@ -326,6 +410,33 @@ class TargetRunRepositoryTest extends TestCase {
 		$this->assertSame( 0, $row['files_total'] );
 		$this->assertSame( 0, $row['files_verified'] );
 		$this->assertSame( 0, $row['findings_total'] );
+	}
+
+	/**
+	 * `reset_for_retry()` が、`$wpdb->update()` がSQLエラーで `false` を返した
+	 * 場合に `RuntimeException` を投げることを確認する(v0.4.0コードレビュー
+	 * CR-03是正。`update_chunk_progress()` の同種テストと同じ理由).
+	 *
+	 * @return void
+	 */
+	public function test_reset_for_retry_throws_when_wpdb_update_fails() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$target_run_ids = $repository->save_target_runs(
+			1,
+			array(
+				wpcv_test_make_target_run( array( 'status' => 'running' ) ),
+			)
+		);
+		$target_run_id  = $target_run_ids['core'];
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['lease_owner'] = 'lease-1';
+
+		$wpdb->update_should_fail = true;
+
+		$this->expectException( RuntimeException::class );
+
+		$repository->reset_for_retry( $target_run_id, 'new-fingerprint', false, 'lease-1' );
 	}
 
 	/**

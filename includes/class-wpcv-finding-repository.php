@@ -52,7 +52,10 @@ class WPCV_Finding_Repository {
 
 	/**
 	 * `$wpdb` 相当のオブジェクト(`insert()` / `get_results()` / `prepare()` /
-	 * `base_prefix` を持つもの).
+	 * `base_prefix` / `last_error` を持つもの).
+	 *
+	 * `last_error` は v0.4.0コードレビューCR-03是正で追加した要件(`save_findings()`
+	 * が `insert()` 失敗時の例外メッセージに使う).
 	 *
 	 * @var object
 	 */
@@ -83,6 +86,15 @@ class WPCV_Finding_Repository {
 	 * @throws InvalidArgumentException 対応する target_run_id が `$target_run_ids` に無い場合(同一バッチの
 	 *                                   target_runs と findings の target_id は必ず
 	 *                                   一致している前提が崩れている、呼び出し側の実装ミス).
+	 * @throws RuntimeException         `$wpdb->insert()` が失敗した場合(v0.4.0コード
+	 *                                   レビューCR-03是正)。DB容量不足・接続断・
+	 *                                   権限不足・制約違反等でinsertが `false` を
+	 *                                   返しても、これを確認せず処理を続けると
+	 *                                   findingを1件も保存できないまま呼び出し元
+	 *                                   (`WPCV_Chunk_Result_Repository::commit_chunk()`)が
+	 *                                   後続のcursor更新をCOMMITしてしまい、
+	 *                                   「findingは無いのにcursorだけ前進した」
+	 *                                   不整合な状態が残る.
 	 */
 	public function save_findings( $run_id, array $target_run_ids, array $findings ) {
 		$table = $this->wpdb->base_prefix . 'wpcv_findings';
@@ -99,7 +111,7 @@ class WPCV_Finding_Repository {
 				);
 			}
 
-			$this->wpdb->insert(
+			$inserted = $this->wpdb->insert(
 				$table,
 				array(
 					'run_id'         => $run_id,
@@ -121,6 +133,17 @@ class WPCV_Finding_Repository {
 				),
 				array( '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%d' )
 			);
+
+			if ( false === $inserted ) {
+				throw new RuntimeException(
+					esc_html(
+						sprintf(
+							'WPCV_Finding_Repository::save_findings() の insert に失敗しました: %s',
+							(string) $this->wpdb->last_error
+						)
+					)
+				);
+			}
 		}
 	}
 

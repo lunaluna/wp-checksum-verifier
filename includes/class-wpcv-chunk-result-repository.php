@@ -118,7 +118,13 @@ class WPCV_Chunk_Result_Repository {
 	 *              再claimされていた)ことを意味し、呼び出し元は例外を投げず
 	 *              静かに諦めてよい.
 	 *
-	 * @throws Throwable DB操作中に発生した例外(ROLLBACK後に再送出).
+	 * @throws Throwable        DB操作中に発生した例外(ROLLBACK後に再送出。`save_findings()`/
+	 *                          `update_chunk_progress()`/`reset_for_retry()` が
+	 *                          `$wpdb` の insert/update 失敗時に投げる `RuntimeException`
+	 *                          〔v0.4.0コードレビューCR-03是正〕もここで捕捉される).
+	 * @throws RuntimeException `$wpdb->query( 'COMMIT' )` 自体が失敗した場合
+	 *                          (v0.4.0コードレビューCR-03是正。上記の`Throwable`と
+	 *                          同じcatch節でROLLBACKを試みたうえで再送出する).
 	 */
 	public function commit_chunk( $run_id, $target_run_id, $target_id, array $chunk_result, $lease_owner, $new_version = false ) {
 		$wpdb = $this->wpdb;
@@ -144,7 +150,22 @@ class WPCV_Chunk_Result_Repository {
 
 			if ( $committed ) {
 				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- transaction control statement.
-				$wpdb->query( 'COMMIT' );
+				if ( false === $wpdb->query( 'COMMIT' ) ) {
+					// COMMIT自体がSQLエラーで失敗した場合(v0.4.0コードレビュー
+					// CR-03是正)。ここまでのfindings insert・target_run updateは
+					// 実DBではロールバックされないまま残る可能性があるが、
+					// 「成功した」と呼び出し元に伝えて処理を進めさせるよりは、
+					// 例外で異常を可視化したほうが安全(catch節が明示的に
+					// ROLLBACKを試みたうえで再送出する).
+					throw new RuntimeException(
+						esc_html(
+							sprintf(
+								'WPCV_Chunk_Result_Repository::commit_chunk() の COMMIT に失敗しました: %s',
+								(string) $wpdb->last_error
+							)
+						)
+					);
+				}
 			} else {
 				// fencingに失敗した(既に別workerに再claimされていた)。findingsの
 				// insertが行われていた場合でも、古いworkerの結果を確定させない.

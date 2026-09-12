@@ -75,7 +75,10 @@ class WPCV_Run_Repository {
 
 	/**
 	 * `$wpdb` 相当のオブジェクト(`insert()` / `update()` / `get_results()` / `get_var()` /
-	 * `query()` / `prepare()` / `base_prefix` / `insert_id` を持つもの).
+	 * `query()` / `prepare()` / `base_prefix` / `insert_id` / `last_error` を持つもの).
+	 *
+	 * `last_error` は v0.4.0コードレビューCR-03是正で追加した要件(`insert_run_row()`
+	 * が `insert()` 失敗時の例外メッセージに使う).
 	 *
 	 * @var object
 	 */
@@ -149,6 +152,10 @@ class WPCV_Run_Repository {
 	 *   指す(v0.3.1 §Step4: RESTの応答に実際の状態を含めるため、active 時も
 	 *   実際の `status` を返すようにした)。両方偽の場合のみ、新規に run を
 	 *   作成しており `run_id`/`status` が新規行を指す.
+	 *
+	 * @throws RuntimeException `insert_run_row()` の insert が失敗した場合
+	 *                          (v0.4.0コードレビューCR-03是正。advisory lock は
+	 *                          `finally` で確実に解放してから再送出する).
 	 */
 	public function reserve_run( array $args = array() ) {
 		$run_trigger    = isset( $args['run_trigger'] ) ? (string) $args['run_trigger'] : 'manual';
@@ -392,6 +399,16 @@ class WPCV_Run_Repository {
 	 *                                   その場合は列を書き込まない(既存の
 	 *                                   同期実行系の挙動に影響しない).
 	 * @return int 作成した run の id.
+	 *
+	 * @throws RuntimeException `$wpdb->insert()` が失敗した場合(v0.4.0コード
+	 *                          レビューCR-03是正)。ここでチェックせずに
+	 *                          `$this->wpdb->insert_id` をそのまま返すと、insert
+	 *                          失敗時にPHPの `$wpdb` 実装が保持し続ける「直前の
+	 *                          成功したinsertのid」を誤って新規runのidとして
+	 *                          返してしまい、以降の処理が別のrunの行を上書きする
+	 *                          事故につながる(根拠: WordPress の `$wpdb->insert()`
+	 *                          はSQLエラー時に例外を投げず `false` を返すだけで、
+	 *                          `insert_id` を更新しない).
 	 */
 	private function insert_run_row( $status, $run_trigger, $runner, $scheduled_for = null ) {
 		$table      = $this->wpdb->base_prefix . 'wpcv_runs';
@@ -415,7 +432,16 @@ class WPCV_Run_Repository {
 			$format[]              = '%s';
 		}
 
-		$this->wpdb->insert( $table, $data, $format );
+		if ( false === $this->wpdb->insert( $table, $data, $format ) ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf(
+						'WPCV_Run_Repository::insert_run_row() の insert に失敗しました: %s',
+						(string) $this->wpdb->last_error
+					)
+				)
+			);
+		}
 
 		return (int) $this->wpdb->insert_id;
 	}
@@ -753,6 +779,9 @@ class WPCV_Run_Repository {
 	 *     lock_failed: bool,
 	 * } `created` が真の場合のみ、呼び出し元は `WPCV_Run_Starter::plan_and_save()` で
 	 *   target_runs を保存する必要がある(`active` な既存 run は既に保存済みのため不要).
+	 *
+	 * @throws RuntimeException `insert_run_row()` の insert が失敗した場合
+	 *                          (`reserve_run()` の同じ `@throws` 参照).
 	 */
 	public function reserve_due_run( $hour, $minute, array $args = array() ) {
 		$run_trigger    = isset( $args['run_trigger'] ) ? (string) $args['run_trigger'] : 'manual';

@@ -150,6 +150,31 @@ class RunRepositoryTest extends TestCase {
 	}
 
 	/**
+	 * reserve_run() が、run行の `$wpdb->insert()` がSQLエラーで `false` を返した
+	 * 場合に `RuntimeException` を投げ、かつ advisory lock は `finally` で確実に
+	 * 解放する(`RELEASE_LOCK` を呼ぶ)ことを確認する(v0.4.0コードレビュー
+	 * CR-03是正: insert失敗を確認せず `insert_id` をそのまま返すと、直前の
+	 * 成功したinsertのidを誤って新規runのidとして返してしまう不具合への対策).
+	 *
+	 * @return void
+	 */
+	public function test_reserve_run_throws_and_releases_lock_when_insert_fails() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$wpdb->insert_should_fail = true;
+
+		$this->expectException( RuntimeException::class );
+
+		try {
+			$repository->reserve_run();
+		} finally {
+			$this->assertArrayNotHasKey( 'wp_wpcv_runs', $wpdb->rows );
+			$this->assertStringContainsString( 'RELEASE_LOCK', $wpdb->query_calls[0] );
+		}
+	}
+
+	/**
 	 * mark_queued_planning() が queued 行だけを planning へ更新し、
 	 * true を返すことを確認する(v0.4.0コードレビューCR-01是正で
 	 * `mark_queued_running()`から改名・遷移先を`planning`へ変更).

@@ -163,6 +163,11 @@ class ChunkResultRepositoryTest extends TestCase {
 		// worker Bが既に再claimしている(lease_ownerが変わっている)状況を模す.
 		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['lease_owner'] = 'worker-b';
 
+		// `save_target_runs()`(v0.4.0コードレビューCR-03是正で自身もtransaction化
+		// した)がここまでに積んだ `query_calls` を、これから検証する
+		// `commit_chunk()` 自身の呼び出しと混同しないようリセットする.
+		$wpdb->query_calls = array();
+
 		// worker A(古いlease)がfindingsを保存しようとするが、fencingで
 		// 弾かれるはず.
 		$committed = $repository->commit_chunk(
@@ -203,6 +208,11 @@ class ChunkResultRepositoryTest extends TestCase {
 		$target_run_ids = $target_run_repository->save_target_runs( 1, array( wpcv_test_make_target_run() ) );
 		$target_run_id  = $target_run_ids['core'];
 
+		// `save_target_runs()`(v0.4.0コードレビューCR-03是正で自身もtransaction化
+		// した)がここまでに積んだ `query_calls` を、これから検証する
+		// `commit_chunk()` 自身の呼び出しと混同しないようリセットする.
+		$wpdb->query_calls = array();
+
 		$this->expectException( InvalidArgumentException::class );
 
 		try {
@@ -227,6 +237,63 @@ class ChunkResultRepositoryTest extends TestCase {
 			$this->assertContains( 'START TRANSACTION', $wpdb->query_calls );
 			$this->assertContains( 'ROLLBACK', $wpdb->query_calls );
 			$this->assertNotContains( 'COMMIT', $wpdb->query_calls );
+		}
+	}
+
+	/**
+	 * `COMMIT` 自体が `$wpdb` のSQLエラーで失敗した場合、`commit_chunk()` が
+	 * `RuntimeException` を投げることを確認する(v0.4.0コードレビューCR-03是正:
+	 * `COMMIT` の戻り値を確認しないと、findings insert・target_run updateが
+	 * 実際にはDBへ確定していないのに呼び出し元へ「成功した」と伝えてしまう).
+	 *
+	 * @return void
+	 */
+	public function test_commit_chunk_throws_when_commit_itself_fails() {
+		$wpdb                  = new WPCV_Test_Fake_WPDB();
+		$target_run_repository = new WPCV_Target_Run_Repository( $wpdb );
+		$finding_repository    = new WPCV_Finding_Repository( $wpdb );
+		$repository            = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, $finding_repository, new WPCV_Suppression_Repository( $wpdb ) );
+
+		$target_run_ids = $target_run_repository->save_target_runs(
+			1,
+			array(
+				wpcv_test_make_target_run(
+					array(
+						'status'         => WPCV_Target_Status::RUNNING,
+						'files_verified' => 0,
+						'findings_total' => 0,
+					)
+				),
+			)
+		);
+		$target_run_id  = $target_run_ids['core'];
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['lease_owner'] = 'lease-1';
+
+		// `save_target_runs()` 自身の内部COMMITは成功させたいので、
+		// `START TRANSACTION`/insert/内部COMMITが終わった後にフラグを立てる.
+		$wpdb->query_should_fail = true;
+
+		$this->expectException( RuntimeException::class );
+
+		try {
+			$repository->commit_chunk(
+				1,
+				$target_run_id,
+				'core',
+				array(
+					'findings'             => array( wpcv_test_make_finding() ),
+					'cursor_path'          => null,
+					'files_verified_delta' => 10,
+					'files_total'          => 10,
+					'completed'            => true,
+					'manifest_fingerprint' => 'abc123',
+					'needs_retry'          => false,
+				),
+				'lease-1'
+			);
+		} finally {
+			$this->assertContains( 'START TRANSACTION', $wpdb->query_calls );
+			$this->assertContains( 'ROLLBACK', $wpdb->query_calls );
 		}
 	}
 

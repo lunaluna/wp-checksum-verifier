@@ -60,6 +60,30 @@ class FindingRepositoryTest extends TestCase {
 	}
 
 	/**
+	 * `save_findings()` が `$wpdb->insert()` の失敗(`false`)を検知して
+	 * `RuntimeException` を投げることを確認する(v0.4.0コードレビューCR-03是正:
+	 * DB容量不足・接続断等でinsertが `false` を返しても気付かず処理を続けると、
+	 * 呼び出し元 `WPCV_Chunk_Result_Repository::commit_chunk()` がfindingを
+	 * 1件も保存できないまま後続のcursor更新・COMMITへ進んでしまう).
+	 *
+	 * @return void
+	 */
+	public function test_save_findings_throws_when_insert_fails() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$wpdb->insert_should_fail = true;
+
+		$this->expectException( RuntimeException::class );
+
+		$repository->save_findings(
+			42,
+			array( 'core' => 7 ),
+			array( wpcv_test_make_finding( array( 'target_id' => 'core' ) ) )
+		);
+	}
+
+	/**
 	 * `query()` が指定 run_id 以外の finding を含めないことを確認する
 	 * (v0.4.0 §Step7).
 	 *

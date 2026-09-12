@@ -73,6 +73,47 @@ class WPCV_Test_Fake_WPDB {
 	public $insert_id = 0;
 
 	/**
+	 * 直近の失敗したクエリのエラーメッセージ(本番の `$wpdb->last_error` に相当).
+	 *
+	 * DB容量不足・接続断・権限不足・制約違反等で `$wpdb->insert()/update()/query()` が
+	 * `false` を返す経路をテストで再現するために追加した(v0.4.0コードレビュー
+	 * CR-03是正)。`$insert_should_fail`/`$update_should_fail`/`$query_should_fail` を参照.
+	 *
+	 * @var string
+	 */
+	public $last_error = '';
+
+	/**
+	 * `true` にすると、以降の `insert()` 呼び出しがすべて `false` を返す
+	 * (本番の `$wpdb->insert()` がSQLエラー時に返す値を模す. v0.4.0コード
+	 * レビューCR-03是正)。行への反映は一切行わない.
+	 *
+	 * @var bool
+	 */
+	public $insert_should_fail = false;
+
+	/**
+	 * `true` にすると、以降の `update()` 呼び出しがすべて `false` を返す
+	 * (本番の `$wpdb->update()` がSQLエラー時に返す値を模す. v0.4.0コード
+	 * レビューCR-03是正)。WHEREに一致する行数に関わらず常に `false` を返す点が、
+	 * 「一致する行が無い」場合の `0` と区別すべき対象.
+	 *
+	 * @var bool
+	 */
+	public $update_should_fail = false;
+
+	/**
+	 * `true` にすると、以降の `query()` 呼び出しがすべて `false` を返す
+	 * (本番の `$wpdb->query()` がSQLエラー時に返す値を模す. v0.4.0コード
+	 * レビューCR-03是正)。`START TRANSACTION`/`COMMIT`/`ROLLBACK` の呼び出し自体は
+	 * `query_calls` に記録され続けるため、「呼ばれたこと」のアサーションはこの
+	 * フラグの影響を受けない.
+	 *
+	 * @var bool
+	 */
+	public $query_should_fail = false;
+
+	/**
 	 * テーブルごとの行(id をキーにした連想配列).
 	 *
 	 * @var array<string, array<int, array>>
@@ -114,13 +155,24 @@ class WPCV_Test_Fake_WPDB {
 	/**
 	 * 行を追加する.
 	 *
+	 * `$insert_should_fail` が真の場合、行への反映を一切行わず `false` を返す
+	 * (本番の `$wpdb->insert()` がSQLエラー時に返す値を模す。v0.4.0コードレビュー
+	 * CR-03是正).
+	 *
 	 * @param string     $table  テーブル名.
 	 * @param array      $data   カラム => 値.
 	 * @param array|null $format 無視する(本番の型指定に相当。ダブルでは検証しない).
-	 * @return int 常に1(本番の `$wpdb->insert()` の成功時と同じ).
+	 * @return int|false 常に1(本番の `$wpdb->insert()` の成功時と同じ)。
+	 *                    `$insert_should_fail` が真なら `false`.
 	 */
 	public function insert( $table, $data, $format = null ) {
 		unset( $format );
+
+		if ( $this->insert_should_fail ) {
+			$this->last_error = 'WPCV_Test_Fake_WPDB: insert_should_fail が true のため insert() を失敗させました.';
+
+			return false;
+		}
 
 		if ( ! isset( $this->next_id[ $table ] ) ) {
 			$this->next_id[ $table ] = 1;
@@ -138,15 +190,26 @@ class WPCV_Test_Fake_WPDB {
 	/**
 	 * 条件に一致する行を更新する.
 	 *
+	 * `$update_should_fail` が真の場合、WHEREに一致する行の有無に関わらず一切
+	 * 反映せず `false` を返す(本番の `$wpdb->update()` がSQLエラー時に返す値を
+	 * 模す。「一致する行が無い」場合の `0` とは区別する。v0.4.0コードレビュー
+	 * CR-03是正).
+	 *
 	 * @param string     $table        テーブル名.
 	 * @param array      $data         更新するカラム => 値.
 	 * @param array      $where        カラム => 値(すべて一致する行を更新).
 	 * @param array|null $format       無視する.
 	 * @param array|null $where_format 無視する.
-	 * @return int 更新した行数.
+	 * @return int|false 更新した行数。`$update_should_fail` が真なら `false`.
 	 */
 	public function update( $table, $data, $where, $format = null, $where_format = null ) {
 		unset( $format, $where_format );
+
+		if ( $this->update_should_fail ) {
+			$this->last_error = 'WPCV_Test_Fake_WPDB: update_should_fail が true のため update() を失敗させました.';
+
+			return false;
+		}
 
 		$updated = 0;
 
@@ -208,14 +271,26 @@ class WPCV_Test_Fake_WPDB {
 	}
 
 	/**
-	 * クエリを実行する(`WPCV_Repository::reserve_run()` の `RELEASE_LOCK()` 専用の
-	 * 簡易フェイク)。実 SQL は実行せず、呼び出しを記録するだけ.
+	 * クエリを実行する(`WPCV_Repository::reserve_run()` の `RELEASE_LOCK()`、および
+	 * `WPCV_Chunk_Result_Repository::commit_chunk()` 等の `START TRANSACTION`/
+	 * `COMMIT`/`ROLLBACK` 用の簡易フェイク)。実 SQL は実行せず、呼び出しを記録
+	 * するだけ.
+	 *
+	 * `$query_should_fail` が真の場合、呼び出しの記録(`query_calls`)はそのまま
+	 * 行いつつ戻り値のみ `false` にする(本番の `$wpdb->query()` がSQLエラー時に
+	 * 返す値を模す。v0.4.0コードレビューCR-03是正).
 	 *
 	 * @param string $query クエリ文字列(記録のみ).
-	 * @return true
+	 * @return bool `$query_should_fail` が真なら `false`。それ以外は常に `true`.
 	 */
 	public function query( $query ) {
 		$this->query_calls[] = $query;
+
+		if ( $this->query_should_fail ) {
+			$this->last_error = 'WPCV_Test_Fake_WPDB: query_should_fail が true のため query() を失敗させました.';
+
+			return false;
+		}
 
 		return true;
 	}
