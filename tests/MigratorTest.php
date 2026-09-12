@@ -170,4 +170,98 @@ class MigratorTest extends TestCase {
 			}
 		}
 	}
+
+	/**
+	 * `parse_column_names()`(`schema_is_current()` 専用のヘルパー。v0.4.0コード
+	 * レビューCR-05是正)が、1列1行のCREATE TABLE文から列名だけを正しく抽出し、
+	 * `PRIMARY KEY`/`KEY` 行を除外することを確認する。手書きの独立したSQL片で
+	 * 検証することで、`table_definitions()` 自身の出力を使った他のテストとは
+	 * 独立に抽出ロジックの正しさを確認できるようにしている.
+	 *
+	 * @return void
+	 */
+	public function test_parse_column_names_extracts_columns_and_excludes_keys() {
+		$method = new ReflectionMethod( WPCV_Migrator::class, 'parse_column_names' );
+		$method->setAccessible( true );
+
+		$sql = "CREATE TABLE wp_example (
+	id bigint unsigned NOT NULL auto_increment,
+	name varchar(191) NOT NULL,
+	created_at datetime NULL,
+	PRIMARY KEY (id),
+	KEY idx_name (name)
+) utf8mb4_general_ci;";
+
+		$this->assertSame( array( 'id', 'name', 'created_at' ), $method->invoke( null, $sql ) );
+	}
+
+	/**
+	 * `schema_is_current()`(v0.4.0コードレビューCR-05是正)が、4テーブルすべてに
+	 * 期待する列がそろっている場合に `true` を返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_schema_is_current_returns_true_when_all_expected_columns_present() {
+		$wpdb            = new WPCV_Test_Fake_WPDB();
+		$GLOBALS['wpdb'] = $wpdb;
+
+		$this->populate_fake_schema_from_table_definitions( $wpdb );
+
+		$method = new ReflectionMethod( WPCV_Migrator::class, 'schema_is_current' );
+		$method->setAccessible( true );
+
+		$this->assertTrue( $method->invoke( null ) );
+	}
+
+	/**
+	 * `schema_is_current()` が、1テーブルでも期待する列が1つ欠けていれば
+	 * `false` を返すことを確認する(v0.4.0コードレビューCR-05是正: `dbDelta()` が
+	 * ALTER権限不足等で一部の列を追加できなかった状態を模す).
+	 *
+	 * @return void
+	 */
+	public function test_schema_is_current_returns_false_when_a_column_is_missing() {
+		$wpdb            = new WPCV_Test_Fake_WPDB();
+		$GLOBALS['wpdb'] = $wpdb;
+
+		$this->populate_fake_schema_from_table_definitions( $wpdb );
+
+		// `wpcv_target_runs` の `lease_owner` 列だけがALTERに失敗した状態を模す.
+		$table = $wpdb->base_prefix . 'wpcv_target_runs';
+		$wpdb->columns_by_table[ $table ] = array_values(
+			array_diff( $wpdb->columns_by_table[ $table ], array( 'lease_owner' ) )
+		);
+
+		$method = new ReflectionMethod( WPCV_Migrator::class, 'schema_is_current' );
+		$method->setAccessible( true );
+
+		$this->assertFalse( $method->invoke( null ) );
+	}
+
+	/**
+	 * `table_definitions()` の出力を `parse_column_names()` に通し、フェイクwpdbの
+	 * `columns_by_table`(=実DBの `DESCRIBE` 相当)を「dbDeltaが完全に成功した」
+	 * 状態として組み立てる(`test_schema_is_current_*` の共通セットアップ).
+	 *
+	 * @param WPCV_Test_Fake_WPDB $wpdb フェイク wpdb.
+	 * @return void
+	 */
+	private function populate_fake_schema_from_table_definitions( WPCV_Test_Fake_WPDB $wpdb ) {
+		$table_definitions_method = new ReflectionMethod( WPCV_Migrator::class, 'table_definitions' );
+		$table_definitions_method->setAccessible( true );
+		$parse_method = new ReflectionMethod( WPCV_Migrator::class, 'parse_column_names' );
+		$parse_method->setAccessible( true );
+
+		$tables = array(
+			$wpdb->base_prefix . 'wpcv_runs',
+			$wpdb->base_prefix . 'wpcv_target_runs',
+			$wpdb->base_prefix . 'wpcv_findings',
+			$wpdb->base_prefix . 'wpcv_suppressions',
+		);
+		$sqls = $table_definitions_method->invoke( null );
+
+		foreach ( $tables as $index => $table ) {
+			$wpdb->columns_by_table[ $table ] = $parse_method->invoke( null, $sqls[ $index ] );
+		}
+	}
 }

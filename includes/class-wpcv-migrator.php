@@ -38,18 +38,45 @@ class WPCV_Migrator {
 	 * プラグイン有効化時に加え、`plugins_loaded` にもフックする(自動更新で
 	 * 有効化フックを経由せずにバージョンが上がるケースに対応するため).
 	 *
-	 * @return void
+	 * v0.4.0コードレビューCR-05是正: `create_or_update_tables()`(`dbDelta()`)の
+	 * 実行後、`schema_is_current()` で実際に必要な列がすべて揃ったかを確認して
+	 * からでないと `write_stored_version()` を呼ばないようにした。`dbDelta()` は
+	 * ALTER権限不足・index作成失敗・DB非互換等でSQLエラーが起きても例外を投げず、
+	 * 部分的にしか適用されなかった場合でもそれと分かる形では呼び出し元に伝わらない
+	 * (WordPressコアの既知の制約)。確認せずに常に `write_stored_version()` して
+	 * いると、実際には移行が失敗しているのに `wpcv_db_version` だけが最新へ
+	 * 進んでしまい、以降 `maybe_upgrade()` が(`$stored >= WPCV_DB_VERSION` の
+	 * 早期returnにより)二度と再試行しなくなる不具合があった(レビュー指摘)。
+	 *
+	 * このメソッド自体は例外を投げない(`false` を返すのみ)。`plugins_loaded`
+	 * には毎リクエスト無条件でフックされているため、ここで例外を投げると
+	 * DB権限の問題が解消するまで**サイト全体が毎リクエスト致命的エラーになる**
+	 * (元の不具合よりも被害が大きい退行)。「移行失敗を目に見える形にする」のは
+	 * 一度きりの明示的な操作である有効化フック(`WPCV_Activator::activate()`。
+	 * WordPress自身が有効化時の致命的エラーを捕捉しプラグインを自動的に
+	 * 無効化する)側の責務とし、そちらで戻り値を確認して例外を投げる設計にした.
+	 *
+	 * @return bool 現在のバージョンが既に最新、または今回の更新でスキーマが
+	 *              確認できたら true。更新を試みたがスキーマを確認できなかった
+	 *              場合は false(`wpcv_db_version` は更新せず、次回の呼び出しで
+	 *              再試行される).
 	 */
 	public static function maybe_upgrade() {
 		$stored = self::get_stored_version();
 
 		if ( $stored >= WPCV_DB_VERSION ) {
-			return;
+			return true;
 		}
 
 		self::create_or_update_tables();
 
+		if ( ! self::schema_is_current() ) {
+			return false;
+		}
+
 		self::write_stored_version( WPCV_DB_VERSION );
+
+		return true;
 	}
 
 	/**
@@ -121,6 +148,85 @@ class WPCV_Migrator {
 		foreach ( self::table_definitions() as $sql ) {
 			dbDelta( $sql );
 		}
+	}
+
+	/**
+	 * 実DBの4テーブルが `table_definitions()` の期待する列をすべて持っているかを
+	 * 検証する(v0.4.0コードレビューCR-05是正。`maybe_upgrade()` のクラス
+	 * docblock参照)。
+	 *
+	 * @return bool 4テーブルすべてが期待する列を持っていれば true.
+	 */
+	protected static function schema_is_current() {
+		global $wpdb;
+
+		foreach ( self::expected_columns_by_table() as $table => $expected_columns ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name only (base_prefix + 固定のテーブル名文字列。ユーザー入力を含まない).
+			$actual_columns = $wpdb->get_col( "DESCRIBE {$table}" );
+			$actual_columns = is_array( $actual_columns ) ? $actual_columns : array();
+
+			foreach ( $expected_columns as $expected_column ) {
+				if ( ! in_array( $expected_column, $actual_columns, true ) ) {
+					return false;
+				}
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * `table_definitions()` の CREATE TABLE 文から、テーブル名 => 期待される
+	 * 列名の配列を組み立てる(`schema_is_current()` 専用のヘルパー).
+	 *
+	 * @return array<string, string[]>
+	 */
+	private static function expected_columns_by_table() {
+		global $wpdb;
+
+		$tables = array(
+			$wpdb->base_prefix . 'wpcv_runs',
+			$wpdb->base_prefix . 'wpcv_target_runs',
+			$wpdb->base_prefix . 'wpcv_findings',
+			$wpdb->base_prefix . 'wpcv_suppressions',
+		);
+
+		$by_table = array();
+
+		foreach ( array_combine( $tables, self::table_definitions() ) as $table => $sql ) {
+			$by_table[ $table ] = self::parse_column_names( $sql );
+		}
+
+		return $by_table;
+	}
+
+	/**
+	 * 1つの CREATE TABLE 文から列名だけを抽出する(`PRIMARY KEY`/`KEY` 行は除く。
+	 * `expected_columns_by_table()` 専用のヘルパー)。
+	 *
+	 * `table_definitions()` のSQLは「1列 = 1行、行頭が列名」という単純な整形
+	 * ルールで書かれているため、この前提に依存した簡易パーサーで十分(汎用的な
+	 * SQL構文解析は行わない).
+	 *
+	 * @param string $sql CREATE TABLE 文.
+	 * @return string[]
+	 */
+	private static function parse_column_names( $sql ) {
+		$columns = array();
+
+		foreach ( explode( "\n", $sql ) as $line ) {
+			$line = trim( $line );
+
+			if ( '' === $line || 0 === stripos( $line, 'CREATE TABLE' ) || 0 === stripos( $line, 'PRIMARY KEY' ) || 0 === stripos( $line, 'KEY ' ) || 0 === strpos( $line, ')' ) ) {
+				continue;
+			}
+
+			if ( 1 === preg_match( '/^(\w+)\s/', $line, $matches ) ) {
+				$columns[] = $matches[1];
+			}
+		}
+
+		return $columns;
 	}
 
 	/**

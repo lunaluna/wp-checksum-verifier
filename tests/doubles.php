@@ -124,6 +124,16 @@ class WPCV_Test_Fake_WPDB {
 	public $delete_should_fail = false;
 
 	/**
+	 * `get_col( "DESCRIBE {$table}" )` が返す列名配列を、テーブル名をキーに
+	 * 保持する(本番の実DBスキーマ相当。v0.4.0コードレビューCR-05是正で追加した
+	 * `WPCV_Migrator::schema_is_current()` のテスト用)。未設定のテーブルは
+	 * 空配列(列が1つも無い = dbDeltaが何も作れなかった状態)として扱う.
+	 *
+	 * @var array<string, string[]>
+	 */
+	public $columns_by_table = array();
+
+	/**
 	 * テーブルごとの行(id をキーにした連想配列).
 	 *
 	 * @var array<string, array<int, array>>
@@ -287,6 +297,30 @@ class WPCV_Test_Fake_WPDB {
 		}
 
 		return $deleted;
+	}
+
+	/**
+	 * 単一列を読み取る(`WPCV_Migrator::schema_is_current()` の
+	 * `DESCRIBE {$table}` 専用の簡易フェイク。v0.4.0コードレビューCR-05是正)。
+	 *
+	 * 実 `$wpdb` と異なり SQL を解釈しない。クエリ文字列から `DESCRIBE {table}` の
+	 * テーブル名だけを正規表現で拾い、`$columns_by_table` に設定済みの列名配列を
+	 * そのまま返す(実DBの `DESCRIBE` が返す最初の列 `Field` 相当).
+	 *
+	 * @param string $query         SQL文字列(`DESCRIBE {table}` を含む前提).
+	 * @param int    $column_offset 無視する(本プラグインは常に既定の0で呼ぶ).
+	 * @return string[]
+	 */
+	public function get_col( $query, $column_offset = 0 ) {
+		unset( $column_offset );
+
+		if ( 1 !== preg_match( '/DESCRIBE\s+(\S+)/i', $query, $matches ) ) {
+			return array();
+		}
+
+		$table = $matches[1];
+
+		return isset( $this->columns_by_table[ $table ] ) ? $this->columns_by_table[ $table ] : array();
 	}
 
 	/**
