@@ -163,8 +163,7 @@ class WPCV_Rest_Status_Controller {
 	/**
 	 * 対象runの target_runs のうち、最も新しい `heartbeat_at`/`finished_at` を返す
 	 * (クラス docblock 参照。値は `Y-m-d H:i:s` のUTC文字列を辞書式比較する。
-	 * 既存コードベース全体〔`WPCV_Run_Repository::sweep_stale_running()` 等〕と
-	 * 同じ手法).
+	 * 既存コードベース全体で使っている手法と同じ).
 	 *
 	 * @param array $target_runs `WPCV_Target_Run_Repository::find_all_by_run()` の戻り値.
 	 * @return string|null 一度もclaim・finalizeされたtarget_runが無ければ `null`.

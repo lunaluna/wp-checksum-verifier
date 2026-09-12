@@ -169,7 +169,7 @@ class WPCV_Run_Repository {
 		$lock_name = $this->lock_name();
 
 		// advisory lock はキャッシュ不可能な性質の呼び出しであるため直接クエリで問題ない
-		// (`sweep_stale_running()` / `find_active_run_id()` と同じ理由での ignore).
+		// (`find_active_run_id()` と同じ理由での ignore).
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- GET_LOCK() はキャッシュ不可.
 		$lock_acquired = $wpdb->get_var(
 			$wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $lock_name, self::LOCK_TIMEOUT_SECONDS )
@@ -499,96 +499,18 @@ class WPCV_Run_Repository {
 	}
 
 	/**
-	 * 一定時間より古い `queued`/`running` の run を `failed` に更新する
-	 * (v0.3 §Step5、v0.3.1 §Step1で `queued` も対象に拡張).
-	 *
-	 * 「1アクション=1run全体」の簡略化(v0.3のスコープ縮小)のトレードオフとして、
-	 * 途中で強制終了し `queued`/`running` のまま残留した run が次の run を永久に
-	 * ブロックし続ける事態を避けるための、WPMAR流の軽量なハートビート途絶検知
-	 * (WPMARの `sweep_stale_running()` と同じ「アクセスのたびに掃除する」方式。
-	 * 専用の Cron は立てない)。`queued` も対象にするのは、enqueue はできたが
-	 * Action Scheduler ワーカーが何らかの理由で拾わなかった run も同様に
-	 * 永久ブロック要因になり得るため.
-	 *
-	 * 判定基準は `started_at` のみを使う(`updated_at` 相当の列は追加しない):
-	 * このプラグインの run は実行途中で行を更新しない(target_runs・findings は
-	 * すべて `finish_run()` の直前にまとめて保存する設計。`WPCV_Run_Coordinator`
-	 * の docblock 参照)ため、`started_at` より新しい「途中経過」の時刻は
-	 * そもそも存在しない。WPMAR の `updated_at`(セグメント単位で進捗を刻む
-	 * 設計だからこそ意味を持つハートビート)とは前提が異なる.
-	 *
-	 * v0.3〜v0.3.1では専用の `aborted` 状態は導入せず、既存の `failed` を流用する
-	 * (v0.4.0 §Step4で導入するrun deadline sweepとは別物。それまではこの
-	 * stale sweepが唯一の「詰まったrunを終端へ倒す」手段であり続ける).
-	 *
-	 * 更新時も `status = $row['status']`(SELECT 時点で読んだ状態そのもの)を
-	 * WHERE に含める(v0.3.1 §Step1: SELECT と UPDATE の間に別プロセスが
-	 * 状態を進めていた場合〔run がちょうど完了した等〕に、その更新を
-	 * 巻き戻して `failed` で上書きしてしまう事故を防ぐ).
-	 *
-	 * @param int $minutes この分数より古い `started_at` を stale とみなす.
-	 * @return int stale と判定し `failed` に更新した run の件数.
-	 */
-	public function sweep_stale_running( $minutes ) {
-		$table = $this->wpdb->base_prefix . 'wpcv_runs';
-
-		// 動的な値を含まない固定リテラルのみのクエリ(status/日時の絞り込みは
-		// 下の PHP 側で行う。IN リストは `WPCV_Run_Status::ACTIVE` から組み立てる
-		// ―― v0.4.0コードレビューCR-01是正で、ここに `'queued', 'running'` の
-		// 2値を直書きしていたことが判明した。`planning` 状態を追加した際に
-		// この文字列を更新し忘れると、`planning` の run が stale sweep の対象から
-		// 漏れる〔=このメソッドが `WPCV_Run_Status::is_active()` と食い違う〕
-		// という同種の事故が起きるため、直書きをやめて一箇所から生成する).
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static literal (built from a hardcoded enum, no user input), table name only.
-		$active_rows = $this->wpdb->get_results( "SELECT id, started_at, status FROM {$table} WHERE status IN ( {$this->active_status_sql_list()} )", ARRAY_A );
-		$active_rows = is_array( $active_rows ) ? $active_rows : array();
-
-		$threshold = $this->stale_threshold( (int) $minutes );
-		$swept     = 0;
-
-		foreach ( $active_rows as $row ) {
-			// status も改めて確認する(SQL の WHERE 句と重複するが、テストダブル
-			// (`WPCV_Test_Fake_WPDB::get_results()`)が WHERE 句を解釈せず
-			// テーブルの全行を返す簡易実装のための保険でもある).
-			if ( ! WPCV_Run_Status::is_active( $row['status'] ) ) {
-				continue;
-			}
-
-			if ( empty( $row['started_at'] ) || (string) $row['started_at'] >= $threshold ) {
-				continue;
-			}
-
-			$updated = $this->wpdb->update(
-				$table,
-				array(
-					'status'      => WPCV_Run_Status::FAILED,
-					'finished_at' => call_user_func( $this->now ),
-					'notes'       => 'sweep_stale_running() により stale な run として検知し failed 化しました.',
-				),
-				array(
-					'id'     => (int) $row['id'],
-					'status' => $row['status'],
-				),
-				array( '%s', '%s', '%s' ),
-				array( '%d', '%s' )
-			);
-
-			if ( $updated > 0 ) {
-				++$swept;
-			}
-		}
-
-		return $swept;
-	}
-
-	/**
 	 * 現在 active(`WPCV_Run_Status::ACTIVE`。実行権を保持している)の run が
 	 * 無いかを調べる(v0.3 §Step8: RESTハンドラの冪等性判定に使う。v0.3.1 §Step1で
 	 * `queued` も対象に拡張、v0.4.0コードレビューCR-01是正で `planning` も対象に拡張).
 	 *
-	 * 呼び出し側は先に `sweep_stale_running()` を呼んでおくこと(このメソッドは
-	 * stale 判定を行わない。ここで見つかる行は「stale ではない = 現在進行中と
-	 * みなせる」run である前提を呼び出し元が保証する設計)。`reserve_run()` は
+	 * 呼び出し側は先に `WPCV_Chunk_Dispatcher::sweep_deadline_and_expired_leases()`
+	 * を呼んでおくこと(このメソッド自身は stale 判定を行わない。ここで見つかる
+	 * 行は「stale ではない = 現在進行中とみなせる」run である前提を呼び出し元が
+	 * 保証する設計。v0.3〜v0.3.1で使っていた `started_at` 基準の
+	 * `sweep_stale_running()` は、v0.4.0コードレビューCR-07是正で
+	 * `deadline_at`+target lease 基準の判定に置き換えたため削除した
+	 * 〔`WPCV_Chunk_Dispatcher::sweep_deadline_and_expired_leases()` の
+	 * docblock参照〕)。`reserve_run()` は
 	 * このメソッドを advisory lock 内から呼ぶことで、同時受付でも高々1件しか
 	 * active run が存在しないことを保証する.
 	 *
@@ -903,14 +825,15 @@ class WPCV_Run_Repository {
 	private function find_active_run() {
 		$table = $this->wpdb->base_prefix . 'wpcv_runs';
 
-		// sweep_stale_running() と同じ方針で、動的な値を含まない固定リテラルのみの
-		// クエリ(IN リストの組み立て理由も同じ. `active_status_sql_list()` 参照).
+		// 動的な値を含まない固定リテラルのみのクエリ(IN リストの組み立て理由は
+		// `active_status_sql_list()` 参照).
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static literal (built from a hardcoded enum, no user input), table name only.
 		$active_rows = $this->wpdb->get_results( "SELECT id, status FROM {$table} WHERE status IN ( {$this->active_status_sql_list()} )", ARRAY_A );
 		$active_rows = is_array( $active_rows ) ? $active_rows : array();
 
 		foreach ( $active_rows as $row ) {
-			// `sweep_stale_running()` と同じ理由(テストダブルの WHERE 句非対応)で
+			// テストダブル(`WPCV_Test_Fake_WPDB::get_results()`)が WHERE 句を
+			// 解釈せずテーブルの全行を返す簡易実装のための保険として、
 			// status を改めて確認する.
 			if ( WPCV_Run_Status::is_active( $row['status'] ) ) {
 				return array(
@@ -921,18 +844,6 @@ class WPCV_Run_Repository {
 		}
 
 		return null;
-	}
-
-	/**
-	 * 現在時刻(`$this->now`)から `$minutes` 分前の MySQL DATETIME 文字列を求める.
-	 *
-	 * @param int $minutes 分数.
-	 * @return string
-	 */
-	private function stale_threshold( $minutes ) {
-		$now_timestamp = strtotime( call_user_func( $this->now ) );
-
-		return gmdate( 'Y-m-d H:i:s', $now_timestamp - ( $minutes * 60 ) );
 	}
 
 	/**
@@ -956,11 +867,12 @@ class WPCV_Run_Repository {
 	 * `WPCV_Run_Status::ACTIVE` から `IN ( 'a', 'b', ... )` に埋め込む値部分を
 	 * 組み立てる(v0.4.0コードレビューCR-01是正)。
 	 *
-	 * `sweep_stale_running()`/`find_active_run()` がそれぞれ独自に
-	 * `'queued', 'running'` を直書きしており、`planning` 状態を追加した際に
-	 * 片方だけ更新して同期が崩れる事故が実際に起きかけた(このメソッド追加の
-	 * 経緯そのもの)。値はすべて `WPCV_Run_Status` の定数(ユーザー入力を含まない
-	 * 固定enum)であるため、`prepare()` を介さない文字列連結でも安全.
+	 * かつては `find_active_run()` と(削除済みの)`sweep_stale_running()` が
+	 * それぞれ独自に `'queued', 'running'` を直書きしており、`planning` 状態を
+	 * 追加した際に片方だけ更新して同期が崩れる事故が実際に起きかけた
+	 * (このメソッド追加の経緯そのもの)。値はすべて `WPCV_Run_Status` の定数
+	 * (ユーザー入力を含まない固定enum)であるため、`prepare()` を介さない
+	 * 文字列連結でも安全.
 	 *
 	 * @return string
 	 */

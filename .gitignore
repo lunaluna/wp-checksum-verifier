@@ -3,5 +3,9 @@
 /wp-checksum-verifier.*.zip
 /.phpunit.result.cache
 
+# コードレビュー原本等、リポジトリには含めない外部ドキュメント置き場
+# (ユーザー確認済み: リポジトリには含めない方針).
+/docs/
+
 # Action Scheduler bundled into lib/ by bin/build-zip.pre.sh ahead of staging
 /lib/action-scheduler/

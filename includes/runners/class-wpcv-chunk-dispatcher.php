@@ -60,7 +60,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 正常に進行中のchunk実行runを誤って`failed`にしてしまう競合があった(詳細は
  * `sweep_deadline_and_expired_leases()`のdocblock参照)。生存判定を
  * `deadline_at`+target leaseに一本化するため、それらの呼び出し元は
- * `sweep_stale_running()`ではなくこのメソッドを使う.
+ * (削除済みの)`sweep_stale_running()`ではなくこのメソッドを使う.
  */
 class WPCV_Chunk_Dispatcher {
 

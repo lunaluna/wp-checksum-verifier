@@ -324,13 +324,12 @@ class WPCV_Test_Fake_WPDB {
 	}
 
 	/**
-	 * 行を読み取る(`WPCV_Repository::sweep_stale_running()` 専用の簡易フェイク).
+	 * 行を読み取る(各Repositoryの `all_rows()` 系メソッド向けの簡易フェイク).
 	 *
 	 * 実 `$wpdb` と異なり SQL を解釈しない。クエリ文字列から `FROM {table}` の
 	 * テーブル名だけを正規表現で拾い、そのテーブルの全行をそのまま返す
 	 * (WHERE 句によるフィルタリングは呼び出し側の PHP コードが行う設計になって
-	 * いるため、フェイク側で再現する必要が無い。`WPCV_Repository::sweep_stale_running()`
-	 * の docblock 参照).
+	 * いるため、フェイク側で再現する必要が無い).
 	 *
 	 * @param string $query  SQL文字列(`FROM {table}` を含む前提).
 	 * @param string $output 無視する(本プラグインは常に `ARRAY_A` で呼ぶ).
@@ -539,7 +538,7 @@ function wpcv_test_inject_run_coordinator( $coordinator = null ) {
  * `WPCV_Plugin::run_repository()` が返すインスタンスを差し替える
  * (private static プロパティへのリフレクション。`wpcv_test_inject_run_coordinator()`
  * と同じ手法. v0.3 §Step6の `WPCV_Scheduler::handle_event()` が
- * `WPCV_Plugin::run_repository()->sweep_stale_running()` を呼ぶため、実 `global $wpdb`
+ * `WPCV_Plugin::run_repository()` 経由でDBへアクセスするため、実 `global $wpdb`
  * 無しでテストするのに必要).
  *
  * @param WPCV_Run_Repository|null $repository 差し替え先. 省略時はキャッシュを空に戻す.

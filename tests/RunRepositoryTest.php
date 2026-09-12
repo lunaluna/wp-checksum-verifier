@@ -448,7 +448,7 @@ class RunRepositoryTest extends TestCase {
 				'run_trigger' => 'cron',
 				'runner'      => 'async',
 				'finished_at' => '2026-09-08 11:30:00',
-				'notes'       => 'sweep_stale_running() により stale な run として検知し failed 化しました.',
+				'notes'       => 'stale な run として検知し failed 化しました.',
 			)
 		);
 
@@ -515,180 +515,6 @@ class RunRepositoryTest extends TestCase {
 
 		$this->assertSame( 'running', $wpdb->rows['wp_wpcv_runs'][ $first_run_id ]['status'] );
 		$this->assertSame( 'success', $wpdb->rows['wp_wpcv_runs'][ $second_run_id ]['status'] );
-	}
-
-	/**
-	 * 閾値(30分)より古い `started_at` を持つ `running` 行が `failed` に
-	 * 更新されることを確認する.
-	 *
-	 * @return void
-	 */
-	public function test_sweep_stale_running_marks_old_running_row_as_failed() {
-		$wpdb = new WPCV_Test_Fake_WPDB();
-		$wpdb->insert(
-			'wp_wpcv_runs',
-			array(
-				'started_at'  => '2026-09-08 11:00:00',
-				'status'      => 'running',
-				'run_trigger' => 'cron',
-				'runner'      => 'async',
-			)
-		);
-
-		$repository = $this->make_repository( $wpdb );
-
-		$swept = $repository->sweep_stale_running( 30 );
-
-		$this->assertSame( 1, $swept );
-		$row = $wpdb->rows['wp_wpcv_runs'][1];
-		$this->assertSame( 'failed', $row['status'] );
-		$this->assertSame( '2026-09-08 12:00:00', $row['finished_at'] );
-		$this->assertNotEmpty( $row['notes'] );
-	}
-
-	/**
-	 * 閾値内(30分以内)の `started_at` を持つ `running` 行は対象外であることを確認する.
-	 *
-	 * @return void
-	 */
-	public function test_sweep_stale_running_ignores_recent_running_row() {
-		$wpdb = new WPCV_Test_Fake_WPDB();
-		$wpdb->insert(
-			'wp_wpcv_runs',
-			array(
-				'started_at'  => '2026-09-08 11:45:00',
-				'status'      => 'running',
-				'run_trigger' => 'cron',
-				'runner'      => 'async',
-			)
-		);
-
-		$repository = $this->make_repository( $wpdb );
-
-		$swept = $repository->sweep_stale_running( 30 );
-
-		$this->assertSame( 0, $swept );
-		$this->assertSame( 'running', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
-	}
-
-	/**
-	 * 閾値より古い `queued` 行も(`running` と同様に) `failed` に更新されることを確認する
-	 * (v0.3.1 §Step1: enqueue はできたが Action Scheduler ワーカーが拾わなかった
-	 * run も永久ブロック要因になるため、`queued` もスイープ対象に拡張).
-	 *
-	 * @return void
-	 */
-	public function test_sweep_stale_running_marks_old_queued_row_as_failed() {
-		$wpdb = new WPCV_Test_Fake_WPDB();
-		$wpdb->insert(
-			'wp_wpcv_runs',
-			array(
-				'started_at'  => '2026-09-08 11:00:00',
-				'status'      => 'queued',
-				'run_trigger' => 'cron',
-				'runner'      => 'async',
-			)
-		);
-
-		$repository = $this->make_repository( $wpdb );
-
-		$swept = $repository->sweep_stale_running( 30 );
-
-		$this->assertSame( 1, $swept );
-		$this->assertSame( 'failed', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
-	}
-
-	/**
-	 * 古い `planning` の run も stale として `failed` に更新することを確認する
-	 * (v0.4.0コードレビューCR-01是正: `active_status_sql_list()`のdocblock参照).
-	 *
-	 * @return void
-	 */
-	public function test_sweep_stale_running_marks_old_planning_row_as_failed() {
-		$wpdb = new WPCV_Test_Fake_WPDB();
-		$wpdb->insert(
-			'wp_wpcv_runs',
-			array(
-				'started_at'  => '2026-09-08 11:00:00',
-				'status'      => 'planning',
-				'run_trigger' => 'cron',
-				'runner'      => 'async',
-			)
-		);
-
-		$repository = $this->make_repository( $wpdb );
-
-		$swept = $repository->sweep_stale_running( 30 );
-
-		$this->assertSame( 1, $swept );
-		$this->assertSame( 'failed', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
-	}
-
-	/**
-	 * stale sweep に先を越されて failed 化された run を、後から戻ってきた
-	 * 旧ワーカーが `finish_run()` で成功へ上書きできないことを確認する
-	 * (プラン§P1「stale化後に旧ワーカーが成功で上書きできる」の統合的な確認.
-	 * `test_finish_run_does_not_overwrite_non_running_row()` の実際のスイープ経由版).
-	 *
-	 * @return void
-	 */
-	public function test_stale_swept_run_cannot_be_overwritten_by_late_finish_run() {
-		$wpdb = new WPCV_Test_Fake_WPDB();
-		$wpdb->insert(
-			'wp_wpcv_runs',
-			array(
-				'started_at'  => '2026-09-08 08:00:00',
-				'status'      => 'running',
-				'run_trigger' => 'cron',
-				'runner'      => 'async',
-			)
-		);
-
-		$repository = $this->make_repository( $wpdb );
-
-		$this->assertSame( 1, $repository->sweep_stale_running( 30 ) );
-		$this->assertSame( 'failed', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
-
-		// 旧ワーカーが検証を終え、今頃になって finish_run() を呼ぶ状況を模す.
-		$updated = $repository->finish_run(
-			1,
-			array(
-				'status'               => 'success',
-				'targets_total'        => 1,
-				'targets_verified'     => 1,
-				'targets_unverifiable' => 0,
-				'targets_failed'       => 0,
-				'findings_total'       => 0,
-			)
-		);
-
-		$this->assertFalse( $updated );
-		$this->assertSame( 'failed', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
-	}
-
-	/**
-	 * `running` 以外の状態の行は(古くても)対象外であることを確認する.
-	 *
-	 * @return void
-	 */
-	public function test_sweep_stale_running_ignores_non_running_rows() {
-		$wpdb = new WPCV_Test_Fake_WPDB();
-		$wpdb->insert(
-			'wp_wpcv_runs',
-			array(
-				'started_at'  => '2026-09-08 09:00:00',
-				'status'      => 'success',
-				'run_trigger' => 'cron',
-				'runner'      => 'async',
-			)
-		);
-
-		$repository = $this->make_repository( $wpdb );
-
-		$swept = $repository->sweep_stale_running( 30 );
-
-		$this->assertSame( 0, $swept );
-		$this->assertSame( 'success', $wpdb->rows['wp_wpcv_runs'][1]['status'] );
 	}
 
 	/**
@@ -762,10 +588,10 @@ class RunRepositoryTest extends TestCase {
 	 * `planning` 状態の run も active として id を返すことを確認する(v0.4.0
 	 * コードレビューCR-01是正)。
 	 *
-	 * `find_active_run()`/`sweep_stale_running()` は本来 `WPCV_Run_Status::ACTIVE`
-	 * と同期しているべきSQLのIN句を独自に持っており、`planning`追加時に
-	 * 片方だけ更新して見落とす事故が実際に起きかけた(`active_status_sql_list()`
-	 * のdocblock参照)。このテストはその回帰を検出する.
+	 * `find_active_run()`はかつて`WPCV_Run_Status::ACTIVE`と同期しているべき
+	 * SQLのIN句を(削除済みの`sweep_stale_running()`と)独自に持っており、
+	 * `planning`追加時に片方だけ更新して見落とす事故が実際に起きかけた
+	 * (`active_status_sql_list()`のdocblock参照)。このテストはその回帰を検出する.
 	 *
 	 * @return void
 	 */

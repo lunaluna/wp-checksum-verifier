@@ -263,7 +263,9 @@ class SchedulerTest extends TestCase {
 	 * `handle_event()` は run 受付(stale sweep・enqueue)が例外を投げても、
 	 * 次回分の自己連鎖予約が既に確保済みであることを確認する(v0.3.1 §Step3。
 	 * プラン§P1「Cronの次回予約が異常終了で途絶える」への対策. 例外を投げるのは
-	 * `run_verification()`(sweep_stale_running → enqueue_run の順)であり、
+	 * `run_verification()`(`find_active_run_id()` → 〔active runがあれば〕
+	 * `sweep_deadline_and_expired_leases()` → `enqueue_run()` の順。v0.4.0コード
+	 * レビューCR-07是正で `sweep_stale_running()` から切り替え済み)であり、
 	 * `ensure_scheduled()` はその前に呼ばれる設計であることの確認).
 	 *
 	 * @return void
@@ -271,7 +273,8 @@ class SchedulerTest extends TestCase {
 	public function test_handle_event_keeps_next_schedule_when_verification_throws() {
 		$throwing_wpdb = new class() extends WPCV_Test_Fake_WPDB {
 			/**
-			 * 呼ばれたら必ず例外を投げる(sweep_stale_running() の DB 障害を模す).
+			 * 呼ばれたら必ず例外を投げる(`find_active_run_id()` 等が使う
+			 * `get_results()` のDB障害を模す).
 			 *
 			 * @param string $query  無視する.
 			 * @param string $output 無視する.

@@ -54,20 +54,6 @@ class WPCV_Scheduler {
 	const MANUAL_HOOK = 'wpcv_manual_verify';
 
 	/**
-	 * 【v0.4.0コードレビューCR-07是正で不使用に】旧`WPCV_Run_Repository::
-	 * sweep_stale_running()`(`started_at`基準・v0.3 §Step5)向けのstale判定
-	 * 閾値(分)だったが、`run_verification()`が`WPCV_Chunk_Dispatcher::
-	 * sweep_deadline_and_expired_leases()`(`deadline_at`基準)へ切り替わった
-	 * ことに伴い、このクラスからは参照しなくなった。`sweep_stale_running()`
-	 * 自体はメソッドとして残っており、この定数だけを削除すると対応関係が
-	 * 分かりづらくなるため、値はそのまま残してある(呼び出し元が無いことを
-	 * 承知のうえでの残置。完全な整理は別途判断).
-	 *
-	 * @var int
-	 */
-	const STALE_THRESHOLD_MINUTES = 180;
-
-	/**
 	 * フックを登録する. `wp-checksum-verifier.php` から常に(WP-Cron が
 	 * `DISABLE_WP_CRON` で無効化されている環境でも)呼ぶ. `wp_schedule_single_event()`
 	 * 自体は `DISABLE_WP_CRON` の影響を受けず「予約」までは行われ、実際の発火だけが
