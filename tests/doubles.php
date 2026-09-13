@@ -370,6 +370,13 @@ class WPCV_Test_Fake_WPDB {
 	 * 行いつつ戻り値のみ `false` にする(本番の `$wpdb->query()` がSQLエラー時に
 	 * 返す値を模す。v0.4.0コードレビューCR-03是正).
 	 *
+	 * v0.5 §Step2: `WPCV_File_State_Repository::upsert_many()` が発行する
+	 * `INSERT ... VALUES (...), (...) ON DUPLICATE KEY UPDATE ...` のみ、
+	 * `apply_bulk_upsert()` で `$rows` へ反映する(このテーブルは全件取得方式が
+	 * 使えない規模のため、`upsert_many()` はテストダブルでもSQL経由でデータを
+	 * 反映する必要がある。`WPCV_File_State_Repository` のクラスdocblock参照)。
+	 * それ以外のクエリ(`START TRANSACTION`等)は従来どおり記録のみ.
+	 *
 	 * @param string $query クエリ文字列(記録のみ).
 	 * @return bool `$query_should_fail` が真なら `false`。それ以外は常に `true`.
 	 */
@@ -382,7 +389,141 @@ class WPCV_Test_Fake_WPDB {
 			return false;
 		}
 
+		if ( 1 === preg_match( '/^INSERT INTO\s+(\S+)\s*\(([^)]+)\)\s*VALUES\s*(.+?)\s*ON DUPLICATE KEY UPDATE/is', $query, $matches ) ) {
+			$this->apply_bulk_upsert( $matches[1], $matches[2], $matches[3] );
+		}
+
 		return true;
+	}
+
+	/**
+	 * `INSERT ... VALUES (...), (...) ON DUPLICATE KEY UPDATE ...` を解釈し、
+	 * `$this->rows` へ反映する(`query()` 専用のヘルパー. v0.5 §Step2).
+	 *
+	 * 本プラグインが実際に発行する形(1行1タプル、値はクォート済み文字列/整数/
+	 * `NULL`リテラルのいずれか)だけを解釈する簡易パーサーであり、汎用SQL
+	 * パーサーではない。一意キー(`state_key`)が既存行と一致すれば
+	 * `first_seen_run_id`以外の列をマージ更新し(本番の`ON DUPLICATE KEY UPDATE`
+	 * 句が`first_seen_run_id`を含まないのと同じ意味)、一致しなければ新規行として
+	 * 追加する.
+	 *
+	 * @param string $table       テーブル名.
+	 * @param string $columns_str カラム名のカンマ区切り文字列(括弧の中身).
+	 * @param string $values_str  `VALUES`直後のタプル列全体(先頭・末尾の丸括弧込み).
+	 * @return void
+	 */
+	private function apply_bulk_upsert( $table, $columns_str, $values_str ) {
+		$columns = array_map( 'trim', explode( ',', $columns_str ) );
+
+		$values_str = trim( $values_str );
+		$values_str = substr( $values_str, 1, -1 ); // 先頭 "(" と末尾 ")" を除去する.
+		$tuples     = preg_split( '/\)\s*,\s*\(/', $values_str );
+
+		if ( ! isset( $this->next_id[ $table ] ) ) {
+			$this->next_id[ $table ] = 1;
+		}
+
+		if ( ! isset( $this->rows[ $table ] ) ) {
+			$this->rows[ $table ] = array();
+		}
+
+		foreach ( $tuples as $tuple ) {
+			$literals = $this->split_sql_value_literals( $tuple );
+			$row      = array();
+
+			foreach ( $columns as $index => $column ) {
+				$row[ $column ] = $this->parse_sql_value_literal( $literals[ $index ] );
+			}
+
+			$existing_id = null;
+
+			foreach ( $this->rows[ $table ] as $id => $existing_row ) {
+				if ( isset( $existing_row['state_key'] ) && $existing_row['state_key'] === $row['state_key'] ) {
+					$existing_id = $id;
+					break;
+				}
+			}
+
+			if ( null !== $existing_id ) {
+				// 本番の ON DUPLICATE KEY UPDATE 句が first_seen_run_id を
+				// 含まない(`WPCV_File_State_Repository::upsert_many()` 参照)のと
+				// 同じ意味で、既存行の first_seen_run_id は上書きしない.
+				unset( $row['first_seen_run_id'] );
+				$this->rows[ $table ][ $existing_id ] = array_merge( $this->rows[ $table ][ $existing_id ], $row );
+			} else {
+				$id                         = $this->next_id[ $table ]++;
+				$row['id']                  = $id;
+				$this->rows[ $table ][ $id ] = $row;
+			}
+		}
+	}
+
+	/**
+	 * SQLの値リテラル列("'a', 123, NULL, 'b'" のような文字列)を、各要素の
+	 * 生文字列表現の配列に分割する(`apply_bulk_upsert()` 専用のヘルパー).
+	 *
+	 * `'...'`(シングルクォート文字列。`prepare()`が行う`\'`/`\\`エスケープを
+	 * 許容する正規表現にしてある。`state_key`のような生バイト値はシングル
+	 * クォート・バックスラッシュを含みうるため、これが無いと値の途中で
+	 * クォートが閉じたと誤認しタプルの区切りを見失う)・整数・`NULL`の
+	 * 3種のみを解釈する.
+	 *
+	 * @param string $literal_list カンマ区切りのSQLリテラル列(1タプル分).
+	 * @return string[]
+	 */
+	private function split_sql_value_literals( $literal_list ) {
+		preg_match_all( "/'(?:[^'\\\\]|\\\\.)*'|-?[0-9]+|NULL/i", $literal_list, $matches );
+
+		return $matches[0];
+	}
+
+	/**
+	 * SQLの値リテラル1つを、対応するPHPの値(文字列/整数/`null`)へ変換する
+	 * (`apply_bulk_upsert()` 専用のヘルパー)。文字列値は `prepare()` が施した
+	 * `\'`/`\\` エスケープを解除してから返す(`prepare()` のdocblock参照).
+	 *
+	 * @param string $literal `split_sql_value_literals()` が返す1要素.
+	 * @return string|int|null
+	 */
+	private function parse_sql_value_literal( $literal ) {
+		if ( 0 === strcasecmp( $literal, 'NULL' ) ) {
+			return null;
+		}
+
+		if ( 1 === preg_match( "/^'(.*)'$/s", $literal, $matches ) ) {
+			return $this->unescape_sql_string( $matches[1] );
+		}
+
+		return (int) $literal;
+	}
+
+	/**
+	 * `prepare()` が `%s` の値に施したエスケープ(`\'` → `'`、`\\` → `\`)を
+	 * 解除する(`parse_sql_value_literal()` 専用のヘルパー).
+	 *
+	 * `str_replace()` を2回連続で適用する素朴な実装は、変換順序によって
+	 * 二重エスケープを誤って壊す(例: 元の値が `\\` 1個だった場合、
+	 * `\'`→`'` の変換を先に行うと安全だが、`\\`→`\` を先に行うと `\\'` を
+	 * `\'`→`'` に変換し損ねる)。そのため先頭から1文字ずつ走査し、`\` が
+	 * 出たら次の1文字をエスケープ対象として無条件に採用する一般的な
+	 * デコード方式にしてある.
+	 *
+	 * @param string $escaped `prepare()` がエスケープ済みの文字列(引用符の中身).
+	 * @return string
+	 */
+	private function unescape_sql_string( $escaped ) {
+		$result = '';
+		$length = strlen( $escaped );
+
+		for ( $i = 0; $i < $length; $i++ ) {
+			if ( '\\' === $escaped[ $i ] && $i + 1 < $length ) {
+				++$i;
+			}
+
+			$result .= $escaped[ $i ];
+		}
+
+		return $result;
 	}
 
 	/**
@@ -398,9 +539,15 @@ class WPCV_Test_Fake_WPDB {
 
 	/**
 	 * プレースホルダーを実引数へ置換する(実 `$wpdb->prepare()` の簡易フェイク)。
-	 * このダブルは実 SQL を実行しないため、エスケープ処理は行わず `%s`/`%d` を
-	 * `vsprintf()` で単純に置換するだけで十分(呼び出し引数の確認は
-	 * `get_var_calls`/`query_calls` に記録された最終文字列で行う).
+	 *
+	 * `WPCV_File_State_Repository`(v0.5 §Step2)が `state_key`(sha256の生バイト)を
+	 * `%s` で渡すようになったため、単純な `vsprintf()` 置換では成立しなくなった
+	 * (生バイトにシングルクォート `'` やバックスラッシュ `\` が含まれる確率は
+	 * 32バイトあれば無視できない大きさになり、実際にテストで踏んだ)。
+	 * `%s` の値はシングルクォート・バックスラッシュを最小限エスケープしてから
+	 * 引用符で囲む(本番の `$wpdb->prepare()` の簡易近似). `apply_bulk_upsert()`
+	 * 側の `split_sql_value_literals()`/`unescape_sql_string()` がこのエスケープに
+	 * 対応する形でVALUES句を読み戻す(対称性が必要).
 	 *
 	 * @param string $query    クエリ(`%s`/`%d` プレースホルダーを含む).
 	 * @param mixed  ...$args  プレースホルダーに対応する値.
@@ -411,7 +558,24 @@ class WPCV_Test_Fake_WPDB {
 			$args = $args[0];
 		}
 
-		return vsprintf( str_replace( '%s', "'%s'", $query ), $args );
+		$index = 0;
+
+		return preg_replace_callback(
+			'/%[sd]/',
+			function ( $matches ) use ( &$index, $args ) {
+				$value = $args[ $index ] ?? '';
+				++$index;
+
+				if ( '%d' === $matches[0] ) {
+					return (string) (int) $value;
+				}
+
+				$escaped = str_replace( array( '\\', "'" ), array( '\\\\', "\\'" ), (string) $value );
+
+				return "'{$escaped}'";
+			},
+			$query
+		);
 	}
 }
 

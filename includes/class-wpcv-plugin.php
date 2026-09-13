@@ -88,6 +88,14 @@ class WPCV_Plugin {
 	private static $suppression_repository = null;
 
 	/**
+	 * 組み立て済みの `WPCV_File_State_Repository`(1リクエスト内で使い回す。
+	 * v0.5 §Step2で追加).
+	 *
+	 * @var WPCV_File_State_Repository|null
+	 */
+	private static $file_state_repository = null;
+
+	/**
 	 * 組み立て済みの `WPCV_Chunk_Dispatcher`(1リクエスト内で使い回す。
 	 * v0.4.0 §Step4で追加).
 	 *
@@ -190,6 +198,21 @@ class WPCV_Plugin {
 		}
 
 		return self::$suppression_repository;
+	}
+
+	/**
+	 * 本番用に配線された `WPCV_File_State_Repository` を返す(v0.5 §Step2).
+	 *
+	 * @return WPCV_File_State_Repository
+	 */
+	public static function file_state_repository() {
+		if ( null === self::$file_state_repository ) {
+			global $wpdb;
+
+			self::$file_state_repository = new WPCV_File_State_Repository( $wpdb );
+		}
+
+		return self::$file_state_repository;
 	}
 
 	/**

@@ -24,6 +24,7 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-matcher.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-file-state-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-planner.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-coordinator.php';
@@ -105,5 +106,16 @@ class PluginTest extends TestCase {
 	 */
 	public function test_sync_dispatcher_is_a_different_instance_from_chunk_dispatcher() {
 		$this->assertNotSame( WPCV_Plugin::sync_dispatcher(), WPCV_Plugin::chunk_dispatcher() );
+	}
+
+	/**
+	 * `file_state_repository()`(v0.5 §Step2)が `WPCV_File_State_Repository` の
+	 * インスタンスを返し、複数回呼び出しても同一インスタンスが返ることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_file_state_repository_returns_same_instance_on_repeated_calls() {
+		$this->assertInstanceOf( WPCV_File_State_Repository::class, WPCV_Plugin::file_state_repository() );
+		$this->assertSame( WPCV_Plugin::file_state_repository(), WPCV_Plugin::file_state_repository() );
 	}
 }

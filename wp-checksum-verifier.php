@@ -168,6 +168,13 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-finding-reposito
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-suppression-repository.php';
 
 /**
+ * Stat差分検知(rev.3 §3)のベースライン(`wpcv_file_states`)の永続化層
+ * (v0.5 §4.2 Step2)。他クラスからの依存はまだ無いため読み込み順の制約は無いが、
+ * 他のRepository群と同じ場所にまとめる.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-file-state-repository.php';
+
+/**
  * Chunk結果(cursor更新とfindings保存)をtransactionで確定する調整役(v0.4.0 §Step3).
  * `WPCV_Target_Run_Repository`/`WPCV_Finding_Repository`/`WPCV_Suppression_Repository`
  * より後に読み込む必要がある.
