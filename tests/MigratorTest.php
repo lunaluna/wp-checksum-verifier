@@ -136,6 +136,79 @@ class MigratorTest extends TestCase {
 	}
 
 	/**
+	 * `wpcv_findings` に v0.5(rev.3 §3.5)で追加した `detail` 列が含まれることを
+	 * 確認する(stat差分検知の finding で size/ctime/mtime の差分を JSON で保持するため).
+	 *
+	 * @return void
+	 */
+	public function test_table_definitions_findings_includes_detail_column() {
+		$GLOBALS['wpdb'] = new WPCV_Test_Fake_WPDB();
+
+		$method = new ReflectionMethod( WPCV_Migrator::class, 'table_definitions' );
+		$method->setAccessible( true );
+
+		list( , , $sql_findings ) = $method->invoke( null );
+
+		$this->assertMatchesRegularExpression( '/detail\s+text\s+NULL/', $sql_findings );
+	}
+
+	/**
+	 * `table_definitions()` が5番目の要素として `wpcv_file_states`(v0.5・
+	 * rev.3 §3.3 で新設)の CREATE TABLE 文を返し、必要な列・indexを含むことを
+	 * 確認する.
+	 *
+	 * @return void
+	 */
+	public function test_table_definitions_include_file_states_table_columns_and_indexes() {
+		$GLOBALS['wpdb'] = new WPCV_Test_Fake_WPDB();
+
+		$method = new ReflectionMethod( WPCV_Migrator::class, 'table_definitions' );
+		$method->setAccessible( true );
+
+		$sqls = $method->invoke( null );
+
+		$this->assertCount( 5, $sqls, 'table_definitions() must return 5 CREATE TABLE statements from v0.5 onward' );
+
+		$sql_file_states = $sqls[4];
+
+		foreach ( array(
+			'state_key',
+			'target_id',
+			'dimension',
+			'slug',
+			'path',
+			'file_size',
+			'ctime',
+			'mtime',
+			'content_hash',
+			'hash_algorithm',
+			'baseline_version',
+			'first_seen_run_id',
+			'last_seen_run_id',
+			'updated_at',
+			'idx_state_key',
+			'idx_target_last_seen',
+			'idx_path',
+		) as $needle ) {
+			$this->assertStringContainsString( $needle, $sql_file_states, "wpcv_file_states is missing column/index: {$needle}" );
+		}
+
+		$this->assertMatchesRegularExpression( '/state_key\s+binary\(32\)\s+NOT NULL/', $sql_file_states );
+		$this->assertStringContainsString( 'UNIQUE KEY idx_state_key (state_key)', $sql_file_states );
+		$this->assertStringContainsString( 'KEY idx_target_last_seen (target_id, last_seen_run_id)', $sql_file_states );
+
+		// 層2(内容ハッシュ)専用の列は v0.5 では常に NULL 許容でなければならない
+		// (層1のみのインストールでは書き込まれないため. §3.8参照).
+		foreach ( array( 'content_hash', 'hash_algorithm', 'baseline_version' ) as $column ) {
+			$this->assertMatchesRegularExpression(
+				'/' . preg_quote( $column, '/' ) . '\s+[a-z0-9()]+\s+NULL/',
+				$sql_file_states,
+				"{$column} must be nullable"
+			);
+		}
+	}
+
+	/**
 	 * §Step1 で追加した列がすべて NULL 許容(または default 付き)である
 	 * ことを確認する。v0.3.1 以前に作成された既存行は新しい列の値を持たないため、
 	 * NOT NULL かつ default 無しの列を追加すると、既存行の読み取り互換
@@ -257,6 +330,7 @@ class MigratorTest extends TestCase {
 			$wpdb->base_prefix . 'wpcv_target_runs',
 			$wpdb->base_prefix . 'wpcv_findings',
 			$wpdb->base_prefix . 'wpcv_suppressions',
+			$wpdb->base_prefix . 'wpcv_file_states',
 		);
 		$sqls = $table_definitions_method->invoke( null );
 

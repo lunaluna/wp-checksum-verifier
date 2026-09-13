@@ -27,8 +27,11 @@ if ( ! defined( 'ABSPATH' ) ) {
  *
  * チャンク分割実行・run deadline・抑制ルール参照のための列を runs/target_runs/
  * findingsへ追加したため、v0.4.0 §Step1で2へ更新した(`WPCV_Migrator::table_definitions()` 参照).
+ *
+ * stat 差分検知(rev.3 §3.3)用の `wpcv_file_states` テーブル新設と、
+ * `wpcv_findings.detail` 列の追加のため、v0.5 §4.2 Step1で3へ更新した.
  */
-define( 'WPCV_DB_VERSION', 2 );
+define( 'WPCV_DB_VERSION', 3 );
 
 /**
  * Public API contract のバージョン. 後方互換を維持する契約(§10).
