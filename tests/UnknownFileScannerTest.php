@@ -381,4 +381,94 @@ class UnknownFileScannerTest extends TestCase {
 		$this->assertFalse( $result['truncated'] );
 		$this->assertCount( 3, $result['items'] );
 	}
+
+	/**
+	 * `collect_stat` を指定しない(既定)場合、item に `path`/`severity` 以外の
+	 * キーが一切含まれないことを確認する(v0.5 §Step3の完了条件:
+	 * 「未指定時の戻り値は完全に従来どおり」).
+	 *
+	 * @return void
+	 */
+	public function test_items_have_only_path_and_severity_when_collect_stat_is_omitted() {
+		$this->put_fixture_file( 'wp-admin/evil.php' );
+
+		$scanner = new WPCV_Unknown_File_Scanner();
+		$result  = $scanner->scan( ABSPATH . 'wp-admin', array() );
+
+		$this->assertSame( array( 'path', 'severity' ), array_keys( $result['items'][0] ) );
+	}
+
+	/**
+	 * `collect_stat => true` を指定すると、各 item に `size`/`ctime`/`mtime` が
+	 * 実際のファイルの値で付与されることを確認する(v0.5 §Step3).
+	 *
+	 * @return void
+	 */
+	public function test_collect_stat_adds_size_ctime_mtime_to_items() {
+		$this->put_fixture_file( 'wp-admin/evil.php', 'hello world' );
+
+		$absolute_path = ABSPATH . 'wp-admin/evil.php';
+		touch( $absolute_path, 1740000000 );
+
+		$scanner = new WPCV_Unknown_File_Scanner();
+		$result  = $scanner->scan(
+			ABSPATH . 'wp-admin',
+			array(),
+			array( 'collect_stat' => true )
+		);
+
+		$this->assertCount( 1, $result['items'] );
+		$item = $result['items'][0];
+
+		$this->assertSame( strlen( 'hello world' ), $item['size'] );
+		$this->assertSame( 1740000000, $item['mtime'] );
+		$this->assertIsInt( $item['ctime'] );
+		$this->assertGreaterThan( 0, $item['ctime'] );
+	}
+
+	/**
+	 * Symlink が指すファイルに対しては、リンク先の実ファイルの stat ではなく
+	 * リンク自体の stat(`lstat()`)が返ることを確認する(rev.3 §3.9: symlinkで
+	 * stat を欺く攻撃を防ぐため `lstat()` を採用した理由に対応するテスト.
+	 * v0.5 §4.2 Step3の完了条件).
+	 *
+	 * @return void
+	 */
+	public function test_collect_stat_uses_lstat_for_symlinks_not_the_link_target() {
+		if ( ! function_exists( 'symlink' ) ) {
+			$this->markTestSkipped( 'symlink() is not available in this environment.' );
+		}
+
+		// リンク先は大きなファイルにし、symlink自体(パス文字列の長さ)との
+		// サイズの違いで「lstat()かstat()か」を判別できるようにする.
+		$this->put_fixture_file( 'wp-admin/real-large-file.php', str_repeat( 'x', 5000 ) );
+
+		$target_absolute = ABSPATH . 'wp-admin/real-large-file.php';
+		$link_absolute   = ABSPATH . 'wp-admin/link-to-large-file.php';
+
+		$linked = @symlink( $target_absolute, $link_absolute ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+
+		if ( ! $linked ) {
+			$this->markTestSkipped( 'symlink() creation failed in this environment (e.g. sandboxed FS).' );
+		}
+
+		$scanner = new WPCV_Unknown_File_Scanner();
+		$result  = $scanner->scan(
+			ABSPATH . 'wp-admin',
+			array( 'wp-admin/real-large-file.php' => array() ), // リンク先は既知として除外.
+			array( 'collect_stat' => true )
+		);
+
+		$by_path = array();
+		foreach ( $result['items'] as $item ) {
+			$by_path[ $item['path'] ] = $item;
+		}
+
+		$this->assertArrayHasKey( 'wp-admin/link-to-large-file.php', $by_path );
+
+		$link_stat = @lstat( $link_absolute ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+
+		$this->assertSame( (int) $link_stat['size'], $by_path['wp-admin/link-to-large-file.php']['size'] );
+		$this->assertNotSame( 5000, $by_path['wp-admin/link-to-large-file.php']['size'], 'symlink自体のstatはリンク先の5000バイトと一致してはならない' );
+	}
 }

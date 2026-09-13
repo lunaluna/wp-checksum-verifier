@@ -108,10 +108,16 @@ class WPCV_Unknown_File_Scanner {
 	 *     @type array    $budget               walk自体の時間・メモリ予算(クラス
 	 *                                           docblock「CR-08是正」参照。省略時は
 	 *                                           無制限. `max_files` は指定しないこと).
+	 *     @type bool     $collect_stat         真の場合、各 item に `size`/`ctime`/
+	 *                                           `mtime` を付与する(v0.5 §Step3。
+	 *                                           stat差分検知〔rev.3 §3〕用)。既定 false
+	 *                                           (省略時の戻り値は従来どおり
+	 *                                           `path`/`severity` のみ).
 	 * }
 	 * @return array {
 	 *     @type array $items      検出項目の配列。各要素は
-	 *                             `array( 'path' => ABSPATH 相対パス, 'severity' => string )`.
+	 *                             `array( 'path' => ABSPATH 相対パス, 'severity' => string )`
+	 *                             (`collect_stat` が真なら `size`/`ctime`/`mtime` も含む).
 	 *     @type bool  $truncated  walkが予算超過で完了できなかった場合 true(この
 	 *                             場合 `items` は不完全な部分集合であり、呼び出し元は
 	 *                             fingerprint計算・chunk処理に使ってはならない).
@@ -123,6 +129,7 @@ class WPCV_Unknown_File_Scanner {
 		$non_php_severity = isset( $args['non_php_severity'] ) ? (string) $args['non_php_severity'] : 'high';
 		$extra_excluded   = isset( $args['extra_excluded_paths'] ) ? (array) $args['extra_excluded_paths'] : array();
 		$budget           = isset( $args['budget'] ) ? (array) $args['budget'] : array();
+		$collect_stat     = ! empty( $args['collect_stat'] );
 
 		$normalized_base = rtrim( WPCV_Path_Normalizer::to_forward_slashes( $base_dir ), '/' );
 
@@ -135,15 +142,17 @@ class WPCV_Unknown_File_Scanner {
 
 		$base_relative = self::relative_base( $normalized_base );
 
-		$found_paths = array();
-		$truncated   = false;
-		$start       = call_user_func( $this->now );
+		$found_entries = array();
+		$truncated     = false;
+		$start         = call_user_func( $this->now );
 
-		$this->walk( $normalized_base, $base_relative, $recursive, $found_paths, $start, $budget, $truncated );
+		$this->walk( $normalized_base, $base_relative, $recursive, $found_entries, $start, $budget, $truncated );
 
 		$items = array();
 
-		foreach ( $found_paths as $relative_path ) {
+		foreach ( $found_entries as $entry ) {
+			$relative_path = $entry['path'];
+
 			if ( array_key_exists( $relative_path, $known_files ) ) {
 				continue;
 			}
@@ -152,10 +161,16 @@ class WPCV_Unknown_File_Scanner {
 				continue;
 			}
 
-			$items[] = array(
+			$item = array(
 				'path'     => $relative_path,
 				'severity' => self::is_php_like_path( $relative_path ) ? $php_severity : $non_php_severity,
 			);
+
+			if ( $collect_stat ) {
+				$item += self::lstat_summary( $entry['absolute'] );
+			}
+
+			$items[] = $item;
 		}
 
 		return array(
@@ -199,7 +214,10 @@ class WPCV_Unknown_File_Scanner {
 	 * @param string $relative_prefix ここまでの ABSPATH 相対パス(末尾スラッシュ無し。
 	 *                                ABSPATH 自身なら空文字).
 	 * @param bool   $recursive       サブディレクトリに降りるか.
-	 * @param array  $results         結果を追記する配列(参照渡し).
+	 * @param array  $results         結果を追記する配列(参照渡し)。各要素は
+	 *                                `array( 'path' => ABSPATH相対パス, 'absolute' => 絶対パス )`
+	 *                                (v0.5 §Step3: `collect_stat` が絶対パスに対して
+	 *                                `lstat()` を呼ぶために両方保持するようにした).
 	 * @param float  $start           walk開始時刻(`$this->now`の戻り値).
 	 * @param array  $budget          `max_seconds`/`memory_limit_bytes`/
 	 *                                `memory_threshold_ratio`(いずれも省略可).
@@ -242,7 +260,10 @@ class WPCV_Unknown_File_Scanner {
 					$this->walk( $absolute_path, $relative_path, true, $results, $start, $budget, $truncated );
 				}
 			} else {
-				$results[] = $relative_path;
+				$results[] = array(
+					'path'     => $relative_path,
+					'absolute' => $absolute_path,
+				);
 			}
 
 			if ( WPCV_Chunk_Budget::exceeded( $start, 0, $budget, $this->now, $this->memory_usage ) ) {
@@ -250,6 +271,41 @@ class WPCV_Unknown_File_Scanner {
 				return;
 			}
 		}
+	}
+
+	/**
+	 * 指定した絶対パスの `size`/`ctime`/`mtime` を返す(v0.5 §Step3.
+	 * stat差分検知〔rev.3 §3〕用).
+	 *
+	 * `stat()`/`filesize()`/`filectime()`/`filemtime()` ではなく `lstat()` を使う
+	 * (rev.3 §3.9参照)。symlinkに対して `stat()` 系関数はリンク先を追ってしまうため、
+	 * 攻撃者がsymlinkで実ファイルの正当な統計情報を装う(=検出を欺く)余地が生まれる。
+	 * `lstat()` はリンク自体の統計情報を返すため、symlinkの設置自体が「変更」として
+	 * 検出対象になる.
+	 *
+	 * @param string $absolute_path 対象ファイルの絶対パス.
+	 * @return array{size:int,ctime:int,mtime:int} `lstat()` が失敗した場合(競合状態で
+	 *                                              walk後に削除された等)は全て0.
+	 */
+	private static function lstat_summary( $absolute_path ) {
+		// 権限エラー・競合状態での消失等はここでは致命的に扱わない
+		// (クラスdocblock「読めないディレクトリはスキップする」と同じ方針).
+		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+		$stat = @lstat( $absolute_path );
+
+		if ( false === $stat ) {
+			return array(
+				'size'  => 0,
+				'ctime' => 0,
+				'mtime' => 0,
+			);
+		}
+
+		return array(
+			'size'  => (int) $stat['size'],
+			'ctime' => (int) $stat['ctime'],
+			'mtime' => (int) $stat['mtime'],
+		);
 	}
 
 	/**
