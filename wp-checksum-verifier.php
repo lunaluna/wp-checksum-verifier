@@ -141,6 +141,12 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-unknown-f
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-verifier.php';
 
 /**
+ * Stat差分検知(rev.3 §3)の負荷実測ロジック(v0.5 §4.2 Step4)。
+ * `WPCV_Unknown_File_Scanner` に依存するため、その後に読み込む.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-stat-bench.php';
+
+/**
  * Chunk分割実行のための決定的な順序付け・fingerprint計算とchunk単位の検証本体
  * (v0.4.0 §Step3). `WPCV_Chunk_Dispatcher`(§Step4)が呼び出し元.
  */
@@ -258,6 +264,7 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/functions-api.php';
  */
 if ( defined( 'WP_CLI' ) && WP_CLI ) {
 	require_once plugin_dir_path( __FILE__ ) . 'includes/cli/class-wpcv-cli-command.php';
+	require_once plugin_dir_path( __FILE__ ) . 'includes/cli/class-wpcv-cli-bench-stat-command.php';
 }
 
 /**
