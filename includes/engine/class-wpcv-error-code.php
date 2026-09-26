@@ -94,6 +94,15 @@ class WPCV_Error_Code {
 	const EXCLUDED = 'excluded';
 
 	/**
+	 * 本体 target がチェックサム照合できたため、stat 差分検知 target
+	 * (`{dimension}:{slug}:_stat`)の走査を省略した(v0.5 §Step6. rev.3 §3.4).
+	 *
+	 * 照合できたファイルは内容の正しさまで確認済みであり、stat 走査を重ねても
+	 * 得るものが無い。stat の I/O を一切発生させないためのスキップ.
+	 */
+	const CHECKSUM_COVERED = 'checksum_covered';
+
+	/**
 	 * 全 error_code とその説明の一覧を返す(管理画面表示・バリデーション用).
 	 *
 	 * @return array<string, string> error_code => 説明.
@@ -118,6 +127,7 @@ class WPCV_Error_Code {
 			self::TARGET_MISSING     => __( 'Target no longer found locally', 'wp-checksum-verifier' ),
 			self::LEASE_EXPIRED      => __( 'Worker lease expired too many times', 'wp-checksum-verifier' ),
 			self::EXCLUDED           => __( 'Excluded by an exclude_target suppression rule', 'wp-checksum-verifier' ),
+			self::CHECKSUM_COVERED   => __( 'Skipped: already verified by checksums', 'wp-checksum-verifier' ),
 		);
 	}
 

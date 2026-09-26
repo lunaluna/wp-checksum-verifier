@@ -623,6 +623,7 @@ class WPCV_Test_Fake_WPDB {
  *     finding_repository: WPCV_Finding_Repository,
  *     chunk_result_repository: WPCV_Chunk_Result_Repository,
  *     suppression_repository: WPCV_Suppression_Repository,
+ *     file_state_repository: WPCV_File_State_Repository,
  *     wpdb: WPCV_Test_Fake_WPDB,
  * }
  */
@@ -650,7 +651,8 @@ function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = 
 	$target_run_repository   = new WPCV_Target_Run_Repository( $wpdb, $now );
 	$finding_repository      = new WPCV_Finding_Repository( $wpdb );
 	$suppression_repository  = new WPCV_Suppression_Repository( $wpdb, $now );
-	$chunk_result_repository = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, $finding_repository, $suppression_repository );
+	$file_state_repository   = new WPCV_File_State_Repository( $wpdb, $now );
+	$chunk_result_repository = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, $finding_repository, $suppression_repository, $file_state_repository );
 
 	$dispatcher = new WPCV_Chunk_Dispatcher(
 		$run_repository,
@@ -668,7 +670,8 @@ function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = 
 		// `aborted` になる).
 		static function () use ( $now ) {
 			return strtotime( call_user_func( $now ) );
-		}
+		},
+		$file_state_repository
 	);
 
 	$coordinator = new WPCV_Run_Coordinator( new WPCV_Run_Planner( $suppression_repository ), $run_repository, $target_run_repository, $dispatcher );
@@ -681,6 +684,7 @@ function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = 
 		'finding_repository'      => $finding_repository,
 		'chunk_result_repository' => $chunk_result_repository,
 		'suppression_repository'  => $suppression_repository,
+		'file_state_repository'   => $file_state_repository,
 		'wpdb'                    => $wpdb,
 	);
 }

@@ -242,4 +242,27 @@ class FindingRepositoryTest extends TestCase {
 		$page3 = $repository->query( array( 'run_id' => 1, 'per_page' => 2, 'page' => 3 ) );
 		$this->assertSame( array( 'file5.php' ), array_column( $page3['rows'], 'path' ) );
 	}
+
+	/**
+	 * `detail` を持つ finding(stat_changed)は `detail` 列に保存され、持たない finding は
+	 * NULL になることを確認する(v0.5 §Step6. Step1 で列を追加したが保存が漏れていた).
+	 *
+	 * @return void
+	 */
+	public function test_save_findings_persists_detail_column() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$repository->save_findings(
+			1,
+			array( 'core' => 7 ),
+			array(
+				wpcv_test_make_finding( array( 'detail' => '{"timestomp":true}' ) ),
+				wpcv_test_make_finding(),
+			)
+		);
+
+		$this->assertSame( '{"timestomp":true}', $wpdb->rows['wp_wpcv_findings'][1]['detail'] );
+		$this->assertNull( $wpdb->rows['wp_wpcv_findings'][2]['detail'] );
+	}
 }

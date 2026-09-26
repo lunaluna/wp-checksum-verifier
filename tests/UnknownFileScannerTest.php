@@ -471,4 +471,29 @@ class UnknownFileScannerTest extends TestCase {
 		$this->assertSame( (int) $link_stat['size'], $by_path['wp-admin/link-to-large-file.php']['size'] );
 		$this->assertNotSame( 5000, $by_path['wp-admin/link-to-large-file.php']['size'], 'symlink自体のstatはリンク先の5000バイトと一致してはならない' );
 	}
+
+	/**
+	 * `stat_file()` が指定した1ファイルだけを `collect_stat` と同じ形で返し、
+	 * 存在しないファイル・ディレクトリには空の items を返すことを確認する(v0.5 §Step6).
+	 *
+	 * @return void
+	 */
+	public function test_stat_file_returns_single_item_with_stat() {
+		$this->put_fixture_file( 'wp-content/plugins/solo.php', 'solo' );
+		$this->put_fixture_file( 'wp-content/plugins/readme.txt', 'readme' );
+
+		$scanner = new WPCV_Unknown_File_Scanner();
+		$result  = $scanner->stat_file( ABSPATH . 'wp-content/plugins/solo.php', 'high', 'medium' );
+
+		$this->assertFalse( $result['truncated'] );
+		$this->assertCount( 1, $result['items'] );
+		$this->assertSame( 'wp-content/plugins/solo.php', $result['items'][0]['path'] );
+		$this->assertSame( 'high', $result['items'][0]['severity'] );
+		$this->assertSame( 4, $result['items'][0]['size'] );
+		$this->assertGreaterThan( 0, $result['items'][0]['mtime'] );
+
+		$this->assertSame( 'medium', $scanner->stat_file( ABSPATH . 'wp-content/plugins/readme.txt', 'high', 'medium' )['items'][0]['severity'] );
+		$this->assertSame( array(), $scanner->stat_file( ABSPATH . 'wp-content/plugins/missing.php' )['items'] );
+		$this->assertSame( array(), $scanner->stat_file( ABSPATH . 'wp-content/plugins' )['items'] );
+	}
 }

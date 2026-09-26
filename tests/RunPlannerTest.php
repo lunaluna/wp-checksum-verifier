@@ -73,7 +73,8 @@ class RunPlannerTest extends TestCase {
 			)
 		);
 
-		$this->assertCount( 3, $target_runs );
+		// core + core:_scan + plugin:akismet + plugin:akismet:_stat(v0.5 §Step6)の4件.
+		$this->assertCount( 4, $target_runs );
 
 		$plugin_row = null;
 		foreach ( $target_runs as $row ) {
@@ -187,8 +188,8 @@ class RunPlannerTest extends TestCase {
 			)
 		);
 
-		// core + core:_scan + loader + muplugin:_scan の4件.
-		$this->assertCount( 4, $target_runs );
+		// core + core:_scan + loader + loader:_stat(v0.5 §Step6) + muplugin:_scan の5件.
+		$this->assertCount( 5, $target_runs );
 
 		$target_ids = array_column( $target_runs, 'target_id' );
 		$this->assertContains( 'muplugin:loader.php', $target_ids );
@@ -269,7 +270,8 @@ class RunPlannerTest extends TestCase {
 
 		$target_run_ids = $repository->save_target_runs( 1, $target_runs );
 
-		$this->assertCount( 3, $target_run_ids );
+		// core + core:_scan + plugin:akismet + plugin:akismet:_stat の4件.
+		$this->assertCount( 4, $target_run_ids );
 		foreach ( $wpdb->rows['wp_wpcv_target_runs'] as $row ) {
 			$this->assertSame( 'queued', $row['status'] );
 			$this->assertSame( 'missing', $row['manifest_status'] );
@@ -326,5 +328,72 @@ class RunPlannerTest extends TestCase {
 
 		$this->assertNotNull( $core_row );
 		$this->assertSame( 'queued', $core_row['status'] );
+	}
+
+	/**
+	 * Plugin target の直後に、同じ dimension/slug/version を持つ stat target が
+	 * `source = stat` の queued で列挙されることを確認する(v0.5 §Step6).
+	 *
+	 * @return void
+	 */
+	public function test_plan_lists_stat_target_right_after_plugin_target() {
+		$planner     = new WPCV_Run_Planner( new WPCV_Suppression_Repository( new WPCV_Test_Fake_WPDB() ) );
+		$target_runs = $planner->plan(
+			array(
+				'version'    => '6.8',
+				'plugins'    => array( 'custom-plugin/custom-plugin.php' => array( 'Version' => '1.2.0' ) ),
+				'plugin_dir' => '/var/www/wp-content/plugins',
+			)
+		);
+
+		$target_ids = array_column( $target_runs, 'target_id' );
+		$body_index = array_search( 'plugin:custom-plugin', $target_ids, true );
+
+		$this->assertSame( 'plugin:custom-plugin:_stat', $target_ids[ $body_index + 1 ] );
+
+		$stat = $target_runs[ $body_index + 1 ];
+		$this->assertSame( 'plugin', $stat['dimension'] );
+		$this->assertSame( 'custom-plugin', $stat['slug'] );
+		$this->assertSame( '1.2.0', $stat['version'] );
+		$this->assertSame( 'stat', $stat['source'] );
+		$this->assertSame( 'queued', $stat['status'] );
+	}
+
+	/**
+	 * 本体に `exclude_target` ルールが効いている場合、同じ dimension/slug を持つ
+	 * stat target も skipped/excluded になることを確認する(v0.5 §Step6).
+	 *
+	 * @return void
+	 */
+	public function test_plan_marks_stat_target_excluded_together_with_body() {
+		$suppression_repository = new WPCV_Suppression_Repository( new WPCV_Test_Fake_WPDB() );
+		$suppression_repository->insert(
+			array(
+				'type'       => WPCV_Suppression_Type::EXCLUDE_TARGET,
+				'dimension'  => 'plugin',
+				'slug'       => 'custom-plugin',
+				'reason'     => 'test',
+				'created_by' => 1,
+			)
+		);
+
+		$planner     = new WPCV_Run_Planner( $suppression_repository );
+		$target_runs = $planner->plan(
+			array(
+				'version'    => '6.8',
+				'plugins'    => array( 'custom-plugin/custom-plugin.php' => array( 'Version' => '1.2.0' ) ),
+				'plugin_dir' => '/var/www/wp-content/plugins',
+			)
+		);
+
+		foreach ( $target_runs as $row ) {
+			if ( 'plugin:custom-plugin:_stat' === $row['target_id'] ) {
+				$this->assertSame( 'skipped', $row['status'] );
+				$this->assertSame( WPCV_Error_Code::EXCLUDED, $row['error_code'] );
+				return;
+			}
+		}
+
+		$this->fail( 'stat target was not planned' );
 	}
 }

@@ -179,7 +179,7 @@ class WPCV_Plugin {
 		if ( null === self::$chunk_result_repository ) {
 			global $wpdb;
 
-			self::$chunk_result_repository = new WPCV_Chunk_Result_Repository( $wpdb, self::target_run_repository(), self::finding_repository(), self::suppression_repository() );
+			self::$chunk_result_repository = new WPCV_Chunk_Result_Repository( $wpdb, self::target_run_repository(), self::finding_repository(), self::suppression_repository(), self::file_state_repository() );
 		}
 
 		return self::$chunk_result_repository;
@@ -307,7 +307,9 @@ class WPCV_Plugin {
 			new WPCV_Source_Wporg_Plugin(),
 			new WPCV_Unknown_File_Scanner(),
 			null,
-			$continuation_scheduler
+			$continuation_scheduler,
+			null,
+			self::file_state_repository()
 		);
 	}
 

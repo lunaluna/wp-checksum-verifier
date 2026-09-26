@@ -332,4 +332,28 @@ class VerifierTest extends TestCase {
 
 		$this->assertSame( 'low', $result['finding']['severity'] );
 	}
+
+	/**
+	 * `summarize()` が skipped/checksum_covered の target_run(本体が照合済みの stat
+	 * target)を件数にも status 判定にも含めないことを確認する(v0.5 §Step6).
+	 *
+	 * @return void
+	 */
+	public function test_summarize_ignores_checksum_covered_stat_targets() {
+		$summary = WPCV_Verifier::summarize(
+			array(
+				wpcv_test_make_target_run( array( 'status' => 'success' ) ),
+				wpcv_test_make_target_run(
+					array(
+						'target_id'  => 'plugin:akismet:_stat',
+						'status'     => 'skipped',
+						'error_code' => WPCV_Error_Code::CHECKSUM_COVERED,
+					)
+				),
+			)
+		);
+
+		$this->assertSame( 'success', $summary['status'] );
+		$this->assertSame( 1, $summary['targets_total'] );
+	}
 }

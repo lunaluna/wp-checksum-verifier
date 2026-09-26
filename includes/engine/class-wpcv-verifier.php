@@ -45,6 +45,12 @@ class WPCV_Verifier {
 	 * | 1件以上の success と、1件以上の unverifiable/failed 等 | partial    |
 	 * | success が0件(全滅、または target_runs 自体が空)       | success(空の場合)/ partial(1件以上あるが全滅の場合) |
 	 *
+	 * v0.5 §Step6: `skipped` かつ `error_code = checksum_covered` の target_run
+	 * (本体がチェックサム照合できたので省略した stat target)は、件数にも status 判定にも
+	 * 含めない。本体の結果の複製でしかなく、数えると公式プラグインだけのサイトでも
+	 * run が常に partial になってしまうため. それ以外の skipped(exclude_target 等)の
+	 * 扱いは従来どおり.
+	 *
 	 * @param array $target_runs target_run の配列(§5.3準拠。`status`/`findings_total`を持つもの).
 	 * @return array {
 	 *     @type string $status                success|partial.
@@ -56,6 +62,15 @@ class WPCV_Verifier {
 	 * }
 	 */
 	public static function summarize( array $target_runs ) {
+		$target_runs = array_values(
+			array_filter(
+				$target_runs,
+				static function ( $target_run ) {
+					return ! ( 'skipped' === $target_run['status'] && isset( $target_run['error_code'] ) && WPCV_Error_Code::CHECKSUM_COVERED === $target_run['error_code'] );
+				}
+			)
+		);
+
 		$targets_total        = count( $target_runs );
 		$targets_verified     = 0;
 		$targets_unverifiable = 0;

@@ -180,6 +180,48 @@ class WPCV_Unknown_File_Scanner {
 	}
 
 	/**
+	 * 1ファイルだけを stat し、`scan( ..., array( 'collect_stat' => true ) )` と
+	 * 同じ形の結果を返す(v0.5 §Step6).
+	 *
+	 * 単一ファイルのプラグイン(`WP_PLUGIN_DIR` 直下の `{file}.php`)や
+	 * mu-plugin の loader(`WPMU_PLUGIN_DIR` 直下のファイル)は、stat 差分検知の
+	 * 対象が「そのファイル1つ」だけになる。親ディレクトリを `scan()` すると
+	 * 他のプラグインのファイルまで拾ってしまうため、専用の経路を用意した.
+	 *
+	 * ファイルが無い(削除された)場合は items を空で返す。ベースラインの
+	 * `last_seen_run_id` が更新されないため、削除検出(v0.5 §Step7)で `missing` になる.
+	 *
+	 * @param string $absolute_path    対象ファイルの絶対パス.
+	 * @param string $php_severity     §5.5 の high 相当拡張子に付与する severity.
+	 * @param string $non_php_severity それ以外の拡張子に付与する severity.
+	 * @return array{items: array, truncated: bool} `truncated` は常に false.
+	 */
+	public function stat_file( $absolute_path, $php_severity = 'high', $non_php_severity = 'high' ) {
+		$absolute_path = WPCV_Path_Normalizer::to_forward_slashes( (string) $absolute_path );
+
+		// symlink もリンク自体を対象にする(lstat_summary() の docblock 参照)ため、
+		// is_file() ではなく file_exists()/is_link() で判定する.
+		if ( '' === $absolute_path || is_dir( $absolute_path ) || ( ! file_exists( $absolute_path ) && ! is_link( $absolute_path ) ) ) {
+			return array(
+				'items'     => array(),
+				'truncated' => false,
+			);
+		}
+
+		$relative_path = WPCV_Path_Normalizer::to_relative( $absolute_path );
+
+		return array(
+			'items'     => array(
+				array(
+					'path'     => $relative_path,
+					'severity' => self::is_php_like_path( $relative_path ) ? $php_severity : $non_php_severity,
+				) + self::lstat_summary( $absolute_path ),
+			),
+			'truncated' => false,
+		);
+	}
+
+	/**
 	 * 走査開始ディレクトリの ABSPATH 相対パスを求める.
 	 *
 	 * `WPCV_Path_Normalizer::to_relative()` は「$base と完全に一致する(=相対パスが

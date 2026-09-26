@@ -519,6 +519,60 @@ class WPCV_Target_Run_Repository {
 	}
 
 	/**
+	 * 依存先の target_run(stat 差分検知 target にとっての本体 target)がまだ
+	 * 終わっていないため、処理せずに retry へ戻し、指定秒数だけ claim されない
+	 * ようにする(v0.5 §Step6. rev.3 §3.4).
+	 *
+	 * `mark_scan_incomplete()` を使わない理由は2つ。1つは `error_code` に
+	 * `timeout` が入り「時間予算切れ」と誤解させること。もう1つは `retry_after` を
+	 * 空にするため直後の `claim_next()` ですぐ再 claim され、本体が別 worker で
+	 * 処理中の間 continuation が空回りし続けること.
+	 *
+	 * `attempt_count` は加算しない(正常な待機であり異常系ではないため).
+	 * fencing は `mark_scan_incomplete()` と同じ(`status = running AND lease_owner`).
+	 *
+	 * @param int    $target_run_id       対象の target_run の id.
+	 * @param string $lease_owner         `claim_next()` がこの処理エピソードに割り当てた lease owner.
+	 * @param int    $retry_after_seconds 何秒後から再 claim を許すか.
+	 * @return bool 更新できたら true(false は fencing 失敗).
+	 *
+	 * @throws RuntimeException `$wpdb->update()` がSQLエラーで `false` を返した場合.
+	 */
+	public function defer_for_dependency( $target_run_id, $lease_owner, $retry_after_seconds ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
+
+		$updated = $this->wpdb->update(
+			$table,
+			array(
+				'status'           => WPCV_Target_Status::RETRY,
+				'lease_owner'      => null,
+				'lease_expires_at' => null,
+				'retry_after'      => gmdate( 'Y-m-d H:i:s', strtotime( (string) call_user_func( $this->now ) ) + (int) $retry_after_seconds ),
+			),
+			array(
+				'id'          => (int) $target_run_id,
+				'status'      => WPCV_Target_Status::RUNNING,
+				'lease_owner' => (string) $lease_owner,
+			),
+			array( '%s', '%s', '%s', '%s' ),
+			array( '%d', '%s', '%s' )
+		);
+
+		if ( false === $updated ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf(
+						'WPCV_Target_Run_Repository::defer_for_dependency() の update に失敗しました: %s',
+						(string) $this->wpdb->last_error
+					)
+				)
+			);
+		}
+
+		return $updated > 0;
+	}
+
+	/**
 	 * 指定 run に属する、claim可能(`WPCV_Target_Status::SCHEDULABLE`。かつ
 	 * `retry_after` が未来でない)な target_run を1件、原子的に claim する
 	 * (v0.4.0 §Step4: `WPCV_Chunk_Dispatcher` から呼ぶ).

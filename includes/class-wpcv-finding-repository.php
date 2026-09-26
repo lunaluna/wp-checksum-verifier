@@ -131,8 +131,11 @@ class WPCV_Finding_Repository {
 					'file_size'      => $finding['file_size'],
 					'suppressed_by'  => isset( $finding['suppressed_by'] ) ? $finding['suppressed_by'] : null,
 					'suppression_id' => isset( $finding['suppression_id'] ) ? $finding['suppression_id'] : null,
+					// v0.5 §Step6: stat_changed の前回値→今回値(JSON). Step1 で列を
+					// 追加したが保存処理が追従していなかった. 他の status では null.
+					'detail'         => isset( $finding['detail'] ) ? $finding['detail'] : null,
 				),
-				array( '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%d' )
+				array( '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%d', '%s' )
 			);
 
 			if ( false === $inserted ) {

@@ -50,6 +50,12 @@ if ( ! defined( 'ABSPATH' ) ) {
  * `WPCV_Error_Code::EXCLUDED`)として作る。plan時点でスキップを確定させ、
  * chunk verifierへは一切回さない設計(ユーザー確認済み)。これにより、除外した
  * targetのmanifest取得・ファイルI/Oが一切発生しない.
+ *
+ * v0.5 §Step6で、plugin target と muplugin の loader target それぞれの直後に
+ * stat 差分検知 target(`{dimension}:{slug}:_stat`)を無条件に列挙するようにした
+ * (`queued_stat_target_run()` 参照)。本体の直後に置くのは、claim が id 昇順で
+ * 行われるため、本体の処理が先に進み stat target が待たされにくくするため.
+ * `plan()` の戻り値件数はそのぶん増える.
  */
 class WPCV_Run_Planner {
 
@@ -152,16 +158,19 @@ class WPCV_Run_Planner {
 
 			$resolved       = self::resolve_plugin_slug_and_root( (string) $plugin_file, $plugin_dir );
 			$plugin_version = isset( $plugin_data['Version'] ) ? (string) $plugin_data['Version'] : '';
+			$body_target_id = WPCV_Target_Resolver::build_id( WPCV_Target_Resolver::DIMENSION_PLUGIN, $resolved['slug'] );
 
 			$target_runs[] = $this->maybe_apply_exclude_target(
 				self::queued_target_run(
-					WPCV_Target_Resolver::build_id( WPCV_Target_Resolver::DIMENSION_PLUGIN, $resolved['slug'] ),
+					$body_target_id,
 					WPCV_Target_Resolver::DIMENSION_PLUGIN,
 					$resolved['slug'],
 					'' === $plugin_version ? null : $plugin_version,
 					'wporg'
 				)
 			);
+
+			$target_runs[] = $this->maybe_apply_exclude_target( self::queued_stat_target_run( $body_target_id, WPCV_Target_Resolver::DIMENSION_PLUGIN, $resolved['slug'], $plugin_version ) );
 		}
 
 		if ( ! empty( $context['mu_plugin_dir'] ) ) {
@@ -172,15 +181,19 @@ class WPCV_Run_Planner {
 			// 現時点では検証の結果は必ず unverifiable になるが、その判定自体は
 			// Step3のchunk verifierが行う。ここではqueuedとして列挙するのみ).
 			foreach ( array_keys( $mu_plugins ) as $basename ) {
+				$body_target_id = WPCV_Target_Resolver::build_id( $dimension, (string) $basename );
+
 				$target_runs[] = $this->maybe_apply_exclude_target(
 					self::queued_target_run(
-						WPCV_Target_Resolver::build_id( $dimension, (string) $basename ),
+						$body_target_id,
 						$dimension,
 						(string) $basename,
 						null,
 						null
 					)
 				);
+
+				$target_runs[] = $this->maybe_apply_exclude_target( self::queued_stat_target_run( $body_target_id, $dimension, (string) $basename, '' ) );
 			}
 
 			// サブディレクトリ配下の未知ファイル走査用の合成target
@@ -249,6 +262,35 @@ class WPCV_Run_Planner {
 		return array(
 			'slug'            => pathinfo( $plugin_file, PATHINFO_FILENAME ),
 			'plugin_root_dir' => $plugin_dir,
+		);
+	}
+
+	/**
+	 * 本体 target に対応する stat 差分検知 target(`{dimension}:{slug}:_stat`)を
+	 * `WPCV_Target_Status::QUEUED` で組み立てる(v0.5 §Step6. rev.3 §3.4).
+	 *
+	 * 「チェックサム照合できなかった target だけ stat 走査する」判定は、manifest を
+	 * 取得するまで確定しない。このクラスは HTTP・ファイルシステムアクセスを行わない
+	 * (クラス docblock の不変条件)ため、ここでは判定せず無条件に列挙し、実際の
+	 * 振り分けは `WPCV_Chunk_Dispatcher` が本体 target_run の結果を見て行う.
+	 *
+	 * version には本体と同じ値を入れる。dispatcher が実行時の version と比べ、
+	 * 変わっていれば `needs_retry`(ベースライン再構築の起点. rev.3 §3.7-a)にする.
+	 * source は `stat`(チェックサムの取得元ではなく stat 比較であることを示す).
+	 *
+	 * @param string $body_target_id 本体 target の target_id.
+	 * @param string $dimension      dimension(本体と同じ).
+	 * @param string $slug           slug(本体と同じ. 抑制ルールを共有するため).
+	 * @param string $version        本体の version(不明なら空文字).
+	 * @return array
+	 */
+	private static function queued_stat_target_run( $body_target_id, $dimension, $slug, $version ) {
+		return self::queued_target_run(
+			WPCV_Target_Resolver::build_stat_id( $body_target_id ),
+			$dimension,
+			$slug,
+			'' === $version ? null : $version,
+			'stat'
 		);
 	}
 

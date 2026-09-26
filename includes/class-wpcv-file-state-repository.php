@@ -149,6 +149,8 @@ class WPCV_File_State_Repository {
 	 * @param array<int, array> $rows `UPSERT_COLUMNS`のキーを持つ連想配列の配列
 	 *                                (`state_key`は`compute_state_key()`で計算済みのものを渡す).
 	 * @return void
+	 *
+	 * @throws RuntimeException `$wpdb->query()` がSQLエラーで `false` を返した場合.
 	 */
 	public function upsert_many( array $rows ) {
 		if ( empty( $rows ) ) {
@@ -183,7 +185,21 @@ class WPCV_File_State_Repository {
 		$sql = "INSERT INTO {$table} ({$columns}) VALUES " . implode( ', ', $value_tuples ) . " ON DUPLICATE KEY UPDATE {$update}";
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- table/column names are fixed literals built above; row values are bound via prepare() here.
-		$this->wpdb->query( $this->wpdb->prepare( $sql, $args ) );
+		$result = $this->wpdb->query( $this->wpdb->prepare( $sql, $args ) );
+
+		// v0.5 §Step6: `commit_chunk()` のトランザクション内で呼ばれるようになったため、
+		// 他の Repository と同じく SQL エラーを例外にする(v0.4.0 CR-03 と同じ理由.
+		// 失敗を見逃すと findings だけ確定しベースラインが古いまま残る).
+		if ( false === $result ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf(
+						'WPCV_File_State_Repository::upsert_many() の query に失敗しました: %s',
+						(string) $this->wpdb->last_error
+					)
+				)
+			);
+		}
 	}
 
 	/**

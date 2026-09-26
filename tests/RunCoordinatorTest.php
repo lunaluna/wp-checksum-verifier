@@ -26,6 +26,7 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-match
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-chunk-result-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-file-state-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-planner.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-starter.php';
@@ -267,8 +268,9 @@ class RunCoordinatorTest extends TestCase {
 			)
 		);
 
-		// core + core:_scan + loader + muplugin:_scan の4件.
-		$this->assertSame( 4, $result['summary']['targets_total'] );
+		// core + core:_scan + loader + loader:_stat(v0.5 §Step6) + muplugin:_scan の5件.
+		// loader は照合元が無い(unknown_source)ため、stat target は走査され success になる.
+		$this->assertSame( 5, $result['summary']['targets_total'] );
 
 		$target_ids = array_column( $made['wpdb']->rows['wp_wpcv_target_runs'], 'target_id' );
 		$this->assertContains( 'muplugin:loader.php', $target_ids );
