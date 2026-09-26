@@ -134,8 +134,20 @@ class WPCV_Finding_Repository {
 					// v0.5 §Step6: stat_changed の前回値→今回値(JSON). Step1 で列を
 					// 追加したが保存処理が追従していなかった. 他の status では null.
 					'detail'         => isset( $finding['detail'] ) ? $finding['detail'] : null,
+					// v0.5後半 §Step10: 差分処理(Step12以降)が使う差分キー. 保存時に
+					// 確定させ、差分処理側では計算し直さず読むだけにする(計算式の
+					// 変更が起きても、過去に保存済みの finding_key は変わらないため).
+					'finding_key'    => WPCV_Finding_Key::compute(
+						$finding['target_id'],
+						$finding['version'],
+						$finding['path'],
+						$finding['status'],
+						$finding['hash_algorithm'],
+						$finding['expected_hash'],
+						$finding['actual_hash']
+					),
 				),
-				array( '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%d', '%s' )
+				array( '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%d', '%s', '%s' )
 			);
 
 			if ( false === $inserted ) {

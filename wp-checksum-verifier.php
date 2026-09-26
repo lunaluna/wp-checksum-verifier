@@ -30,8 +30,12 @@ if ( ! defined( 'ABSPATH' ) ) {
  *
  * stat 差分検知(rev.3 §3.3)用の `wpcv_file_states` テーブル新設と、
  * `wpcv_findings.detail` 列の追加のため、v0.5 §4.2 Step1で3へ更新した.
+ *
+ * 差分検出基盤・アラート(v0.5後半プラン §1)用に、runs/target_runs/findingsへ
+ * finding_key・diff_state・diff_status等の列とインデックスを追加したため、
+ * v0.5後半 §Step10で4へ更新した.
  */
-define( 'WPCV_DB_VERSION', 3 );
+define( 'WPCV_DB_VERSION', 4 );
 
 /**
  * Public API contract のバージョン. 後方互換を維持する契約(§10).
@@ -158,6 +162,12 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-chunk-ver
  * `WPCV_Chunk_Result_Repository` が呼び出し元のため先に読み込む.
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-suppression-matcher.php';
+
+/**
+ * `finding` の差分キー計算(v0.5後半 §Step10). `WPCV_Finding_Repository::save_findings()`
+ * が呼び出し元のため先に読み込む.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-finding-key.php';
 
 /**
  * DB 永続化層(§4.2. v0.4.0 §Step1でrun/target_run/findingの3責務に分割)と、

@@ -209,6 +209,64 @@ class MigratorTest extends TestCase {
 	}
 
 	/**
+	 * `wpcv_runs`/`wpcv_target_runs`/`wpcv_findings` に v0.5後半 §Step10(差分検出
+	 * 基盤・アラート. プラン§1)で追加した列・indexがすべて含まれることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_table_definitions_include_step10_diff_and_alert_columns() {
+		$GLOBALS['wpdb'] = new WPCV_Test_Fake_WPDB();
+
+		$method = new ReflectionMethod( WPCV_Migrator::class, 'table_definitions' );
+		$method->setAccessible( true );
+
+		list( $sql_runs, $sql_target_runs, $sql_findings ) = $method->invoke( null );
+
+		foreach ( array(
+			'diff_status',
+			'diff_owner',
+			'diff_lease_expires_at',
+			'diff_attempt_count',
+			'diff_cursor',
+			'findings_new',
+			'findings_resolved',
+			'findings_continuing',
+			'alert_status',
+			'alert_attempted_at',
+			'alert_error',
+			'alert_channel_failures',
+		) as $column ) {
+			$this->assertStringContainsString( $column, $sql_runs, "wpcv_runs is missing column: {$column}" );
+		}
+
+		foreach ( array( 'baseline_target_run_id', 'diff_mode', 'idx_target_status_run' ) as $needle ) {
+			$this->assertStringContainsString( $needle, $sql_target_runs, "wpcv_target_runs is missing column/index: {$needle}" );
+		}
+
+		foreach ( array(
+			'finding_key',
+			'diff_state',
+			'notified_at',
+			'ended_in_run_id',
+			'end_reason',
+			'idx_target_run_key',
+			'idx_run_diff',
+			'idx_key_notified',
+			'idx_ended_run',
+		) as $needle ) {
+			$this->assertStringContainsString( $needle, $sql_findings, "wpcv_findings is missing column/index: {$needle}" );
+		}
+
+		// finding_keyは char(64)(sha256のhex文字列. §1.5参照)で、v4より前の行を
+		// NULLのまま読める必要があるため NULL 許容でなければならない.
+		$this->assertMatchesRegularExpression( '/finding_key\s+char\(64\)\s+NULL/', $sql_findings );
+
+		// idx_target_run_key は複合index(target_run_id, finding_key). §1.5の
+		// 「基準・今回の各行に、同じキーが相手側にあるかを調べる」クエリ用.
+		$this->assertStringContainsString( 'KEY idx_target_run_key (target_run_id, finding_key)', $sql_findings );
+	}
+
+	/**
 	 * §Step1 で追加した列がすべて NULL 許容(または default 付き)である
 	 * ことを確認する。v0.3.1 以前に作成された既存行は新しい列の値を持たないため、
 	 * NOT NULL かつ default 無しの列を追加すると、既存行の読み取り互換

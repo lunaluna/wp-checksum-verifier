@@ -9,6 +9,7 @@ require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-finding-key.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
 require_once dirname( __DIR__ ) . '/includes/rest/class-wpcv-rest-token.php';

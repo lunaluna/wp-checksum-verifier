@@ -284,6 +284,14 @@ class WPCV_Migrator {
 		// バッククォート無しでは CREATE TABLE が構文エラーになる(実際に CI の
 		// Plugin Check が実環境の dbDelta 実行で検出した)。DB スキーマは
 		// Public API contract に含まれない(§5.1)ため run_trigger に変更した.
+		// diff_status以下は v0.5後半 §Step10(差分検出基盤・アラート)で追加. §3.1の
+		// 状態遷移(NULL→pending→processing→alerting→done. 失敗時skipped/failed)を
+		// 持つ. diff_owner/diff_lease_expires_at/diff_attempt_countは
+		// target_runsのlease方式(lease_owner/lease_expires_at/attempt_count)を
+		// 差分処理向けに流用したもの. diff_cursorは2 pass分の位置(JSON文字列)を
+		// 保持する. findings_new/resolved/continuingとalert_*はStep12〜15で
+		// 書き込みロジックを追加するまでは常にNULLのまま(Step10時点では列を
+		// 用意するのみ).
 		$sql_runs = "CREATE TABLE {$runs_table} (
 	id bigint unsigned NOT NULL auto_increment,
 	started_at datetime NULL,
@@ -299,6 +307,18 @@ class WPCV_Migrator {
 	targets_unverifiable int unsigned NOT NULL default 0,
 	targets_failed int unsigned NOT NULL default 0,
 	findings_total int unsigned NOT NULL default 0,
+	diff_status varchar(16) NULL,
+	diff_owner varchar(64) NULL,
+	diff_lease_expires_at datetime NULL,
+	diff_attempt_count int unsigned NOT NULL default 0,
+	diff_cursor text NULL,
+	findings_new int unsigned NULL,
+	findings_resolved int unsigned NULL,
+	findings_continuing int unsigned NULL,
+	alert_status varchar(16) NULL,
+	alert_attempted_at datetime NULL,
+	alert_error varchar(500) NULL,
+	alert_channel_failures varchar(500) NULL,
 	notes text NULL,
 	PRIMARY KEY (id)
 ) {$charset_collate};";
@@ -310,6 +330,11 @@ class WPCV_Migrator {
 		// resume・lease制御に使う。列名の意味は §Step3・Step4 参照。Step1時点では
 		// 列を用意するのみ)。idx_run_status は claim クエリ
 		// (`status IN ('queued','retry') AND run_id = ?`)用に追加.
+		// baseline_target_run_id/diff_modeは v0.5後半 §Step10で追加(§2.1の
+		// diff_modeの値〔compared/version_changed/first/not_verified/excluded/
+		// event/skipped〕と、比較に使った基準target_runへの参照. 書き込みは
+		// 差分処理〔Step12〕が行う. idx_target_status_runは基準target_runの検索
+		// (target_id・status='success'・run_id<今回)に使う.
 		$sql_target_runs = "CREATE TABLE {$target_runs_table} (
 	id bigint unsigned NOT NULL auto_increment,
 	run_id bigint unsigned NOT NULL,
@@ -335,10 +360,13 @@ class WPCV_Migrator {
 	lease_owner varchar(191) NULL,
 	lease_expires_at datetime NULL,
 	retry_after datetime NULL,
+	baseline_target_run_id bigint unsigned NULL,
+	diff_mode varchar(16) NULL,
 	PRIMARY KEY (id),
 	KEY idx_run_id (run_id),
 	KEY idx_target_id (target_id),
-	KEY idx_run_status (run_id, status)
+	KEY idx_run_status (run_id, status),
+	KEY idx_target_status_run (target_id, status, run_id)
 ) {$charset_collate};";
 
 		// §5.5: path 単位の検出結果. version を差分キーに含めることで、バージョン
@@ -351,6 +379,13 @@ class WPCV_Migrator {
 		// expected_hash/actual_hash が空になるため、「何が変わったのか」を
 		// JSON文字列(size/ctime/mtime の old/new と timestomp フラグ)で保持する.
 		// 他の status では NULL のまま(用途は stat_changed に限定. §3.5参照).
+		// finding_key以下は v0.5後半 §Step10で追加(§1.1・§1.4参照). finding_keyは
+		// `WPCV_Finding_Key::compute()` で保存時に計算する差分キー(v4より前の行は
+		// NULLのまま. 移行処理での一括計算は行わない). diff_state/notified_at/
+		// ended_in_run_id/end_reasonの書き込みは差分処理(Step12)が行う.
+		// ended_in_run_id/end_reasonを書いても既存の`query()`の絞り込み
+		// (closed_at基準)には影響しない(過去のrunを開いたときにfindingが
+		// 消えないようにするための設計. D3参照).
 		$sql_findings = "CREATE TABLE {$findings_table} (
 	id bigint unsigned NOT NULL auto_increment,
 	run_id bigint unsigned NOT NULL,
@@ -372,13 +407,22 @@ class WPCV_Migrator {
 	closed_at datetime NULL,
 	closed_reason varchar(24) NULL,
 	detail text NULL,
+	finding_key char(64) NULL,
+	diff_state varchar(12) NULL,
+	notified_at datetime NULL,
+	ended_in_run_id bigint unsigned NULL,
+	end_reason varchar(24) NULL,
 	PRIMARY KEY (id),
 	KEY idx_run_id (run_id),
 	KEY idx_target_version (target_id, version),
 	KEY idx_status (status),
 	KEY idx_closed_at (closed_at),
 	KEY idx_path (path(191)),
-	KEY idx_suppression_id (suppression_id)
+	KEY idx_suppression_id (suppression_id),
+	KEY idx_target_run_key (target_run_id, finding_key),
+	KEY idx_run_diff (run_id, diff_state),
+	KEY idx_key_notified (finding_key, notified_at),
+	KEY idx_ended_run (ended_in_run_id)
 ) {$charset_collate};";
 
 		// §7: 抑制 3 層(対象除外・パス除外・ハッシュ承認)を 1 テーブルに保持する.

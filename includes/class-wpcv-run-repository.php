@@ -468,6 +468,11 @@ class WPCV_Run_Repository {
 	 * 後から戻ってきた旧ワーカーが success/partial を書き戻せてしまう事故
 	 * 〔プラン§P1「stale化後に旧ワーカーが成功で上書きできる」〕を防ぐ).
 	 *
+	 * `diff_status` に `pending` を同じ UPDATE で書き込む(v0.5後半プラン §3.1:
+	 * success/partial になった run は差分処理の対象になるため. 差分処理
+	 * (Step12以降)が claim できるようにする起点であり、ここで書き漏らすと
+	 * どの run も差分処理へ進めなくなる).
+	 *
 	 * @param int   $run_id  `reserve_run()` が返した run の id.
 	 * @param array $summary `WPCV_Verifier::summarize()` の戻り値.
 	 * @return bool 更新できたら true。false は対象行が既に `running` ではない
@@ -486,12 +491,13 @@ class WPCV_Run_Repository {
 				'targets_unverifiable' => $summary['targets_unverifiable'],
 				'targets_failed'       => $summary['targets_failed'],
 				'findings_total'       => $summary['findings_total'],
+				'diff_status'          => 'pending',
 			),
 			array(
 				'id'     => (int) $run_id,
 				'status' => WPCV_Run_Status::RUNNING,
 			),
-			array( '%s', '%s', '%d', '%d', '%d', '%d', '%d' ),
+			array( '%s', '%s', '%d', '%d', '%d', '%d', '%d', '%s' ),
 			array( '%d', '%s' )
 		);
 

@@ -6,6 +6,7 @@
  */
 
 require_once __DIR__ . '/wp-stubs.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-finding-key.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
 require_once __DIR__ . '/doubles.php';
 
@@ -264,5 +265,35 @@ class FindingRepositoryTest extends TestCase {
 
 		$this->assertSame( '{"timestomp":true}', $wpdb->rows['wp_wpcv_findings'][1]['detail'] );
 		$this->assertNull( $wpdb->rows['wp_wpcv_findings'][2]['detail'] );
+	}
+
+	/**
+	 * `save_findings()` が `WPCV_Finding_Key::compute()` と同じ値を `finding_key` 列に
+	 * 保存することを確認する(v0.5後半 §Step10. 差分処理〔Step12以降〕はこの列を
+	 * 読むだけで計算し直さない設計のため、保存時の値が計算式と一致している
+	 * ことが前提になる).
+	 *
+	 * @return void
+	 */
+	public function test_save_findings_persists_finding_key() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$finding = wpcv_test_make_finding( array( 'target_id' => 'core' ) );
+
+		$repository->save_findings( 1, array( 'core' => 7 ), array( $finding ) );
+
+		$expected = WPCV_Finding_Key::compute(
+			$finding['target_id'],
+			$finding['version'],
+			$finding['path'],
+			$finding['status'],
+			$finding['hash_algorithm'],
+			$finding['expected_hash'],
+			$finding['actual_hash']
+		);
+
+		$this->assertSame( $expected, $wpdb->rows['wp_wpcv_findings'][1]['finding_key'] );
+		$this->assertSame( 64, strlen( $wpdb->rows['wp_wpcv_findings'][1]['finding_key'] ) );
 	}
 }

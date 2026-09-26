@@ -20,6 +20,7 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-verifier.ph
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-finding-key.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-matcher.php';

@@ -430,6 +430,9 @@ class RunRepositoryTest extends TestCase {
 		$this->assertSame( 5, $row['findings_total'] );
 		// reserve_run() 時点の run_trigger が上書きされず残っていることも確認する.
 		$this->assertSame( 'manual', $row['run_trigger'] );
+		// v0.5後半 §Step10: success/partial を書く同じUPDATEでdiff_statusに
+		// pendingを書く(差分処理〔Step12以降〕がclaimできる起点にするため).
+		$this->assertSame( 'pending', $row['diff_status'] );
 	}
 
 	/**
