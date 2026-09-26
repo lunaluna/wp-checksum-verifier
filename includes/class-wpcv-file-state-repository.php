@@ -248,6 +248,8 @@ class WPCV_File_State_Repository {
 	 *
 	 * @param string $target_id 対象の target_id.
 	 * @return int 削除した行数.
+	 *
+	 * @throws RuntimeException `$wpdb->delete()` がSQLエラーで `false` を返した場合.
 	 */
 	public function delete_by_target( $target_id ) {
 		$table = $this->wpdb->base_prefix . 'wpcv_file_states';
@@ -258,7 +260,100 @@ class WPCV_File_State_Repository {
 			array( '%s' )
 		);
 
-		return false === $deleted ? 0 : (int) $deleted;
+		// v0.5 §Step7: commit_chunk() のトランザクション内で呼ぶため、SQL エラーは
+		// 例外にして ROLLBACK させる(黙って0件扱いにすると古いベースラインが残る).
+		if ( false === $deleted ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf(
+						'WPCV_File_State_Repository::delete_by_target() の delete に失敗しました: %s',
+						(string) $this->wpdb->last_error
+					)
+				)
+			);
+		}
+
+		return (int) $deleted;
+	}
+
+	/**
+	 * 指定した id の行を削除する(v0.5 §Step7. 削除検出で `missing` にした行を消す).
+	 *
+	 * `delete_stale()` と違い、削除対象を呼び出し元が決める。dispatcher は
+	 * このchunkで upsert する前に stale 行を読むため、このchunkで今まさに見つかった
+	 * path を除いた id だけを渡す必要がある(upsert 後に `find_stale()` し直すと
+	 * トランザクションの外で読んだ内容とずれるため).
+	 *
+	 * @param int[] $ids 削除する行の id.
+	 * @return void
+	 *
+	 * @throws RuntimeException `$wpdb->delete()` がSQLエラーで `false` を返した場合.
+	 */
+	public function delete_by_ids( array $ids ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_file_states';
+
+		foreach ( $ids as $id ) {
+			$deleted = $this->wpdb->delete(
+				$table,
+				array( 'id' => (int) $id ),
+				array( '%d' )
+			);
+
+			if ( false === $deleted ) {
+				throw new RuntimeException(
+					esc_html(
+						sprintf(
+							'WPCV_File_State_Repository::delete_by_ids() の delete に失敗しました: %s',
+							(string) $this->wpdb->last_error
+						)
+					)
+				);
+			}
+		}
+	}
+
+	/**
+	 * 指定した target に、`baseline_version` が `$version` と異なる行が1件でも
+	 * あるかを判定する(v0.5 §Step7. rev.3 §3.7-a の version 変化によるベースライン破棄).
+	 *
+	 * Target_run の version だけを比べる方式では、run と run の間にプラグインが
+	 * 更新された場合(通常の自動更新)を検知できない。新しい run の target_run は
+	 * plan 時点で最初から新しい version を持つためである。そこでベースライン側に
+	 * 保存した version と比べる.
+	 *
+	 * `$version` が空文字(Version ヘッダが無い・mu-plugin)の場合は、保存時に NULL
+	 * として書いている(`WPCV_Chunk_Verifier::verify_stat_chunk()`)ので NULL と比べる.
+	 *
+	 * @param string $target_id 対象の target_id.
+	 * @param string $version   本体の現在の version(不明なら空文字).
+	 * @return bool
+	 */
+	public function has_rows_with_other_baseline_version( $target_id, $version ) {
+		$table   = $this->wpdb->base_prefix . 'wpcv_file_states';
+		$version = (string) $version;
+
+		if ( '' === $version ) {
+			$sql  = "SELECT * FROM {$table} WHERE target_id = %s AND baseline_version IS NOT NULL LIMIT 1";
+			$args = array( (string) $target_id );
+		} else {
+			$sql  = "SELECT * FROM {$table} WHERE target_id = %s AND ( baseline_version IS NULL OR baseline_version <> %s ) LIMIT 1";
+			$args = array( (string) $target_id, $version );
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; values are bound via prepare() here.
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, $args ), ARRAY_A );
+		$rows = is_array( $rows ) ? $rows : array();
+
+		// クラスdocblock参照: テストダブルはWHERE句を解釈しないため PHP 側でも同じ条件で絞る.
+		$expected = '' === $version ? null : $version;
+
+		foreach ( $rows as $row ) {
+			if ( (string) $row['target_id'] === (string) $target_id && $row['baseline_version'] !== $expected ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**
@@ -274,20 +369,25 @@ class WPCV_File_State_Repository {
 	 * @return bool
 	 */
 	public function has_baseline_before_run( $target_id, $current_run_id ) {
-		return ! empty( $this->stale_rows( $target_id, $current_run_id ) );
+		return ! empty( $this->stale_rows( $target_id, $current_run_id, 1 ) );
 	}
 
 	/**
 	 * 指定した target で `last_seen_run_id < $current_run_id` の行を取得する
 	 * (`find_stale()`/`has_baseline_before_run()` の共通ロジック).
 	 *
+	 * `$limit` は v0.5 §Step7 で追加した。`has_baseline_before_run()` は存在確認だけで
+	 * よいのに全件を読んでおり、2回目以降の run では chunk ごとに数千行を読み込んでいた
+	 * (test-armfu.local の run #67 で 5,033 行の target を確認)ため、1件で打ち切る.
+	 *
 	 * @param string $target_id      対象の target_id.
 	 * @param int    $current_run_id 比較基準の run id.
+	 * @param int    $limit          取得件数の上限(0 なら無制限).
 	 * @return array<int, array>
 	 */
-	private function stale_rows( $target_id, $current_run_id ) {
+	private function stale_rows( $target_id, $current_run_id, $limit = 0 ) {
 		$table = $this->wpdb->base_prefix . 'wpcv_file_states';
-		$sql   = "SELECT * FROM {$table} WHERE target_id = %s AND last_seen_run_id < %d";
+		$sql   = "SELECT * FROM {$table} WHERE target_id = %s AND last_seen_run_id < %d" . ( $limit > 0 ? ' LIMIT ' . (int) $limit : '' );
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; values are bound via prepare() here.
 		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (string) $target_id, (int) $current_run_id ), ARRAY_A );

@@ -364,6 +364,96 @@ class WPCV_Verifier {
 	}
 
 	/**
+	 * Stat差分検知で、前回のベースラインにあったのに今回見つからなかったファイルを
+	 * `missing` finding にする(v0.5 §Step7. rev.3 §3.3「削除検出は last_seen_run_id 方式」).
+	 *
+	 * Severity はチェックサム照合の `missing`(`compare_one_file()`)と同じ medium にする.
+	 * 層1は内容を読まないため hash は持たない。消えたファイルなので file_size も null.
+	 *
+	 * @param string $target_id     target_id(`{dimension}:{slug}:_stat` 形式).
+	 * @param string $dimension     dimension.
+	 * @param string $slug          slug.
+	 * @param string $version       version.
+	 * @param string $source        source.
+	 * @param string $relative_path ABSPATH 相対パス.
+	 * @return array finding.
+	 */
+	public static function make_finding_for_stat_missing( $target_id, $dimension, $slug, $version, $source, $relative_path ) {
+		return self::make_finding( $target_id, $dimension, $slug, $version, $source, $relative_path, 'missing', 'medium', '', null, null, null );
+	}
+
+	/**
+	 * Stat差分検知の変更 finding をまとめて1件の集約 finding にする
+	 * (v0.5 §Step7. rev.3 §3.7-c 大量変更のロールアップ).
+	 *
+	 * Version を上げない更新(mu-plugin・単一ファイルプラグイン・一部のベンダー)では
+	 * version 変化によるベースライン作り直しが効かず、更新のたびに数百件の
+	 * `stat_changed` が出てしまう。そうした場合に1件へまとめる.
+	 *
+	 * 集約 finding の `path` は target のルート(ディレクトリ、または単一ファイル)、
+	 * severity は元の finding のうち最も高いもの。`detail` に件数と代表パスを入れる.
+	 *
+	 * @param string $target_id        target_id.
+	 * @param string $dimension        dimension.
+	 * @param string $slug             slug.
+	 * @param string $version          version.
+	 * @param string $source           source.
+	 * @param string $target_root_path target のルートの ABSPATH 相対パス.
+	 * @param array  $findings         まとめる finding(1件以上).
+	 * @param int    $files_scanned    このまとまりで走査したファイル数.
+	 * @return array finding(status は `stat_changed`).
+	 */
+	public static function make_rollup_finding_for_stat_changes( $target_id, $dimension, $slug, $version, $source, $target_root_path, array $findings, $files_scanned ) {
+		$rank     = array(
+			'low'    => 0,
+			'medium' => 1,
+			'high'   => 2,
+		);
+		$severity = 'low';
+		$paths    = array();
+		$added    = 0;
+
+		foreach ( $findings as $finding ) {
+			if ( $rank[ $finding['severity'] ] > $rank[ $severity ] ) {
+				$severity = $finding['severity'];
+			}
+
+			if ( 'added' === $finding['status'] ) {
+				++$added;
+			}
+
+			$paths[] = $finding['path'];
+		}
+
+		sort( $paths, SORT_STRING );
+
+		$rollup = self::make_finding( $target_id, $dimension, $slug, $version, $source, $target_root_path, 'stat_changed', $severity, '', null, null, null );
+
+		$rollup['detail'] = wp_json_encode(
+			array(
+				'rollup'        => true,
+				'count'         => count( $findings ),
+				'added'         => $added,
+				'files_scanned' => (int) $files_scanned,
+				// 代表パスの件数は表示用の目安(性能に関わる値ではない)。
+				// detail 列(TEXT)に収まり、一覧で読める程度に絞っている.
+				'sample_paths'  => array_slice( $paths, 0, self::ROLLUP_SAMPLE_PATHS ),
+			),
+			// DB を直接見たときにパスが読めるよう、`/` と日本語をエスケープしない.
+			JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+		);
+
+		return $rollup;
+	}
+
+	/**
+	 * 集約 finding の `detail.sample_paths` に入れる代表パスの最大件数(表示用).
+	 *
+	 * @var int
+	 */
+	const ROLLUP_SAMPLE_PATHS = 10;
+
+	/**
 	 * 検出結果(finding)の1行を組み立てる(§5.5 のスキーマに準拠。id/run_id/target_run_id 無し).
 	 *
 	 * @param string      $target_id      target_id.

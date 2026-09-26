@@ -104,6 +104,26 @@ class WPCV_Chunk_Dispatcher {
 	const DEFAULT_BUDGET_MAX_FILES = 500;
 
 	/**
+	 * Stat 差分検知で、変更 finding を1件にまとめる最小件数(rev.3 §3.7-c).
+	 *
+	 * 未実測: 暫定値(2026-09-26 ユーザー合意)。実際にプラグインを更新して変わる
+	 * ファイルの割合を実地検証で測ってから確定する(プラン rev.3 §9.3 #8).
+	 * 設定画面から変えられるようにするのは v0.5 §Step8.
+	 *
+	 * @var int
+	 */
+	const DEFAULT_STAT_ROLLUP_MIN_COUNT = 20;
+
+	/**
+	 * Stat 差分検知で、変更 finding を1件にまとめる割合(比較したファイル数に対する割合).
+	 *
+	 * 未実測: 暫定値(`DEFAULT_STAT_ROLLUP_MIN_COUNT` と同じ扱い).
+	 *
+	 * @var float
+	 */
+	const DEFAULT_STAT_ROLLUP_RATIO = 0.5;
+
+	/**
 	 * `wpcv_runs` の永続化層.
 	 *
 	 * @var WPCV_Run_Repository
@@ -816,6 +836,19 @@ class WPCV_Chunk_Dispatcher {
 		$target_id             = (string) $target_run['target_id'];
 		$file_state_repository = $this->file_state_repository;
 
+		// v0.5 §Step7(rev.3 §3.7-a): ベースラインが別の version で作られていれば捨てて
+		// 作り直す。run と run の間の通常の更新はこちらで拾う(target_run の version は
+		// plan 時点で既に新しい値のため、chunk 間の version 比較では気付けない).
+		$rebuild = $file_state_repository->has_rows_with_other_baseline_version( $target_id, $scan['version'] );
+
+		// 作り直しは最初の chunk で古い行を全部消すので、2つ目以降の chunk では
+		// 上の判定が偽になる。target_run に残した error_code で「作り直し中」を引き継ぐ.
+		$rebuilding = $rebuild || WPCV_Error_Code::BASELINE_REBUILT === ( $target_run['error_code'] ?? null );
+
+		// rev.3 §3.6: 今回の run より前に書かれた行が1件も無ければ初回とみなす
+		// (今回の run が書いた行は last_seen_run_id が同じなので含まれない).
+		$baseline_mode = $rebuild || ! $file_state_repository->has_baseline_before_run( $target_id, (int) $run_id );
+
 		$chunk_result = $this->chunk_verifier->verify_stat_chunk(
 			array(
 				'target_id'            => $target_id,
@@ -825,9 +858,7 @@ class WPCV_Chunk_Dispatcher {
 				'source'               => 'stat',
 				'run_id'               => (int) $run_id,
 				'scan_items'           => $scan['items'],
-				// rev.3 §3.6: 今回の run より前に書かれた行が1件も無ければ初回とみなす
-				// (今回の run が書いた行は last_seen_run_id が同じなので含まれない).
-				'baseline_mode'        => ! $file_state_repository->has_baseline_before_run( $target_id, (int) $run_id ),
+				'baseline_mode'        => $baseline_mode,
 				'load_previous_states' => static function ( array $paths ) use ( $file_state_repository, $target_id ) {
 					$keys = array();
 					foreach ( $paths as $path ) {
@@ -845,10 +876,80 @@ class WPCV_Chunk_Dispatcher {
 				'previous_fingerprint' => $target_run['manifest_fingerprint'] ?? null,
 				'previous_version'     => $target_run['version'],
 				'budget'               => $this->default_budget(),
+				'rollup'               => array(
+					'min_count' => self::DEFAULT_STAT_ROLLUP_MIN_COUNT,
+					'ratio'     => self::DEFAULT_STAT_ROLLUP_RATIO,
+				),
+				'target_root_path'     => $scan['root_path'],
 			)
 		);
 
+		if ( ! $chunk_result['needs_retry'] ) {
+			if ( $rebuild ) {
+				// 古いベースラインの削除は commit_chunk() が同じトランザクションで行う.
+				$chunk_result['rebuild_baseline'] = true;
+			}
+
+			if ( $rebuilding ) {
+				$chunk_result['error_code'] = WPCV_Error_Code::BASELINE_REBUILT;
+			}
+
+			if ( $chunk_result['completed'] && ! $baseline_mode ) {
+				$chunk_result = $this->add_missing_findings( $chunk_result, $target_run, (int) $run_id, $scan['version'] );
+			}
+		}
+
 		$this->chunk_result_repository->commit_chunk( $run_id, $target_run['id'], $target_id, $chunk_result, $target_run['lease_owner'], $scan['version'] );
+	}
+
+	/**
+	 * Stat target の最後の chunk で、前回のベースラインにあったのに今回の run で
+	 * 一度も見つからなかったファイルを `missing` finding にし、削除する行の id を
+	 * chunk 結果に載せる(v0.5 §Step7. rev.3 §3.3).
+	 *
+	 * この時点ではまだ今回の chunk の upsert をしていないため、`find_stale()` は
+	 * 今回の chunk で見つかったファイルも「古い」行として返す。それらは
+	 * `baseline_rows` の path で除外する(前の chunk で見つかったファイルは
+	 * 既に last_seen_run_id が今回の run になっているので最初から含まれない).
+	 *
+	 * 削除自体は `commit_chunk()` が findings と同じトランザクションで行う。
+	 * 消した行は次の run で古い行として出てこないため、同じ削除が2回 finding に
+	 * なることはない.
+	 *
+	 * @param array  $chunk_result `verify_stat_chunk()` の戻り値.
+	 * @param array  $target_run   claim済みのtarget_run行.
+	 * @param int    $run_id       今回の run の id.
+	 * @param string $version      本体の現在の version.
+	 * @return array `findings` と `stale_state_ids` を追加した chunk 結果.
+	 */
+	private function add_missing_findings( array $chunk_result, array $target_run, $run_id, $version ) {
+		$seen = array();
+		foreach ( $chunk_result['baseline_rows'] as $row ) {
+			$seen[ $row['path'] ] = true;
+		}
+
+		$stale_ids = array();
+
+		foreach ( $this->file_state_repository->find_stale( (string) $target_run['target_id'], $run_id ) as $row ) {
+			if ( isset( $seen[ $row['path'] ] ) ) {
+				continue;
+			}
+
+			$chunk_result['findings'][] = WPCV_Verifier::make_finding_for_stat_missing(
+				(string) $target_run['target_id'],
+				(string) $target_run['dimension'],
+				(string) $target_run['slug'],
+				(string) $version,
+				'stat',
+				(string) $row['path']
+			);
+
+			$stale_ids[] = (int) $row['id'];
+		}
+
+		$chunk_result['stale_state_ids'] = $stale_ids;
+
+		return $chunk_result;
 	}
 
 	/**
@@ -857,8 +958,9 @@ class WPCV_Chunk_Dispatcher {
 	 *
 	 * @param array $target_run claim済みのtarget_run行.
 	 * @param array $context    `dispatch()` に渡された `$context`.
-	 * @return array{items: array, truncated: bool, version: string}|null 対象が
-	 *               実行時点で見つからなければ null.
+	 * @return array{items: array, truncated: bool, version: string, root_path: string}|null 対象が
+	 *               実行時点で見つからなければ null. `root_path` は target のルートの
+	 *               ABSPATH 相対パス(大量変更をまとめた finding の path に使う. v0.5 §Step7).
 	 */
 	private function collect_stat_items( array $target_run, array $context ) {
 		if ( WPCV_Target_Resolver::DIMENSION_PLUGIN === $target_run['dimension'] ) {
@@ -872,7 +974,8 @@ class WPCV_Chunk_Dispatcher {
 			$root_dir   = rtrim( WPCV_Path_Normalizer::to_forward_slashes( $resolved['plugin_root_dir'] ), '/' );
 
 			if ( $root_dir === $plugin_dir ) {
-				$scan = $this->scanner->stat_file( $plugin_dir . '/' . $resolved['plugin_file'], 'high', 'medium' );
+				$scan              = $this->scanner->stat_file( $plugin_dir . '/' . $resolved['plugin_file'], 'high', 'medium' );
+				$scan['root_path'] = WPCV_Path_Normalizer::to_relative( $plugin_dir . '/' . $resolved['plugin_file'] );
 			} else {
 				$scan = $this->scanner->scan(
 					$root_dir,
@@ -885,6 +988,8 @@ class WPCV_Chunk_Dispatcher {
 						'collect_stat'     => true,
 					)
 				);
+
+				$scan['root_path'] = WPCV_Path_Normalizer::to_relative( $root_dir );
 			}
 
 			$scan['version'] = $resolved['version'];
@@ -900,8 +1005,9 @@ class WPCV_Chunk_Dispatcher {
 			}
 
 			// §5.5: findings.version は NOT NULL のため空文字列にする(muplugin:_scan と同じ規約).
-			$scan            = $this->scanner->stat_file( $mu_plugin_dir . '/' . $target_run['slug'], 'high', 'medium' );
-			$scan['version'] = '';
+			$scan              = $this->scanner->stat_file( $mu_plugin_dir . '/' . $target_run['slug'], 'high', 'medium' );
+			$scan['version']   = '';
+			$scan['root_path'] = WPCV_Path_Normalizer::to_relative( $mu_plugin_dir . '/' . $target_run['slug'] );
 
 			return $scan;
 		}

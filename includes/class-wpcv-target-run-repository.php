@@ -288,13 +288,17 @@ class WPCV_Target_Run_Repository {
 		// `update_chunk_progress()`が呼ばれる=chunk_verifierが実際に走って結果を
 		// 返した(=以前の`error_code`は陳腐化した)ことを意味するため、
 		// `completed`の真偽に関わらず常にクリアする.
+		//
+		// v0.5 §Step7: ただし chunk 結果が `error_code` を持つ場合はそれを書く.
+		// stat target のベースラインを作り直した run では `baseline_rebuilt` を
+		// 完走後も残す必要がある(rev.3 §3.7-b. 「見ていない日」を監査可能にする).
 		$data   = array(
 			'cursor_path'          => $chunk_result['cursor_path'],
 			'manifest_fingerprint' => $chunk_result['manifest_fingerprint'],
 			'files_total'          => (int) $chunk_result['files_total'],
 			'files_verified'       => $files_verified,
 			'findings_total'       => $findings_total,
-			'error_code'           => null,
+			'error_code'           => isset( $chunk_result['error_code'] ) ? (string) $chunk_result['error_code'] : null,
 		);
 		$format = array( '%s', '%s', '%d', '%d', '%d', '%s' );
 

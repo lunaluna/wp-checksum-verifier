@@ -368,4 +368,84 @@ class FileStateRepositoryTest extends TestCase {
 			'今回のrunが書いた行だけでは「既存ベースラインあり」と誤判定してはならない'
 		);
 	}
+
+	/**
+	 * `has_rows_with_other_baseline_version()` が、別の version で作られた行があるときだけ
+	 * true を返すことを確認する(空文字の version は NULL と比べる. v0.5 §Step7).
+	 *
+	 * @return void
+	 */
+	public function test_has_rows_with_other_baseline_version() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_File_State_Repository( $wpdb );
+
+		$this->assertFalse( $repository->has_rows_with_other_baseline_version( 'plugin:acme-widgets', '1.2.0' ) );
+
+		$repository->upsert_many(
+			array(
+				$this->make_row(),
+				$this->make_row(
+					array(
+						'target_id'        => 'muplugin:loader.php:_stat',
+						'path'             => 'wp-content/mu-plugins/loader.php',
+						'baseline_version' => null,
+					)
+				),
+			)
+		);
+
+		$this->assertFalse( $repository->has_rows_with_other_baseline_version( 'plugin:acme-widgets', '1.2.0' ) );
+		$this->assertTrue( $repository->has_rows_with_other_baseline_version( 'plugin:acme-widgets', '1.3.0' ) );
+		$this->assertTrue( $repository->has_rows_with_other_baseline_version( 'plugin:acme-widgets', '' ) );
+		$this->assertFalse( $repository->has_rows_with_other_baseline_version( 'muplugin:loader.php:_stat', '' ) );
+		$this->assertTrue( $repository->has_rows_with_other_baseline_version( 'muplugin:loader.php:_stat', '1.0' ) );
+	}
+
+	/**
+	 * `delete_by_ids()` が指定した id の行だけを消すことを確認する(v0.5 §Step7).
+	 *
+	 * @return void
+	 */
+	public function test_delete_by_ids_deletes_only_given_rows() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_File_State_Repository( $wpdb );
+
+		$repository->upsert_many(
+			array(
+				$this->make_row( array( 'path' => 'a.php' ) ),
+				$this->make_row( array( 'path' => 'b.php' ) ),
+			)
+		);
+
+		$ids = array();
+		foreach ( $wpdb->rows['wp_wpcv_file_states'] as $row ) {
+			$ids[ $row['path'] ] = (int) $row['id'];
+		}
+
+		$repository->delete_by_ids( array( $ids['a.php'] ) );
+
+		$this->assertSame( array( 'b.php' ), array_values( array_column( $wpdb->rows['wp_wpcv_file_states'], 'path' ) ) );
+	}
+
+	/**
+	 * `delete_by_target()`/`delete_by_ids()` が SQL エラーを例外にすることを確認する
+	 * (commit_chunk() のトランザクション内で呼ぶため. v0.5 §Step7).
+	 *
+	 * @return void
+	 */
+	public function test_delete_methods_throw_when_delete_fails() {
+		$wpdb                     = new WPCV_Test_Fake_WPDB();
+		$repository               = new WPCV_File_State_Repository( $wpdb );
+		$wpdb->delete_should_fail = true;
+
+		try {
+			$repository->delete_by_target( 'plugin:acme-widgets' );
+			$this->fail( 'delete_by_target() did not throw' );
+		} catch ( RuntimeException $e ) {
+			$this->assertStringContainsString( 'delete_by_target()', $e->getMessage() );
+		}
+
+		$this->expectException( RuntimeException::class );
+		$repository->delete_by_ids( array( 1 ) );
+	}
 }

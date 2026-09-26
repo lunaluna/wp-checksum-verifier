@@ -312,6 +312,11 @@ class WPCV_Chunk_Verifier {
 	 *     @type string|null   $previous_fingerprint 前回保存した fingerprint. 既定 null.
 	 *     @type string|null   $previous_version     前回保存した version. 既定 null.
 	 *     @type array         $budget               `verify_manifest_chunk()` と同じ形.
+	 *     @type array|null    $rollup               大量変更のまとめ(v0.5 §Step7)の閾値
+	 *                                               `array( 'min_count' => int, 'ratio' => float )`.
+	 *                                               省略時はまとめない.
+	 *     @type string        $target_root_path     まとめた finding の path にする
+	 *                                               target のルート(ABSPATH 相対). 既定は空文字.
 	 * }
 	 * @return array `verify_manifest_chunk()` と同じ形に `baseline_rows`
 	 *               (`WPCV_File_State_Repository::upsert_many()` にそのまま渡せる行の配列)を
@@ -355,6 +360,7 @@ class WPCV_Chunk_Verifier {
 
 		$findings             = array();
 		$baseline_rows        = array();
+		$files_compared       = 0;
 		$files_verified_delta = 0;
 		$new_cursor_path      = $context['cursor_path'] ?? null;
 		$completed            = true;
@@ -381,6 +387,7 @@ class WPCV_Chunk_Verifier {
 					) : null;
 
 					$finding = WPCV_Verifier::make_finding_for_stat_change( $target_id, $dimension, $slug, $version, $source, $path, (string) $item['severity'], $previous, $current );
+					++$files_compared;
 
 					if ( null === $finding ) {
 						++$files_verified_delta;
@@ -415,6 +422,15 @@ class WPCV_Chunk_Verifier {
 			}
 		}
 
+		if ( isset( $context['rollup'] ) && is_array( $context['rollup'] ) ) {
+			$findings = self::roll_up_stat_findings(
+				$findings,
+				$files_compared,
+				$context['rollup'],
+				array( $target_id, $dimension, $slug, $version, $source, isset( $context['target_root_path'] ) ? (string) $context['target_root_path'] : '' )
+			);
+		}
+
 		return array(
 			'findings'             => $findings,
 			'cursor_path'          => $completed ? null : $new_cursor_path,
@@ -427,6 +443,55 @@ class WPCV_Chunk_Verifier {
 			'needs_retry'          => false,
 			'baseline_rows'        => $baseline_rows,
 		);
+	}
+
+	/**
+	 * このchunkの変更 finding が多すぎる場合に1件へまとめる(v0.5 §Step7. rev.3 §3.7-c).
+	 *
+	 * 判定は「このchunkで比較したファイル数」に対する割合で行う。本来は target 全体の
+	 * 総ファイル数に対する割合で判定したいが、findings は chunk ごとに確定・保存される
+	 * ため、完走時にさかのぼってまとめ直すと保存済み findings の削除と集計値の
+	 * 付け替えが必要になり、トランザクションの範囲が大きくなる。500件以下の target
+	 * (大半のプラグイン)は1 chunk で終わるので target 全体と同じ判定になる。
+	 * それより大きい target では、まとめた finding が chunk の数だけ出うる(既知の限界).
+	 *
+	 * timestomp(`detail.timestomp = true`)の finding はまとめずに個別に残す。
+	 * 擬装の兆候は1件でも見落としたくないため.
+	 *
+	 * @param array $findings       このchunkの finding.
+	 * @param int   $files_compared このchunkで前回値と比較したファイル数.
+	 * @param array $rollup         `array( 'min_count' => int, 'ratio' => float )`.
+	 * @param array $target         `array( target_id, dimension, slug, version, source, target_root_path )`.
+	 * @return array まとめた後の finding.
+	 */
+	private static function roll_up_stat_findings( array $findings, $files_compared, array $rollup, array $target ) {
+		$candidates = array();
+		$kept       = array();
+
+		foreach ( $findings as $finding ) {
+			$detail    = isset( $finding['detail'] ) ? json_decode( (string) $finding['detail'], true ) : null;
+			$timestomp = is_array( $detail ) && ! empty( $detail['timestomp'] );
+
+			if ( ! $timestomp && in_array( $finding['status'], array( 'stat_changed', 'added' ), true ) ) {
+				$candidates[] = $finding;
+			} else {
+				$kept[] = $finding;
+			}
+		}
+
+		$count     = count( $candidates );
+		$min_count = isset( $rollup['min_count'] ) ? (int) $rollup['min_count'] : 0;
+		$ratio     = isset( $rollup['ratio'] ) ? (float) $rollup['ratio'] : 0.0;
+
+		if ( 0 === $count || $count < $min_count || $files_compared <= 0 || ( $count / $files_compared ) < $ratio ) {
+			return $findings;
+		}
+
+		list( $target_id, $dimension, $slug, $version, $source, $root_path ) = $target;
+
+		$kept[] = WPCV_Verifier::make_rollup_finding_for_stat_changes( $target_id, $dimension, $slug, $version, $source, $root_path, $candidates, $files_compared );
+
+		return $kept;
 	}
 
 	/**

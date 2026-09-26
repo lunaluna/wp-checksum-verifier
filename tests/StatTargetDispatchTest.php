@@ -452,4 +452,149 @@ class StatTargetDispatchTest extends TestCase {
 		$this->assertSame( WPCV_Error_Code::HTTP_ERROR, $stat['error_code'] );
 		$this->assertSame( array(), $this->file_states_by_path( $made ) );
 	}
+
+	/**
+	 * `custom-plugin` 用の run コンテキストを組み立てる.
+	 *
+	 * @param string $version プラグインの version.
+	 * @return array
+	 */
+	private function custom_plugin_context( $version = '1.0.0' ) {
+		return array(
+			'version'    => '6.8',
+			'plugins'    => array( 'custom-plugin/custom-plugin.php' => array( 'Version' => $version ) ),
+			'plugin_dir' => ABSPATH . 'wp-content/plugins',
+		);
+	}
+
+	/**
+	 * 削除したファイルは次の run で `missing` として1回だけ出て、ベースラインから
+	 * 消えるため、その次の run では出ないことを確認する(v0.5 §Step7. rev.3 §3.3).
+	 *
+	 * @return void
+	 */
+	public function test_deleted_file_is_reported_as_missing_only_once() {
+		$this->put_fixture_file( 'wp-content/plugins/custom-plugin/custom-plugin.php', 'main' );
+		$this->put_fixture_file( 'wp-content/plugins/custom-plugin/old.php', 'old' );
+
+		$made = wpcv_test_make_fake_environment();
+		$this->reserve_and_run( $made, $this->custom_plugin_context() );
+
+		unlink( ABSPATH . 'wp-content/plugins/custom-plugin/old.php' );
+
+		$second   = $this->reserve_and_run( $made, $this->custom_plugin_context() );
+		$findings = $this->stat_findings( $made, $second['run_id'] );
+
+		$this->assertCount( 1, $findings );
+		$this->assertSame( 'missing', $findings[0]['status'] );
+		$this->assertSame( 'wp-content/plugins/custom-plugin/old.php', $findings[0]['path'] );
+		$this->assertArrayNotHasKey( 'wp-content/plugins/custom-plugin/old.php', $this->file_states_by_path( $made ) );
+		$this->assertSame( 1, (int) $this->find_target_run( $made, 'plugin:custom-plugin:_stat', $second['run_id'] )['findings_total'] );
+
+		$third = $this->reserve_and_run( $made, $this->custom_plugin_context() );
+		$this->assertSame( array(), $this->stat_findings( $made, $third['run_id'] ) );
+	}
+
+	/**
+	 * Run と run の間に本体の version が変わった(通常の更新)場合、変更を finding に
+	 * せずにベースラインを作り直し、`baseline_rebuilt` を記録することを確認する.
+	 * 次の run では通常の比較に戻り、`baseline_rebuilt` は付かない(rev.3 §3.7-a/b).
+	 *
+	 * @return void
+	 */
+	public function test_version_change_between_runs_rebuilds_baseline_without_findings() {
+		$main = 'wp-content/plugins/custom-plugin/custom-plugin.php';
+		$this->put_fixture_file( $main, 'main' );
+		$this->put_fixture_file( 'wp-content/plugins/custom-plugin/removed-in-update.php', 'x' );
+
+		$made = wpcv_test_make_fake_environment();
+		$this->reserve_and_run( $made, $this->custom_plugin_context( '1.0.0' ) );
+
+		// 更新で中身が変わり、ファイルが1つ消え、1つ増えた状況を模す.
+		file_put_contents( ABSPATH . $main, 'main-v1.1' );
+		unlink( ABSPATH . 'wp-content/plugins/custom-plugin/removed-in-update.php' );
+		$this->put_fixture_file( 'wp-content/plugins/custom-plugin/new-in-update.php', 'y' );
+		clearstatcache();
+
+		$second = $this->reserve_and_run( $made, $this->custom_plugin_context( '1.1.0' ) );
+		$stat   = $this->find_target_run( $made, 'plugin:custom-plugin:_stat', $second['run_id'] );
+
+		$this->assertSame( array(), $this->stat_findings( $made, $second['run_id'] ) );
+		$this->assertSame( WPCV_Target_Status::SUCCESS, $stat['status'] );
+		$this->assertSame( WPCV_Error_Code::BASELINE_REBUILT, $stat['error_code'] );
+
+		$states = $this->file_states_by_path( $made );
+		$this->assertSame( array( $main, 'wp-content/plugins/custom-plugin/new-in-update.php' ), array_keys( $states ) );
+		foreach ( $states as $row ) {
+			$this->assertSame( '1.1.0', $row['baseline_version'] );
+		}
+
+		$third = $this->reserve_and_run( $made, $this->custom_plugin_context( '1.1.0' ) );
+		$this->assertSame( array(), $this->stat_findings( $made, $third['run_id'] ) );
+		$this->assertNull( $this->find_target_run( $made, 'plugin:custom-plugin:_stat', $third['run_id'] )['error_code'] );
+	}
+
+	/**
+	 * 複数 chunk にまたがる target でも、作り直しの `baseline_rebuilt` が最後の chunk まで
+	 * 引き継がれ、全ファイルが新しい version のベースラインになることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_baseline_rebuilt_is_kept_across_chunks() {
+		$count = WPCV_Chunk_Dispatcher::DEFAULT_BUDGET_MAX_FILES + 10;
+		for ( $i = 0; $i < $count; $i++ ) {
+			$this->put_fixture_file( sprintf( 'wp-content/plugins/custom-plugin/f%04d.php', $i ), 'x' );
+		}
+
+		$made = wpcv_test_make_fake_environment();
+		$this->reserve_and_run( $made, $this->custom_plugin_context( '1.0.0' ) );
+
+		$second = $this->reserve_and_run( $made, $this->custom_plugin_context( '2.0.0' ) );
+		$stat   = $this->find_target_run( $made, 'plugin:custom-plugin:_stat', $second['run_id'] );
+
+		$this->assertSame( WPCV_Target_Status::SUCCESS, $stat['status'] );
+		$this->assertSame( WPCV_Error_Code::BASELINE_REBUILT, $stat['error_code'] );
+		$this->assertSame( $count, (int) $stat['files_total'] );
+		$this->assertSame( array(), $this->stat_findings( $made, $second['run_id'] ) );
+
+		$states = $this->file_states_by_path( $made );
+		$this->assertCount( $count, $states );
+		$this->assertSame( array( '2.0.0' ), array_values( array_unique( array_column( $states, 'baseline_version' ) ) ) );
+	}
+
+	/**
+	 * Version を変えずに大量のファイルが変わった場合、個別の finding ではなく
+	 * target ルートを path にした1件の集約 finding になることを確認する(rev.3 §3.7-c).
+	 *
+	 * @return void
+	 */
+	public function test_mass_change_without_version_bump_is_rolled_up() {
+		$count = WPCV_Chunk_Dispatcher::DEFAULT_STAT_ROLLUP_MIN_COUNT + 5;
+		for ( $i = 0; $i < $count; $i++ ) {
+			$this->put_fixture_file( sprintf( 'wp-content/plugins/custom-plugin/f%02d.php', $i ), 'x' );
+		}
+
+		$made = wpcv_test_make_fake_environment();
+		$this->reserve_and_run( $made, $this->custom_plugin_context() );
+
+		for ( $i = 0; $i < $count; $i++ ) {
+			$path = ABSPATH . sprintf( 'wp-content/plugins/custom-plugin/f%02d.php', $i );
+			file_put_contents( $path, 'changed' );
+			touch( $path, time() + 100 );
+		}
+		clearstatcache();
+
+		$second   = $this->reserve_and_run( $made, $this->custom_plugin_context() );
+		$findings = $this->stat_findings( $made, $second['run_id'] );
+
+		$this->assertCount( 1, $findings );
+		$this->assertSame( 'stat_changed', $findings[0]['status'] );
+		$this->assertSame( 'wp-content/plugins/custom-plugin', $findings[0]['path'] );
+
+		$detail = json_decode( $findings[0]['detail'], true );
+		$this->assertTrue( $detail['rollup'] );
+		$this->assertSame( $count, $detail['count'] );
+		$this->assertSame( $count, $detail['files_scanned'] );
+		$this->assertCount( WPCV_Verifier::ROLLUP_SAMPLE_PATHS, $detail['sample_paths'] );
+	}
 }

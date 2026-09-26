@@ -450,4 +450,88 @@ class StatChunkVerifierTest extends TestCase {
 			WPCV_Verifier::make_finding_for_stat_change( self::TARGET_ID, 'plugin', 'custom-plugin', '1.0.0', '', 'x.php', 'high', $stat, $stat )
 		);
 	}
+
+	/**
+	 * 変更件数がまとめの閾値に届かなければ、個別の finding のまま返すことを確認する(v0.5 §Step7).
+	 *
+	 * @return void
+	 */
+	public function test_rollup_is_not_applied_below_threshold() {
+		list( $items, $states ) = $this->changed_items( 5, 10 );
+
+		$result = ( new WPCV_Chunk_Verifier() )->verify_stat_chunk(
+			$this->context(
+				$items,
+				$states,
+				array(
+					'rollup'           => array(
+						'min_count' => 20,
+						'ratio'     => 0.5,
+					),
+					'target_root_path' => 'wp-content/plugins/custom-plugin',
+				)
+			)
+		);
+
+		$this->assertCount( 5, $result['findings'] );
+	}
+
+	/**
+	 * 件数と割合の両方が閾値以上ならまとめるが、timestomp の finding は
+	 * まとめずに個別に残すことを確認する(v0.5 §Step7).
+	 *
+	 * @return void
+	 */
+	public function test_rollup_keeps_timestomp_findings_individual() {
+		list( $items, $states ) = $this->changed_items( 4, 4 );
+
+		// 1件だけ timestomp(size が変わったのに mtime が前回と同じ)にする.
+		$stomped                        = $items[0]['path'];
+		$states[ $stomped ]['mtime']    = (string) $items[0]['mtime'];
+		$states[ $stomped ]['file_size'] = '1';
+
+		$result = ( new WPCV_Chunk_Verifier() )->verify_stat_chunk(
+			$this->context(
+				$items,
+				$states,
+				array(
+					'rollup'           => array(
+						'min_count' => 3,
+						'ratio'     => 0.5,
+					),
+					'target_root_path' => 'wp-content/plugins/custom-plugin',
+				)
+			)
+		);
+
+		$this->assertCount( 2, $result['findings'] );
+
+		$by_path = array_column( $result['findings'], null, 'path' );
+		$this->assertSame( 'high', $by_path[ $stomped ]['severity'] );
+
+		$rollup = json_decode( $by_path['wp-content/plugins/custom-plugin']['detail'], true );
+		$this->assertTrue( $rollup['rollup'] );
+		$this->assertSame( 3, $rollup['count'] );
+		$this->assertSame( 4, $rollup['files_scanned'] );
+	}
+
+	/**
+	 * 前回から size/ctime/mtime が変わった item とベースラインを作る.
+	 *
+	 * @param int $changed 変更ありにする件数.
+	 * @param int $total   全体の件数.
+	 * @return array{0: array, 1: array} items と path => ベースライン行.
+	 */
+	private function changed_items( $changed, $total ) {
+		$items  = array();
+		$states = array();
+
+		for ( $i = 0; $i < $total; $i++ ) {
+			$path            = sprintf( 'wp-content/plugins/custom-plugin/f%02d.php', $i );
+			$items[]         = $this->item( $path, 200, 2000, 2000, 'medium' );
+			$states[ $path ] = $i < $changed ? $this->state( 100, 1000, 900 ) : $this->state( 200, 2000, 2000 );
+		}
+
+		return array( $items, $states );
+	}
 }

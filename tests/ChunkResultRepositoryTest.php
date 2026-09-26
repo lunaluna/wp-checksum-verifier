@@ -6,6 +6,7 @@
  */
 
 require_once __DIR__ . '/wp-stubs.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-error-code.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-matcher.php';
@@ -573,5 +574,46 @@ class ChunkResultRepositoryTest extends TestCase {
 				),
 			),
 		);
+	}
+
+	/**
+	 * `rebuild_baseline` が真なら、新しい行を upsert する前にその target の古い行を
+	 * 全部消し、`stale_state_ids` の行も消すことを確認する(v0.5 §Step7).
+	 *
+	 * @return void
+	 */
+	public function test_commit_chunk_rebuilds_baseline_and_deletes_stale_rows() {
+		$wpdb                  = new WPCV_Test_Fake_WPDB();
+		$target_run_repository = new WPCV_Target_Run_Repository( $wpdb );
+		$file_state_repository = new WPCV_File_State_Repository( $wpdb );
+		$repository            = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, new WPCV_Finding_Repository( $wpdb ), new WPCV_Suppression_Repository( $wpdb ), $file_state_repository );
+
+		$old_row         = $this->stat_chunk_result()['baseline_rows'][0];
+		$old_row['path'] = 'old.php';
+		$old_row['state_key'] = WPCV_File_State_Repository::compute_state_key( 'core', 'old.php' );
+		$file_state_repository->upsert_many( array( $old_row ) );
+
+		$ids = $target_run_repository->save_target_runs( 1, array( wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::RUNNING ) ) ) );
+		$wpdb->rows['wp_wpcv_target_runs'][ $ids['core'] ]['lease_owner'] = 'lease-1';
+
+		$chunk_result                     = $this->stat_chunk_result();
+		$chunk_result['rebuild_baseline'] = true;
+		$chunk_result['error_code']       = WPCV_Error_Code::BASELINE_REBUILT;
+
+		$this->assertTrue( $repository->commit_chunk( 1, $ids['core'], 'core', $chunk_result, 'lease-1' ) );
+		$this->assertSame( array( 'a.php' ), array_values( array_column( $wpdb->rows['wp_wpcv_file_states'], 'path' ) ) );
+		$this->assertSame( WPCV_Error_Code::BASELINE_REBUILT, $wpdb->rows['wp_wpcv_target_runs'][ $ids['core'] ]['error_code'] );
+
+		// stale_state_ids で指定した行だけが消える.
+		$wpdb->rows['wp_wpcv_target_runs'][ $ids['core'] ]['status']      = WPCV_Target_Status::RUNNING;
+		$wpdb->rows['wp_wpcv_target_runs'][ $ids['core'] ]['lease_owner'] = 'lease-2';
+
+		$a_id                                = (int) array_values( $wpdb->rows['wp_wpcv_file_states'] )[0]['id'];
+		$next_result                         = $this->stat_chunk_result();
+		$next_result['baseline_rows']        = array();
+		$next_result['stale_state_ids']      = array( $a_id );
+
+		$this->assertTrue( $repository->commit_chunk( 1, $ids['core'], 'core', $next_result, 'lease-2' ) );
+		$this->assertSame( array(), array_values( $wpdb->rows['wp_wpcv_file_states'] ) );
 	}
 }

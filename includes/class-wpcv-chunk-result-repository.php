@@ -51,6 +51,9 @@ if ( ! defined( 'ABSPATH' ) ) {
  * v0.5 §Step6: stat 差分検知 target の chunk 結果に含まれる `baseline_rows` を、
  * findings と同じトランザクションで `WPCV_File_State_Repository::upsert_many()` に
  * 渡すようにした(3テーブル目。`$file_state_repository` プロパティ参照).
+ *
+ * v0.5 §Step7: 同じトランザクションで、version 変化時のベースライン全削除
+ * (`rebuild_baseline`)と、削除検出で `missing` にした行の削除(`stale_state_ids`)も行う.
  */
 class WPCV_Chunk_Result_Repository {
 
@@ -206,12 +209,26 @@ class WPCV_Chunk_Result_Repository {
 				// findings だけ確定してベースラインが古いまま残ると、次回 run で
 				// 同じ変更が再び finding になる)。fencing に負けた場合は下の
 				// ROLLBACK でこの upsert も取り消される.
-				if ( ! empty( $chunk_result['baseline_rows'] ) ) {
-					if ( null === $this->file_state_repository ) {
-						throw new LogicException( 'WPCV_Chunk_Result_Repository::commit_chunk() received baseline_rows but no WPCV_File_State_Repository was injected.' );
-					}
+				$touches_baseline = ! empty( $chunk_result['baseline_rows'] ) || ! empty( $chunk_result['rebuild_baseline'] ) || ! empty( $chunk_result['stale_state_ids'] );
 
+				if ( $touches_baseline && null === $this->file_state_repository ) {
+					throw new LogicException( 'WPCV_Chunk_Result_Repository::commit_chunk() received baseline changes but no WPCV_File_State_Repository was injected.' );
+				}
+
+				// v0.5 §Step7(rev.3 §3.7-a): version 変化でベースラインを作り直す場合は、
+				// 新しい行を書く前に古い行を全部消す(同じトランザクション内).
+				if ( ! empty( $chunk_result['rebuild_baseline'] ) ) {
+					$this->file_state_repository->delete_by_target( $target_id );
+				}
+
+				if ( ! empty( $chunk_result['baseline_rows'] ) ) {
 					$this->file_state_repository->upsert_many( $chunk_result['baseline_rows'] );
+				}
+
+				// v0.5 §Step7(rev.3 §3.3): `missing` finding にした行を消す. 残すと
+				// 次の run でも同じ削除が finding になり続ける.
+				if ( ! empty( $chunk_result['stale_state_ids'] ) ) {
+					$this->file_state_repository->delete_by_ids( $chunk_result['stale_state_ids'] );
 				}
 
 				$committed = $this->target_run_repository->update_chunk_progress( $target_run_id, $chunk_result, $lease_owner );
