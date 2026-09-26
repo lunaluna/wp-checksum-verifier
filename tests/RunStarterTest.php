@@ -142,4 +142,94 @@ class RunStarterTest extends TestCase {
 			$this->assertSame( WPCV_Run_Status::ABORTED, $wpdb->rows['wp_wpcv_runs'][ $run_id ]['status'] );
 		}
 	}
+
+	/**
+	 * `plan_and_save()` が、取りこぼされた差分処理(`find_stale_diff_run()`が
+	 * 見つける`pending`のrun)を1件だけ回収し、継続予約callableへ渡すことを
+	 * 確認する(v0.5後半 §Step12).
+	 *
+	 * @return void
+	 */
+	public function test_plan_and_save_recovers_one_stale_diff_run() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$deps = $this->make_dependencies( $wpdb );
+
+		// 取りこぼされたrun(diff_status=pending. 通常はfinish_run()が書くが、
+		// ここでは直接行を作る).
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-12 08:00:00',
+				'finished_at' => '2026-09-12 08:05:00',
+				'status'      => 'success',
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+				'diff_status' => 'pending',
+			)
+		);
+		$stale_run_id = $wpdb->insert_id;
+
+		$reservation = $deps['run_repository']->reserve_run();
+		$run_id      = $reservation['run_id'];
+
+		$recovered_calls = array();
+		$continuation_scheduler = static function ( $recovered_run_id, $delay_seconds ) use ( &$recovered_calls ) {
+			$recovered_calls[] = array( 'run_id' => $recovered_run_id, 'delay_seconds' => $delay_seconds );
+		};
+
+		$context = array(
+			'version'       => '6.8',
+			'plugins'       => array(),
+			'plugin_dir'    => '/tmp/plugins',
+			'mu_plugin_dir' => null,
+			'mu_plugins'    => array(),
+		);
+
+		WPCV_Run_Starter::plan_and_save( $deps['run_repository'], $deps['planner'], $deps['target_run_repository'], $run_id, $context, $continuation_scheduler );
+
+		$this->assertSame( array( array( 'run_id' => $stale_run_id, 'delay_seconds' => 0 ) ), $recovered_calls );
+	}
+
+	/**
+	 * 回収先の継続予約callable自体が例外を投げても、新しいrunの開始(plan・保存・
+	 * `running`への遷移)には一切影響しないことを確認する(ベストエフォート.
+	 * `recover_stale_diff_run()`のdocblock参照).
+	 *
+	 * @return void
+	 */
+	public function test_plan_and_save_ignores_recovery_failure() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$deps = $this->make_dependencies( $wpdb );
+
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-12 08:00:00',
+				'status'      => 'success',
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+				'diff_status' => 'pending',
+			)
+		);
+
+		$reservation = $deps['run_repository']->reserve_run();
+		$run_id      = $reservation['run_id'];
+
+		$context = array(
+			'version'       => '6.8',
+			'plugins'       => array(),
+			'plugin_dir'    => '/tmp/plugins',
+			'mu_plugin_dir' => null,
+			'mu_plugins'    => array(),
+		);
+
+		$throwing_scheduler = static function () {
+			throw new RuntimeException( '継続予約に失敗した(テスト用)' );
+		};
+
+		$planned = WPCV_Run_Starter::plan_and_save( $deps['run_repository'], $deps['planner'], $deps['target_run_repository'], $run_id, $context, $throwing_scheduler );
+
+		$this->assertNotEmpty( $planned );
+		$this->assertSame( WPCV_Run_Status::RUNNING, $wpdb->rows['wp_wpcv_runs'][ $run_id ]['status'] );
+	}
 }

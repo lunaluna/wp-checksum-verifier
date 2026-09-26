@@ -364,4 +364,108 @@ class RunCoordinatorTest extends TestCase {
 		$run_row = $made['wpdb']->rows['wp_wpcv_runs'][ $result['run_id'] ];
 		$this->assertNotSame( 'failed', $run_row['status'] );
 	}
+
+	/**
+	 * `TERMINAL_ACTIONS`に`diff_finalized`/`diff_failed`を追加したことの回帰
+	 * テスト(v0.5後半 §Step12)。`run_finalized`/`diff_claimed`/`diff_not_claimable`
+	 * では継続し、`diff_finalized`で初めて止まることを、実際の
+	 * `WPCV_Diff_Dispatcher`を経由せず「dispatch()の戻り値をキューから順に返す
+	 * フェイク」で確認する ―― 検証したいのはループの継続・停止条件そのものであり、
+	 * 差分処理の中身は`DiffDispatcherTest`/`ChunkDispatcherTest`側で別途確認済み.
+	 *
+	 * @return void
+	 */
+	public function test_run_loop_continues_through_diff_actions_and_stops_at_diff_finalized() {
+		$wpdb                   = new WPCV_Test_Fake_WPDB();
+		$now                    = static function () {
+			return '2026-09-26 12:00:00';
+		};
+		$run_repository         = new WPCV_Run_Repository( $wpdb, $now );
+		$target_run_repository  = new WPCV_Target_Run_Repository( $wpdb, $now );
+
+		$run_id = $run_repository->reserve_run()['run_id'];
+
+		// 'run_finalized' はキューに含めない ―― 修正後の実装では
+		// `diff_dispatcher` が注入されている限り、検証完了時にこの文字列は
+		// 返らない(`WPCV_Chunk_Dispatcher::handle_no_claimable_target()`
+		// 参照。このフェイクは「実装が返す値」を模すのではなく、あくまで
+		// ループの継続・停止条件だけを検証するためのもの).
+		$fake_dispatcher = new WPCV_Test_Fake_Dispatcher_Action_Queue(
+			array(
+				array( 'action' => 'processed' ),
+				array( 'action' => 'diff_claimed' ),
+				array( 'action' => 'diff_not_claimable' ),
+				array( 'action' => 'diff_claimed' ),
+				array( 'action' => 'diff_finalized' ),
+			)
+		);
+
+		$coordinator = new WPCV_Run_Coordinator(
+			new WPCV_Run_Planner( new WPCV_Suppression_Repository( $wpdb, $now ) ),
+			$run_repository,
+			$target_run_repository,
+			$fake_dispatcher
+		);
+
+		$coordinator->run(
+			$run_id,
+			array(
+				'version'       => '6.8',
+				'plugins'       => array(),
+				'plugin_dir'    => '/tmp/wpcv-test-plugins',
+				'mu_plugin_dir' => null,
+				'mu_plugins'    => array(),
+			)
+		);
+
+		$this->assertSame( 5, $fake_dispatcher->call_count(), 'diff_finalizedに到達するまでの5回すべてが呼ばれ、そこで止まる' );
+	}
+}
+
+/**
+ * `dispatch()`の戻り値を、呼ばれるたびにキューから順に返すフェイク
+ * (`test_run_loop_continues_through_diff_actions_and_stops_at_diff_finalized()`専用)。
+ * `WPCV_Chunk_Dispatcher`のコンストラクタは呼ばない(このテストが検証したいのは
+ * `WPCV_Run_Coordinator::run()`のループ継続・停止条件そのものであり、
+ * dispatchの実装には依存しないため).
+ */
+class WPCV_Test_Fake_Dispatcher_Action_Queue extends WPCV_Chunk_Dispatcher {
+
+	/**
+	 * @var array<int, array>
+	 */
+	private $queue;
+
+	/**
+	 * @var int
+	 */
+	private $calls = 0;
+
+	/**
+	 * @param array<int, array> $queue `dispatch()`が呼ばれるたびに先頭から1つ返す.
+	 */
+	public function __construct( array $queue ) {
+		$this->queue = $queue;
+	}
+
+	/**
+	 * @param int   $run_id  無視する.
+	 * @param array $context 無視する.
+	 * @return array
+	 */
+	public function dispatch( $run_id, array $context ) {
+		unset( $run_id, $context );
+		++$this->calls;
+
+		return array_shift( $this->queue ) ?? array( 'action' => 'run_finalized', 'summary' => array() );
+	}
+
+	/**
+	 * `dispatch()`が呼ばれた回数.
+	 *
+	 * @return int
+	 */
+	public function call_count() {
+		return $this->calls;
+	}
 }

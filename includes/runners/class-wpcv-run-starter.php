@@ -32,6 +32,14 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 「target 0件 = 完了」と誤認することは無い(`WPCV_Chunk_Dispatcher::dispatch()`
  * のクラスdocblock参照。この誤認が実際に起きていたレースコンディションが
  * このメソッドを見直す直接の契機になった).
+ *
+ * v0.5後半 §Step12: 新しいrunの開始時に、差分処理の「取りこぼしの回収」
+ * (`WPCV_Run_Repository::find_stale_diff_run()`)も併せて行う。`pending`のまま
+ * 一度もdispatchされていない、またはlease切れのまま放置されたrunが最大1件だけ
+ * 見つかれば、その継続action(`WPCV_Chunk_Dispatcher::HOOK`)を1つ予約する
+ * (回収自体はその場で処理しない ―― 新しいrunの開始をタイムアウトさせないため).
+ * この回収処理の失敗は新しいrunの開始を妨げてはならない(ベストエフォート.
+ * `recover_stale_diff_run()`参照).
  */
 class WPCV_Run_Starter {
 
@@ -44,19 +52,26 @@ class WPCV_Run_Starter {
 	 * `mark_run_failed()` で failed 化してから再送出する(呼び出し元は個別に
 	 * try/catch する必要が無い).
 	 *
-	 * @param WPCV_Run_Repository        $run_repository        `wpcv_runs` の永続化層.
-	 * @param WPCV_Run_Planner           $planner               target列挙.
-	 * @param WPCV_Target_Run_Repository $target_run_repository `wpcv_target_runs` の永続化層.
-	 * @param int                        $run_id                予約済みの(`planning`
-	 *                                                          状態の)run の id.
-	 * @param array                      $context               `WPCV_Run_Planner::plan()` に
-	 *                                                          渡す `$context`.
+	 * @param WPCV_Run_Repository        $run_repository         `wpcv_runs` の永続化層.
+	 * @param WPCV_Run_Planner           $planner                target列挙.
+	 * @param WPCV_Target_Run_Repository $target_run_repository  `wpcv_target_runs` の永続化層.
+	 * @param int                        $run_id                 予約済みの(`planning`
+	 *                                                            状態の)run の id.
+	 * @param array                      $context                `WPCV_Run_Planner::plan()` に
+	 *                                                            渡す `$context`.
+	 * @param callable|null              $continuation_scheduler 取りこぼし回収が使う継続予約
+	 *                                                            callable(`function( int $run_id,
+	 *                                                            int $delay_seconds ): void`)。
+	 *                                                            省略時は
+	 *                                                            `WPCV_Chunk_Dispatcher::schedule_via_action_scheduler()`.
 	 * @return array `$planner->plan( $context )` の戻り値(呼び出し元が使わなくてもよい).
 	 *
 	 * @throws RuntimeException `planning→running`遷移が失敗した場合(failed 記録後に再送出).
 	 * @throws Throwable        Plan・保存中に発生したその他の例外(failed 記録後に再送出).
 	 */
-	public static function plan_and_save( WPCV_Run_Repository $run_repository, WPCV_Run_Planner $planner, WPCV_Target_Run_Repository $target_run_repository, $run_id, array $context ) {
+	public static function plan_and_save( WPCV_Run_Repository $run_repository, WPCV_Run_Planner $planner, WPCV_Target_Run_Repository $target_run_repository, $run_id, array $context, ?callable $continuation_scheduler = null ) {
+		self::recover_stale_diff_run( $run_repository, $continuation_scheduler );
+
 		try {
 			$planned = $planner->plan( $context );
 
@@ -78,6 +93,36 @@ class WPCV_Run_Starter {
 			$run_repository->mark_run_failed( $run_id, get_class( $e ) . ': ' . $e->getMessage() );
 
 			throw $e;
+		}
+	}
+
+	/**
+	 * 差分処理の取りこぼし(`pending`のまま放置された、またはlease切れのまま
+	 * 放置されたrun)を最大1件だけ回収する(クラスdocblock参照).
+	 *
+	 * この処理自体の失敗(継続予約の失敗等)は、新しいrunの開始という本来の
+	 * 目的を妨げてはならないため、例外はここで握りつぶす(ベストエフォート.
+	 * 回収し損ねても、次回どこかのrunの開始時に再試行されるだけで実害が
+	 * 蓄積しない ―― `find_stale_diff_run()`は毎回独立に最古1件を探すため).
+	 *
+	 * @param WPCV_Run_Repository $run_repository         `wpcv_runs` の永続化層.
+	 * @param callable|null       $continuation_scheduler `plan_and_save()` と同じ.
+	 * @return void
+	 */
+	private static function recover_stale_diff_run( WPCV_Run_Repository $run_repository, ?callable $continuation_scheduler ) {
+		try {
+			$stale_run_id = $run_repository->find_stale_diff_run();
+
+			if ( null === $stale_run_id ) {
+				return;
+			}
+
+			$scheduler = $continuation_scheduler ?? array( 'WPCV_Chunk_Dispatcher', 'schedule_via_action_scheduler' );
+
+			call_user_func( $scheduler, $stale_run_id, 0 );
+		} catch ( Throwable $e ) {
+			// ベストエフォート. 握りつぶす理由はこのメソッドのdocblock参照.
+			unset( $e );
 		}
 	}
 }

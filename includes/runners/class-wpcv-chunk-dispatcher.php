@@ -221,6 +221,17 @@ class WPCV_Chunk_Dispatcher {
 	private $file_state_repository;
 
 	/**
+	 * 差分処理(v0.5後半 §Step12)のdispatcher。`dispatch()`が「runが終端に達した」と
+	 * 判定した際、差分処理がまだ残っていれば(`diff_status`が
+	 * `pending`/`processing`/`alerting`)ここへ委譲する(§配線参照)。`null`なら
+	 * 従来通り`run_already_terminal`を返すだけ(既存テストを壊さないための
+	 * 後方互換設計。`WPCV_File_State_Repository`と同じ導入パターン).
+	 *
+	 * @var WPCV_Diff_Dispatcher|null
+	 */
+	private $diff_dispatcher;
+
+	/**
 	 * Stat 差分検知を行う本体 target の `error_code`(rev.3 §3.4).
 	 *
 	 * 「照合元の配布物がそもそも無い」ことを示すものに限る。`http_error`/
@@ -254,6 +265,8 @@ class WPCV_Chunk_Dispatcher {
 	 *                                                                   返す callable. 省略時は `time()`.
 	 * @param WPCV_File_State_Repository|null $file_state_repository `wpcv_file_states` の永続化層
 	 *                                                                (v0.5 §Step6).
+	 * @param WPCV_Diff_Dispatcher|null       $diff_dispatcher       差分処理(v0.5後半 §Step12)の
+	 *                                                               dispatcher.
 	 */
 	public function __construct(
 		WPCV_Run_Repository $run_repository,
@@ -266,7 +279,8 @@ class WPCV_Chunk_Dispatcher {
 		?callable $lease_owner_factory = null,
 		?callable $continuation_scheduler = null,
 		?callable $now = null,
-		?WPCV_File_State_Repository $file_state_repository = null
+		?WPCV_File_State_Repository $file_state_repository = null,
+		?WPCV_Diff_Dispatcher $diff_dispatcher = null
 	) {
 		$this->run_repository          = $run_repository;
 		$this->target_run_repository   = $target_run_repository;
@@ -287,6 +301,7 @@ class WPCV_Chunk_Dispatcher {
 		};
 
 		$this->file_state_repository = $file_state_repository;
+		$this->diff_dispatcher       = $diff_dispatcher;
 	}
 
 	/**
@@ -312,6 +327,12 @@ class WPCV_Chunk_Dispatcher {
 		}
 
 		if ( ! WPCV_Run_Status::is_active( $run['status'] ) ) {
+			// 検証(target_runs)自体は終端に達した。差分処理(v0.5後半 §Step12)が
+			// まだ残っていれば`WPCV_Diff_Dispatcher`へ委譲する(§配線).
+			if ( null !== $this->diff_dispatcher && in_array( $run['diff_status'] ?? null, array( WPCV_Diff_Status::PENDING, WPCV_Diff_Status::PROCESSING, WPCV_Diff_Status::ALERTING ), true ) ) {
+				return $this->delegate_to_diff_dispatcher( $run_id, $run['status'] );
+			}
+
 			// 既に終端に達している(他workerが先に確定させた、stale
 			// sweepでfailed化された等)。継続をenqueueしても意味が無いため、
 			// ここで静かに終わる(重複配送されたAS actionのno-op).
@@ -368,6 +389,36 @@ class WPCV_Chunk_Dispatcher {
 		return array(
 			'action'    => 'processed',
 			'target_id' => $claimed['target_id'],
+		);
+	}
+
+	/**
+	 * `WPCV_Diff_Dispatcher::dispatch_diff()` へ委譲し、結果に応じて継続予約の
+	 * 要否を判断する(v0.5後半 §Step12・§配線).
+	 *
+	 * `diff_claimed`(1単位処理できた。まだ続きがある可能性が高い)は`processed`と
+	 * 同じく即座に継続予約する。`diff_not_claimable`(他プロセスがlease保持中)は
+	 * `waiting`と同じ考え方で、lease有効期間相当の遅延で再チェックする(§配線)。
+	 * `diff_finalized`/`diff_failed`は終端のため継続予約しない.
+	 *
+	 * @param int    $run_id       対象の run の id.
+	 * @param string $run_status   `wpcv_runs.status`(呼び出し元が既に読んでいる値.
+	 *                              レスポンスに含めるためだけに使う).
+	 * @return array{action: string, status: string}
+	 */
+	private function delegate_to_diff_dispatcher( $run_id, $run_status ) {
+		$result = $this->diff_dispatcher->dispatch_diff( $run_id );
+		$action = $result['action'];
+
+		if ( 'diff_claimed' === $action ) {
+			$this->schedule_continuation( $run_id, 0 );
+		} elseif ( 'diff_not_claimable' === $action ) {
+			$this->schedule_continuation( $run_id, WPCV_Run_Repository::DIFF_LEASE_SECONDS );
+		}
+
+		return array(
+			'action' => $action,
+			'status' => $run_status,
 		);
 	}
 
@@ -461,6 +512,19 @@ class WPCV_Chunk_Dispatcher {
 
 		$summary = WPCV_Verifier::summarize( $target_runs );
 		$this->run_repository->finish_run( $run_id, $summary );
+
+		// v0.5後半 §Step12: `finish_run()`が同じUPDATEで`diff_status=pending`を
+		// 書く(`WPCV_Run_Repository::finish_run()`のdocblock参照)。ここで
+		// `run_finalized`を無条件に返すと、同期ループ(`WPCV_Run_Coordinator`・
+		// CLI同期実行)は`run_finalized`がTERMINAL_ACTIONSに含まれるため即座に
+		// 停止してしまい、差分処理へ一切進めない(AS駆動の経路も、`run_finalized`
+		// では継続予約をしないため同様に止まる)。`diff_dispatcher`が注入されて
+		// いれば、検証完了の直後にこの同じ呼び出しの中で差分処理へ引き継ぐ
+		// (§配線。`diff_dispatcher`が無い〔既定null〕場合のみ従来通り
+		// `run_finalized`を返す ―― 既存テストとの後方互換のため).
+		if ( null !== $this->diff_dispatcher ) {
+			return $this->delegate_to_diff_dispatcher( $run_id, (string) $summary['status'] );
+		}
 
 		return array(
 			'action'  => 'run_finalized',
@@ -1244,7 +1308,7 @@ class WPCV_Chunk_Dispatcher {
 	 * @throws RuntimeException `as_enqueue_async_action()`/`as_schedule_single_action()`
 	 *                          が正の action ID を返さなかった場合.
 	 */
-	private static function schedule_via_action_scheduler( $run_id, $delay_seconds ) {
+	public static function schedule_via_action_scheduler( $run_id, $delay_seconds ) {
 		if ( ! function_exists( 'as_enqueue_async_action' ) || ! class_exists( 'ActionScheduler' ) || ! ActionScheduler::is_initialized() ) {
 			return;
 		}

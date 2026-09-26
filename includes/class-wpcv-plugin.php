@@ -39,6 +39,10 @@ if ( ! defined( 'ABSPATH' ) ) {
  * v0.4.0 §Step6で `sync_dispatcher()` を公開アクセサとして切り出し、
  * `WPCV_Rest_Run_Controller` の外部HTTP時間予算ループからも共有するようにした
  * (`sync_dispatcher()` のdocblock参照).
+ *
+ * v0.5後半 §Step12で `diff_dispatcher()` を追加し、`build_dispatcher()` が
+ * 組み立てる `WPCV_Chunk_Dispatcher`(AS向け・同期ループ向けの両方)に注入する
+ * ようにした(`diff_dispatcher()` のdocblock参照).
  */
 class WPCV_Plugin {
 
@@ -102,6 +106,14 @@ class WPCV_Plugin {
 	 * @var WPCV_Chunk_Dispatcher|null
 	 */
 	private static $chunk_dispatcher = null;
+
+	/**
+	 * 組み立て済みの `WPCV_Diff_Dispatcher`(1リクエスト内で使い回す。
+	 * v0.5後半 §Step12で追加).
+	 *
+	 * @var WPCV_Diff_Dispatcher|null
+	 */
+	private static $diff_dispatcher = null;
 
 	/**
 	 * Continuation schedulerをno-opにした `WPCV_Chunk_Dispatcher`(1リクエスト内で
@@ -229,6 +241,29 @@ class WPCV_Plugin {
 	}
 
 	/**
+	 * 本番用に配線された `WPCV_Diff_Dispatcher` を返す(v0.5後半 §Step12).
+	 *
+	 * `chunk_dispatcher()`/`sync_dispatcher()`の両方が(`build_dispatcher()`経由で)
+	 * 同じインスタンスを共有する(差分処理には`WPCV_Chunk_Dispatcher`のような
+	 * AS向け/同期ループ向けの使い分けが無いため。`WPCV_Diff_Dispatcher`のクラス
+	 * docblock「独自のcontinuation schedulerを持たない」参照).
+	 *
+	 * @return WPCV_Diff_Dispatcher
+	 */
+	public static function diff_dispatcher() {
+		if ( null === self::$diff_dispatcher ) {
+			self::$diff_dispatcher = new WPCV_Diff_Dispatcher(
+				self::run_repository(),
+				self::target_run_repository(),
+				self::finding_repository(),
+				self::file_state_repository()
+			);
+		}
+
+		return self::$diff_dispatcher;
+	}
+
+	/**
 	 * 本番用に配線された、continuation schedulerがno-opの `WPCV_Chunk_Dispatcher` を
 	 * 返す(v0.4.0 §Step5/§Step6)。
 	 *
@@ -309,7 +344,8 @@ class WPCV_Plugin {
 			null,
 			$continuation_scheduler,
 			null,
-			self::file_state_repository()
+			self::file_state_repository(),
+			self::diff_dispatcher()
 		);
 	}
 

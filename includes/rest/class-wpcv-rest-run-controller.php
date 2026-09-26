@@ -174,12 +174,13 @@ class WPCV_Rest_Run_Controller {
 	 * `WPCV_Plugin::sync_dispatcher()` の `dispatch()` を、設定された時間予算内で
 	 * 繰り返す(クラス docblock 「4.」参照).
 	 *
-	 * 実際に処理が進んだ(`action: 'processed'`)場合だけループを続ける。
-	 * `run_finalized`/`aborted`/`run_not_found`/`run_already_terminal` は
-	 * それ以上呼んでも意味が無いため即座に止まる。`waiting`(他workerのlease待ち)も
-	 * 同様に即座に止める ―― lease有効期限は実時間の経過でしか切れないため、
-	 * 間を置かずに `dispatch()` を呼び直しても状態は変わらず、時間予算を
-	 * 無為に消費するだけになる(次回のPOSTに委ねる).
+	 * 実際に処理が進んだ(`action: 'processed'`。v0.5後半 §Step12で差分処理の
+	 * `diff_claimed`も追加)場合だけループを続ける。`run_finalized`/`aborted`/
+	 * `run_not_found`/`run_already_terminal`/`diff_finalized`/`diff_failed`は
+	 * それ以上呼んでも意味が無いため即座に止まる。`waiting`/`diff_not_claimable`
+	 * (他workerのlease待ち)も同様に即座に止める ―― lease有効期限は実時間の
+	 * 経過でしか切れないため、間を置かずに `dispatch()` を呼び直しても状態は
+	 * 変わらず、時間予算を無為に消費するだけになる(次回のPOSTに委ねる).
 	 *
 	 * @param int   $run_id  対象の run の id.
 	 * @param array $context `WPCV_Context_Builder::build()` と同じ形.
@@ -191,7 +192,7 @@ class WPCV_Rest_Run_Controller {
 
 		do {
 			$result = $dispatcher->dispatch( $run_id, $context );
-		} while ( 'processed' === $result['action'] && time() < $deadline );
+		} while ( in_array( $result['action'], array( 'processed', 'diff_claimed' ), true ) && time() < $deadline );
 	}
 
 	/**

@@ -76,9 +76,15 @@ class WPCV_Run_Coordinator {
 	/**
 	 * `dispatch()` の戻り値のうち、ループを終了させる `action` の一覧.
 	 *
+	 * `diff_finalized`/`diff_failed`(v0.5後半 §Step12)は差分処理が終端に達した
+	 * ことを意味する。`diff_claimed`(1単位処理できた。続きがある)・
+	 * `diff_not_claimable`(他プロセスがlease保持中)は含めない ―― 既存の
+	 * `processed`/`waiting`と同じ考え方で、ループはそのまま継続する
+	 * (`WPCV_Chunk_Dispatcher::dispatch()`のクラスdocblock「§配線」参照).
+	 *
 	 * @var string[]
 	 */
-	const TERMINAL_ACTIONS = array( 'run_finalized', 'aborted', 'run_not_found', 'run_already_terminal' );
+	const TERMINAL_ACTIONS = array( 'run_finalized', 'aborted', 'run_not_found', 'run_already_terminal', 'diff_finalized', 'diff_failed' );
 
 	/**
 	 * コンストラクタ.
