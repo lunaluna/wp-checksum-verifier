@@ -182,6 +182,21 @@ if ( ! function_exists( 'wp_remote_retrieve_response_code' ) ) {
 	}
 }
 
+if ( ! function_exists( 'wp_json_encode' ) ) {
+	/**
+	 * Stub wp_json_encode() — plain json_encode() (the real one only adds charset
+	 * sanity checks, which are irrelevant for the ASCII/integer payloads under test).
+	 *
+	 * @param mixed $data    Data to encode.
+	 * @param int   $options json_encode() options.
+	 * @param int   $depth   Maximum depth.
+	 * @return string|false
+	 */
+	function wp_json_encode( $data, $options = 0, $depth = 512 ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return json_encode( $data, $options, $depth ); // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
+	}
+}
+
 if ( ! function_exists( 'apply_filters' ) ) {
 	/**
 	 * Stub apply_filters() — returns $value unchanged unless a callback is

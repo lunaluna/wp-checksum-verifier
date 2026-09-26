@@ -255,6 +255,100 @@ class WPCV_Verifier {
 	}
 
 	/**
+	 * Stat差分検知(層1)の1ファイル分の前回値と今回値を比べ、finding に変換する
+	 * (v0.5 §Step5. rev.3 §3.2/§3.5参照).
+	 *
+	 * 状態の組み合わせ(`$previous` は前回ベースライン、`$current` は今回の `lstat()` 値):
+	 *
+	 * | 前回値 | size | ctime | mtime | 結果                                    |
+	 * |--------|------|-------|-------|-----------------------------------------|
+	 * | 無し   | -    | -     | -     | `added`(新規ファイル)                   |
+	 * | あり   | 同じ | 同じ  | 同じ  | null(変更なし)                          |
+	 * | あり   | 同じ | 変化  | 変化  | `stat_changed`                          |
+	 * | あり   | 同じ | 変化  | 同じ  | `stat_changed`(chmod等. timestomp扱いしない) |
+	 * | あり   | 同じ | 同じ  | 変化  | `stat_changed`(通常は起きない組み合わせ)|
+	 * | あり   | 変化 | *     | 変化  | `stat_changed`                          |
+	 * | あり   | 変化 | *     | 同じ  | `stat_changed` + timestomp(severity=high) |
+	 *
+	 * timestomp は rev.3 §3.5 の定義どおり「size(層2では content_hash)が変化したのに
+	 * mtime が不変」の場合だけ立てる。size が同じで ctime だけ変わった場合は、
+	 * chmod/chown と「同サイズ書き換え+mtime巻き戻し」を stat だけでは区別できない
+	 * ため、timestomp にはせず通常の `stat_changed` として拾うに留める(層1の限界。§3.2-c).
+	 *
+	 * 層1はファイル内容を読まない設計(§3.2-c)のため、`added` でも hash を計算しない
+	 * (`make_finding_for_unknown_file()` は hash を計算するので使わない)。そのため
+	 * `expected_hash`/`actual_hash` は常に null、`hash_algorithm` は空文字にする
+	 * (列が NOT NULL のため)。actual_hash を持たないので、ハッシュ承認
+	 * (`allowlist_hash`)の対象にもならない. 抑制は `exclude_path` で行う(§3.5).
+	 *
+	 * @param string     $target_id     target_id(`{dimension}:{slug}:_stat` 形式).
+	 * @param string     $dimension     dimension.
+	 * @param string     $slug          slug.
+	 * @param string     $version       version.
+	 * @param string     $source        source.
+	 * @param string     $relative_path ABSPATH 相対パス.
+	 * @param string     $severity      timestomp でない場合の severity(走査時に拡張子から決めた値).
+	 * @param array|null $previous      前回値 `array( 'size' => int, 'ctime' => int, 'mtime' => int )`.
+	 *                                  ベースラインに無い(新規)場合は null.
+	 * @param array      $current       今回値(`$previous` と同じ形).
+	 * @return array|null 変更が無ければ null. それ以外は finding(`stat_changed` のみ `detail` を持つ).
+	 */
+	public static function make_finding_for_stat_change( $target_id, $dimension, $slug, $version, $source, $relative_path, $severity, ?array $previous, array $current ) {
+		$current_size = (int) $current['size'];
+
+		if ( null === $previous ) {
+			return self::make_finding( $target_id, $dimension, $slug, $version, $source, $relative_path, 'added', $severity, '', null, null, $current_size );
+		}
+
+		$size_changed  = (int) $previous['size'] !== $current_size;
+		$ctime_changed = (int) $previous['ctime'] !== (int) $current['ctime'];
+		$mtime_changed = (int) $previous['mtime'] !== (int) $current['mtime'];
+
+		if ( ! $size_changed && ! $ctime_changed && ! $mtime_changed ) {
+			return null;
+		}
+
+		$timestomp = $size_changed && ! $mtime_changed;
+
+		$finding = self::make_finding(
+			$target_id,
+			$dimension,
+			$slug,
+			$version,
+			$source,
+			$relative_path,
+			'stat_changed',
+			$timestomp ? 'high' : $severity,
+			'',
+			null,
+			null,
+			$current_size
+		);
+
+		// 管理画面で「何が変わったのか」を読めるよう、前回値と今回値を JSON で持たせる
+		// (expected_hash/actual_hash が空になるため. rev.3 §3.5の detail 形式).
+		$finding['detail'] = wp_json_encode(
+			array(
+				'size'      => array(
+					'old' => (int) $previous['size'],
+					'new' => $current_size,
+				),
+				'ctime'     => array(
+					'old' => (int) $previous['ctime'],
+					'new' => (int) $current['ctime'],
+				),
+				'mtime'     => array(
+					'old' => (int) $previous['mtime'],
+					'new' => (int) $current['mtime'],
+				),
+				'timestomp' => $timestomp,
+			)
+		);
+
+		return $finding;
+	}
+
+	/**
 	 * 検出結果(finding)の1行を組み立てる(§5.5 のスキーマに準拠。id/run_id/target_run_id 無し).
 	 *
 	 * @param string      $target_id      target_id.

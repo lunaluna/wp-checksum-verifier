@@ -263,7 +263,207 @@ class WPCV_Chunk_Verifier {
 	}
 
 	/**
-	 * Fingerprint/version不一致時の戻り値を組み立てる(2つの `verify_*_chunk()` で共有).
+	 * Stat差分検知(層1)のchunk処理を1回分行う(v0.5 §Step5. rev.3 §3参照).
+	 *
+	 * `verify_unknown_files_chunk()` を雛形にしている。違いは次の3点:
+	 *
+	 * 1. 走査結果(`collect_stat => true` で得た size/ctime/mtime 付きの items)を
+	 *    前回のベースラインと比べ、`WPCV_Verifier::make_finding_for_stat_change()` で
+	 *    finding にする(ファイル内容は読まない).
+	 * 2. 処理したファイルぶんのベースライン行(`baseline_rows`)も返す。呼び出し元
+	 *    (Step6の dispatcher / `commit_chunk()`)が findings と同じトランザクションで
+	 *    `WPCV_File_State_Repository::upsert_many()` に渡す想定.
+	 * 3. `$context['baseline_mode']` が真なら「初回のベースライン構築」とみなし、
+	 *    finding を一切出さずにベースライン行だけを返す(§3.6)。この判定
+	 *    (`has_baseline_before_run()`)は DB を読むため呼び出し元の責務とする.
+	 *
+	 * このクラスは DB に触らない。前回値は `$context['load_previous_states']`
+	 * (path の配列を受け取り、path => ベースライン行 を返す callable)経由で受け取る。
+	 * 全件を先に渡す形にしないのは、1 target が数万ファイルになりうるため
+	 * (このchunkで処理しうる path ぶんだけを1回で引く).
+	 *
+	 * fingerprint は path 一覧のみから計算し、stat 値は含めない(rev.3 §3.5
+	 * 「実装上の落とし穴」: stat 値を入れるとファイルが1つ変わるたびに
+	 * `needs_retry` になり、永久に確定できなくなる).
+	 *
+	 * `lstat()` が失敗した item(`WPCV_Unknown_File_Scanner` は size/ctime/mtime を
+	 * すべて0で返す。走査と lstat の間に消えた等の競合)は、finding もベースライン行も
+	 * 作らずに読み飛ばす。ベースラインの `last_seen_run_id` が更新されないため、
+	 * 本当に消えていれば Step7 の削除検出で `missing` として拾われる.
+	 *
+	 * @param array $context {
+	 *     コンテキスト.
+	 *
+	 *     @type string        $target_id            target_id(`{dimension}:{slug}:_stat`). 必須.
+	 *     @type string        $dimension            dimension. 必須.
+	 *     @type string        $slug                 slug. 必須.
+	 *     @type string|null   $version              本体 target の現在の version.
+	 *     @type string|null   $source               source.
+	 *     @type int           $run_id               今回の run の id(ベースライン行の
+	 *                                               first/last_seen_run_id になる). 必須.
+	 *     @type array         $scan_items           `collect_stat => true` で得た
+	 *                                               `WPCV_Unknown_File_Scanner::scan()` の戻り値. 必須.
+	 *     @type bool          $baseline_mode        真ならベースライン構築のみ(finding なし). 既定 false.
+	 *     @type callable|null $load_previous_states `function( string[] $paths ): array`.
+	 *                                               path => `array( 'file_size', 'ctime', 'mtime', ... )`
+	 *                                               (`wpcv_file_states` の行の形)を返す.
+	 *                                               `baseline_mode` が偽なら必須.
+	 *     @type string|null   $cursor_path          前回確定した位置. 既定 null.
+	 *     @type string|null   $previous_fingerprint 前回保存した fingerprint. 既定 null.
+	 *     @type string|null   $previous_version     前回保存した version. 既定 null.
+	 *     @type array         $budget               `verify_manifest_chunk()` と同じ形.
+	 * }
+	 * @return array `verify_manifest_chunk()` と同じ形に `baseline_rows`
+	 *               (`WPCV_File_State_Repository::upsert_many()` にそのまま渡せる行の配列)を
+	 *               加えたもの. `files_verified_delta` は「前回から変化なしと確認できた件数」
+	 *               (ベースライン構築モードでは比較していないので0).
+	 */
+	public function verify_stat_chunk( array $context ) {
+		$scan_items   = (array) $context['scan_items'];
+		$sorted_paths = WPCV_Chunk_Cursor::sorted_scan_paths( $scan_items );
+		$fingerprint  = WPCV_Chunk_Cursor::compute_fingerprint( $sorted_paths );
+		$version      = isset( $context['version'] ) ? (string) $context['version'] : '';
+
+		$previous_fingerprint = $context['previous_fingerprint'] ?? null;
+		$previous_version     = $context['previous_version'] ?? null;
+
+		$fingerprint_changed = null !== $previous_fingerprint && $previous_fingerprint !== $fingerprint;
+		$version_changed     = null !== $previous_version && $previous_version !== $version;
+
+		if ( $fingerprint_changed || $version_changed ) {
+			$result                  = self::retry_result( $fingerprint, count( $sorted_paths ), $fingerprint_changed, $version_changed );
+			$result['baseline_rows'] = array();
+			return $result;
+		}
+
+		$item_by_path = array();
+		foreach ( $scan_items as $item ) {
+			$item_by_path[ $item['path'] ] = $item;
+		}
+
+		$budget = isset( $context['budget'] ) ? (array) $context['budget'] : array();
+		$paths  = WPCV_Chunk_Cursor::paths_after( $sorted_paths, $context['cursor_path'] ?? null );
+
+		$baseline_mode   = ! empty( $context['baseline_mode'] );
+		$previous_states = $baseline_mode ? array() : $this->load_previous_states( $context, $paths, $budget );
+
+		$target_id = (string) $context['target_id'];
+		$dimension = (string) $context['dimension'];
+		$slug      = (string) $context['slug'];
+		$source    = isset( $context['source'] ) ? (string) $context['source'] : '';
+		$run_id    = (int) $context['run_id'];
+
+		$findings             = array();
+		$baseline_rows        = array();
+		$files_verified_delta = 0;
+		$new_cursor_path      = $context['cursor_path'] ?? null;
+		$completed            = true;
+		$processed            = 0;
+		$start                = call_user_func( $this->now );
+
+		foreach ( $paths as $path ) {
+			$item    = $item_by_path[ $path ];
+			$current = array(
+				'size'  => isset( $item['size'] ) ? (int) $item['size'] : 0,
+				'ctime' => isset( $item['ctime'] ) ? (int) $item['ctime'] : 0,
+				'mtime' => isset( $item['mtime'] ) ? (int) $item['mtime'] : 0,
+			);
+
+			// lstat が失敗した item は読み飛ばす. 理由はメソッドの docblock を参照.
+			$stat_failed = 0 === $current['size'] && 0 === $current['ctime'] && 0 === $current['mtime'];
+
+			if ( ! $stat_failed ) {
+				if ( ! $baseline_mode ) {
+					$previous = isset( $previous_states[ $path ] ) ? array(
+						'size'  => (int) $previous_states[ $path ]['file_size'],
+						'ctime' => (int) $previous_states[ $path ]['ctime'],
+						'mtime' => (int) $previous_states[ $path ]['mtime'],
+					) : null;
+
+					$finding = WPCV_Verifier::make_finding_for_stat_change( $target_id, $dimension, $slug, $version, $source, $path, (string) $item['severity'], $previous, $current );
+
+					if ( null === $finding ) {
+						++$files_verified_delta;
+					} else {
+						$findings[] = $finding;
+					}
+				}
+
+				$baseline_rows[] = array(
+					'state_key'         => WPCV_File_State_Repository::compute_state_key( $target_id, $path ),
+					'target_id'         => $target_id,
+					'dimension'         => $dimension,
+					'slug'              => $slug,
+					'path'              => $path,
+					'file_size'         => $current['size'],
+					'ctime'             => $current['ctime'],
+					'mtime'             => $current['mtime'],
+					'content_hash'      => null,
+					'hash_algorithm'    => null,
+					'baseline_version'  => '' === $version ? null : $version,
+					'first_seen_run_id' => $run_id,
+					'last_seen_run_id'  => $run_id,
+				);
+			}
+
+			$new_cursor_path = $path;
+			++$processed;
+
+			if ( $this->budget_exceeded( $start, $processed, $budget ) ) {
+				$completed = false;
+				break;
+			}
+		}
+
+		return array(
+			'findings'             => $findings,
+			'cursor_path'          => $completed ? null : $new_cursor_path,
+			'files_verified_delta' => $files_verified_delta,
+			'files_total'          => count( $sorted_paths ),
+			'completed'            => $completed,
+			'manifest_fingerprint' => $fingerprint,
+			'fingerprint_changed'  => false,
+			'version_changed'      => false,
+			'needs_retry'          => false,
+			'baseline_rows'        => $baseline_rows,
+		);
+	}
+
+	/**
+	 * このchunkで処理しうる path ぶんの前回ベースラインを、呼び出し元の callable
+	 * 経由でまとめて引く(`verify_stat_chunk()` 専用).
+	 *
+	 * `max_files` 予算があればその件数までに絞る(それ以上は今回のchunkで処理されない
+	 * ため)。時間・メモリ予算で先に止まった場合は一部が使われずに終わるが、
+	 * 正しさには影響しない.
+	 *
+	 * @param array    $context `verify_stat_chunk()` の `$context`.
+	 * @param string[] $paths   cursor より後の path(ソート済み).
+	 * @param array    $budget  予算.
+	 * @return array<string, array> path => ベースライン行.
+	 *
+	 * @throws InvalidArgumentException `load_previous_states` が callable でない場合.
+	 */
+	private function load_previous_states( array $context, array $paths, array $budget ) {
+		if ( ! isset( $context['load_previous_states'] ) || ! is_callable( $context['load_previous_states'] ) ) {
+			throw new InvalidArgumentException( 'verify_stat_chunk() requires a callable load_previous_states unless baseline_mode is true.' );
+		}
+
+		if ( isset( $budget['max_files'] ) && (int) $budget['max_files'] > 0 ) {
+			$paths = array_slice( $paths, 0, (int) $budget['max_files'] );
+		}
+
+		if ( empty( $paths ) ) {
+			return array();
+		}
+
+		$states = call_user_func( $context['load_previous_states'], $paths );
+
+		return is_array( $states ) ? $states : array();
+	}
+
+	/**
+	 * Fingerprint/version不一致時の戻り値を組み立てる(3つの `verify_*_chunk()` で共有).
 	 *
 	 * @param string $fingerprint         今回計算した fingerprint.
 	 * @param int    $files_total         対象集合の総数.
