@@ -293,4 +293,131 @@ class DiffMultiGenerationTest extends TestCase {
 		$this->assertSame( 0, (int) $env['wpdb']->rows['wp_wpcv_runs'][ $run4_id ]['findings_continuing'] );
 		$this->assertSame( 0, (int) $env['wpdb']->rows['wp_wpcv_runs'][ $run4_id ]['findings_resolved'] );
 	}
+
+	/**
+	 * 差分処理で終わった(resolved)過去のrunのfindingが、終わったあとも
+	 * `query()`でそのrunの結果として見えることを確認する(v0.5後半プラン D3の核心:
+	 * closed_atを書かずended_in_run_idで履歴を保つ設計. `query()`の既定の
+	 * 絞り込みはclosed_at基準のため、ended_in_run_idを書いても消えない).
+	 *
+	 * @return void
+	 */
+	public function test_resolved_finding_remains_visible_in_past_run_query() {
+		$env       = $this->make_environment();
+		$target_id = 'plugin:foo';
+		$finding   = wpcv_test_make_finding(
+			array(
+				'target_id' => $target_id,
+				'dimension' => 'plugin',
+				'slug'      => 'foo',
+				'version'   => '1.0',
+				'path'      => 'foo.php',
+			)
+		);
+
+		// run1: 改ざんを検出.
+		$run1_id = $this->make_run_ready_for_diff( $env['run_repository'] );
+		$tr1_id  = $this->insert_target_run( $env['wpdb'], $run1_id, array( 'target_id' => $target_id, 'version' => '1.0' ) );
+		$env['finding_repository']->save_findings( $run1_id, array( $target_id => $tr1_id ), array( $finding ) );
+		$this->drive_diff_to_completion( $env['dispatcher'], $run1_id );
+
+		// run2: ファイルを元に戻した(findingが0件) → run1のfindingがresolvedになる.
+		$run2_id = $this->make_run_ready_for_diff( $env['run_repository'] );
+		$this->insert_target_run( $env['wpdb'], $run2_id, array( 'target_id' => $target_id, 'version' => '1.0' ) );
+		$this->drive_diff_to_completion( $env['dispatcher'], $run2_id );
+
+		$finding1_id = $this->finding_ids_for_target_run( $env['wpdb'], $tr1_id )[0];
+		$this->assertSame( $run2_id, $env['wpdb']->rows['wp_wpcv_findings'][ $finding1_id ]['ended_in_run_id'] );
+
+		// 終わったあとも、run1の検出結果として既定の条件で見える.
+		$result = $env['finding_repository']->query( array( 'run_id' => $run1_id ) );
+
+		$this->assertSame( 1, $result['total'] );
+		$this->assertSame( array( 'foo.php' ), array_column( $result['rows'], 'path' ) );
+	}
+
+	/**
+	 * 差分処理のchunkの途中で例外が出ても、lease切れのあとに同じ位置から
+	 * やり直して正しい結果で完了することを確認する(v0.5後半プラン Step12の
+	 * 完了条件. `WPCV_Diff_Dispatcher`は例外を捕捉せず、runを`processing`のまま
+	 * 残し、lease切れ後の`claim_diff()`に再開を任せる設計).
+	 *
+	 * あわせて、lease有効中は別の呼び出しがclaimできないこと(Dispatcher層での
+	 * 二重claimの拒否)も確認する.
+	 *
+	 * @return void
+	 */
+	public function test_diff_resumes_after_exception_in_middle_of_chunk() {
+		$env       = $this->make_environment();
+		$target_id = 'plugin:foo';
+		$make      = static function ( $path ) use ( $target_id ) {
+			return wpcv_test_make_finding(
+				array(
+					'target_id' => $target_id,
+					'dimension' => 'plugin',
+					'slug'      => 'foo',
+					'version'   => '1.0',
+					'path'      => $path,
+				)
+			);
+		};
+
+		// 基準run: a.php(継続予定)・b.php(解消予定).
+		$baseline_run_id = $this->make_run_ready_for_diff( $env['run_repository'] );
+		$baseline_tr_id  = $this->insert_target_run( $env['wpdb'], $baseline_run_id, array( 'target_id' => $target_id, 'version' => '1.0' ) );
+		$env['finding_repository']->save_findings( $baseline_run_id, array( $target_id => $baseline_tr_id ), array( $make( 'a.php' ), $make( 'b.php' ) ) );
+		$this->drive_diff_to_completion( $env['dispatcher'], $baseline_run_id );
+
+		// 今回run: a.php(継続)・c.php(新規).
+		$run_id = $this->make_run_ready_for_diff( $env['run_repository'] );
+		$tr_id  = $this->insert_target_run( $env['wpdb'], $run_id, array( 'target_id' => $target_id, 'version' => '1.0' ) );
+		$env['finding_repository']->save_findings( $run_id, array( $target_id => $tr_id ), array( $make( 'a.php' ), $make( 'c.php' ) ) );
+
+		// 1回目: comparedモードを確定し、pass 1のcursorを置く(ここは成功させる).
+		$this->assertSame( 'diff_claimed', $env['dispatcher']->dispatch_diff( $run_id )['action'] );
+
+		// 2回目: pass 1本体の書き込みでDBエラーを起こす.
+		$env['wpdb']->query_should_fail = true;
+
+		try {
+			$env['dispatcher']->dispatch_diff( $run_id );
+			$this->fail( 'pass 1の書き込み失敗で例外が出るはず' );
+		} catch ( RuntimeException $e ) {
+			unset( $e );
+		}
+
+		$env['wpdb']->query_should_fail = false;
+
+		$run_row = $env['wpdb']->rows['wp_wpcv_runs'][ $run_id ];
+		$this->assertSame( 'processing', $run_row['diff_status'], '例外のあとはprocessingのまま残る' );
+
+		foreach ( $this->finding_ids_for_target_run( $env['wpdb'], $tr_id ) as $id ) {
+			$this->assertNull( $env['wpdb']->rows['wp_wpcv_findings'][ $id ]['diff_state'], '失敗したchunkの書き込みは反映されていない' );
+		}
+
+		// lease有効中は、別の呼び出しがclaimできない.
+		$this->assertSame( 'diff_not_claimable', $env['dispatcher']->dispatch_diff( $run_id )['action'] );
+
+		// lease切れにして再開させる(固定時刻NOWより前にする).
+		$env['wpdb']->rows['wp_wpcv_runs'][ $run_id ]['diff_lease_expires_at'] = '2020-01-01 00:00:00';
+
+		$this->drive_diff_to_completion( $env['dispatcher'], $run_id );
+
+		$states = array();
+		foreach ( $this->finding_ids_for_target_run( $env['wpdb'], $tr_id ) as $id ) {
+			$row                    = $env['wpdb']->rows['wp_wpcv_findings'][ $id ];
+			$states[ $row['path'] ] = $row['diff_state'];
+		}
+
+		$this->assertSame(
+			array(
+				'a.php' => WPCV_Generation_Differ::DIFF_STATE_CONTINUING,
+				'c.php' => WPCV_Generation_Differ::DIFF_STATE_NEW,
+			),
+			$states
+		);
+		$this->assertSame( 1, (int) $env['wpdb']->rows['wp_wpcv_runs'][ $run_id ]['findings_new'] );
+		$this->assertSame( 1, (int) $env['wpdb']->rows['wp_wpcv_runs'][ $run_id ]['findings_continuing'] );
+		$this->assertSame( 1, (int) $env['wpdb']->rows['wp_wpcv_runs'][ $run_id ]['findings_resolved'] );
+	}
 }
