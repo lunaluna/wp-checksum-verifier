@@ -191,6 +191,12 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-finding-k
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-generation-differ.php';
 
 /**
+ * アラートメールの件名・本文の組み立て(v0.5後半 §Step13. DBに触れない純粋ロジック).
+ * `WPCV_Target_Resolver`/`WPCV_Target_Status` に依存するため、それらより後に読み込む.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-alert-composer.php';
+
+/**
  * DB 永続化層(§4.2. v0.4.0 §Step1でrun/target_run/findingの3責務に分割)と、
  * 1回分の run のライフサイクルを統括する Coordinator.
  */

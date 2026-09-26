@@ -708,6 +708,20 @@ if ( ! function_exists( 'sanitize_text_field' ) ) {
 	}
 }
 
+if ( ! function_exists( 'wp_specialchars_decode' ) ) {
+	/**
+	 * Stub wp_specialchars_decode() — PHP標準の`htmlspecialchars_decode()`で代用する
+	 * (`WPCV_Alert_Composer`が件名のサイト名に使う. v0.5後半 §Step13).
+	 *
+	 * @param string     $text        入力値.
+	 * @param string|int $quote_style 本番と同じく`ENT_QUOTES`等.
+	 * @return string
+	 */
+	function wp_specialchars_decode( $text, $quote_style = ENT_NOQUOTES ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return htmlspecialchars_decode( (string) $text, (int) $quote_style );
+	}
+}
+
 if ( ! function_exists( 'wp_strip_all_tags' ) ) {
 	/**
 	 * Stub wp_strip_all_tags().
