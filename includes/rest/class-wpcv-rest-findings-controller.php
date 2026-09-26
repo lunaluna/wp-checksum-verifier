@@ -52,9 +52,12 @@ class WPCV_Rest_Findings_Controller {
 	 * `verify_manifest_chunk()` 等が実際に作るfinding.statusの値。単一の定数
 	 * クラスに集約されていないため、ここに直接列挙する).
 	 *
+	 * `stat_changed` は v0.5 §Step8 で追加(stat 差分検知. 応答の `detail` 列に
+	 * 前回値→今回値の JSON 文字列が入る).
+	 *
 	 * @var string[]
 	 */
-	const VALID_STATUSES = array( 'added', 'modified', 'missing', 'unreadable' );
+	const VALID_STATUSES = array( 'added', 'modified', 'missing', 'unreadable', 'stat_changed' );
 
 	/**
 	 * `severity` クエリパラメータのallowlist.

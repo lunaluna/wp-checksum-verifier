@@ -87,9 +87,20 @@ class WPCV_Settings {
 	const DEFAULT_STRICT_MODE = false;
 
 	/**
+	 * Stat 差分検知(v0.5. rev.3 §3)の既定値.
+	 *
+	 * 2026-09-26 ユーザー判断で既定は有効(rev.3 §9.3 #11)。初回はベースラインを
+	 * 作るだけで finding は出ず、test-armfu.local では2回目以降の誤検知が0件だった.
+	 * 無効にすると stat target を列挙しなくなる(既存のベースライン行は消さない).
+	 *
+	 * @var bool
+	 */
+	const DEFAULT_STAT_DETECTION = true;
+
+	/**
 	 * 既定値.
 	 *
-	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool}
+	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool,stat_detection:bool}
 	 */
 	public static function defaults() {
 		return array(
@@ -97,13 +108,14 @@ class WPCV_Settings {
 			'run_minute'                        => self::DEFAULT_RUN_MINUTE,
 			'external_http_time_budget_seconds' => self::DEFAULT_EXTERNAL_HTTP_TIME_BUDGET_SECONDS,
 			'strict_mode'                       => self::DEFAULT_STRICT_MODE,
+			'stat_detection'                    => self::DEFAULT_STAT_DETECTION,
 		);
 	}
 
 	/**
 	 * 保存済みの設定値を既定値とマージして返す.
 	 *
-	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool}
+	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool,stat_detection:bool}
 	 */
 	public static function get_all() {
 		$stored = self::read_option();
@@ -192,6 +204,31 @@ class WPCV_Settings {
 		$settings = self::get_all();
 
 		$settings['strict_mode'] = (bool) $enabled;
+
+		return self::write_option( $settings );
+	}
+
+	/**
+	 * Stat 差分検知(v0.5)が有効かどうかを返す.
+	 *
+	 * @return bool
+	 */
+	public static function get_stat_detection_enabled() {
+		$settings = self::get_all();
+
+		return (bool) $settings['stat_detection'];
+	}
+
+	/**
+	 * Stat 差分検知の有効・無効を保存する.
+	 *
+	 * @param bool $enabled true で有効化.
+	 * @return bool `update_option()`/`update_site_option()` の戻り値.
+	 */
+	public static function update_stat_detection_enabled( $enabled ) {
+		$settings = self::get_all();
+
+		$settings['stat_detection'] = (bool) $enabled;
 
 		return self::write_option( $settings );
 	}

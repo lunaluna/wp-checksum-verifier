@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Stat-based change detection** for plugins that have no official
+  checksums (custom or premium plugins, and MU-plugin loaders). Each file's
+  size, ctime, and mtime (read with `lstat()`; file contents are never read)
+  are stored as a baseline in the new `wpcv_file_states` table and compared
+  on every run. Changes are reported as the new `stat_changed` status (with
+  old/new values in the new `findings.detail` column), new files as
+  `added`, and deleted files as `missing` (reported once). A size change
+  with an unchanged mtime is flagged as possible timestamp forgery at
+  `high` severity. The first run only builds the baseline.
+- When a plugin's version changes, its stat baseline is rebuilt without
+  reporting changes and the target is marked with the new
+  `baseline_rebuilt` error code; plugins verified against checksums are
+  skipped with the new `checksum_covered` code.
+- Mass changes without a version bump are rolled up into one finding per
+  plugin (provisional thresholds, adjustable via the new
+  `wpcv_stat_rollup_min_count` and `wpcv_stat_rollup_ratio` filters).
+- "Stat-based change detection" setting (on by default), a `stat_changed`
+  status filter and a Details column on the Findings screen, and
+  `status=stat_changed` support in `GET /findings`.
+- `wp wpcv bench-stat` command that measures `lstat()` throughput on a
+  directory (read-only), used to size the stat-scan budget.
+
+### Changed
+
+- Database schema version is now 3 (new `wpcv_file_states` table and
+  `wpcv_findings.detail` column).
+- Run totals now include the stat targets that were actually scanned.
+  Stat targets skipped as `checksum_covered` are left out of the totals and
+  of the success/partial decision, so a site with only wordpress.org
+  plugins still finishes as `success`.
+
 ## [0.4.0] - 2026-09-12
 
 Feature release: file-level chunked execution with persistent cursor and

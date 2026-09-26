@@ -396,4 +396,30 @@ class RunPlannerTest extends TestCase {
 
 		$this->fail( 'stat target was not planned' );
 	}
+
+	/**
+	 * Stat 差分検知を無効にして組み立てた planner は、stat target を列挙しないことを
+	 * 確認する(v0.5 §Step8).
+	 *
+	 * @return void
+	 */
+	public function test_plan_omits_stat_targets_when_stat_detection_disabled() {
+		$planner     = new WPCV_Run_Planner( new WPCV_Suppression_Repository( new WPCV_Test_Fake_WPDB() ), false );
+		$target_runs = $planner->plan(
+			array(
+				'version'       => '6.8',
+				'plugins'       => array( 'custom-plugin/custom-plugin.php' => array( 'Version' => '1.2.0' ) ),
+				'plugin_dir'    => '/var/www/wp-content/plugins',
+				'mu_plugin_dir' => '/var/www/wp-content/mu-plugins',
+				'mu_plugins'    => array( 'loader.php' => array() ),
+			)
+		);
+
+		foreach ( array_column( $target_runs, 'target_id' ) as $target_id ) {
+			$this->assertFalse( WPCV_Target_Resolver::is_stat_id( $target_id ), "unexpected stat target: {$target_id}" );
+		}
+
+		// core + core:_scan + plugin + loader + muplugin:_scan の5件.
+		$this->assertCount( 5, $target_runs );
+	}
 }

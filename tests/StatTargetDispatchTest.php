@@ -62,6 +62,7 @@ class StatTargetDispatchTest extends TestCase {
 	 */
 	protected function tearDown(): void {
 		$this->clean_fixtures();
+		unset( $GLOBALS['_wpcv_test_filters'] );
 		parent::tearDown();
 	}
 
@@ -596,5 +597,36 @@ class StatTargetDispatchTest extends TestCase {
 		$this->assertSame( $count, $detail['count'] );
 		$this->assertSame( $count, $detail['files_scanned'] );
 		$this->assertCount( WPCV_Verifier::ROLLUP_SAMPLE_PATHS, $detail['sample_paths'] );
+	}
+
+	/**
+	 * `wpcv_stat_rollup_min_count` フィルターで閾値を上げると、同じ大量変更でも
+	 * まとめずに個別の finding になることを確認する(v0.5 §Step8).
+	 *
+	 * @return void
+	 */
+	public function test_rollup_threshold_can_be_changed_by_filter() {
+		$GLOBALS['_wpcv_test_filters']['wpcv_stat_rollup_min_count'][] = static function () {
+			return 1000;
+		};
+
+		$count = WPCV_Chunk_Dispatcher::DEFAULT_STAT_ROLLUP_MIN_COUNT + 5;
+		for ( $i = 0; $i < $count; $i++ ) {
+			$this->put_fixture_file( sprintf( 'wp-content/plugins/custom-plugin/f%02d.php', $i ), 'x' );
+		}
+
+		$made = wpcv_test_make_fake_environment();
+		$this->reserve_and_run( $made, $this->custom_plugin_context() );
+
+		for ( $i = 0; $i < $count; $i++ ) {
+			$path = ABSPATH . sprintf( 'wp-content/plugins/custom-plugin/f%02d.php', $i );
+			file_put_contents( $path, 'changed' );
+			touch( $path, time() + 100 );
+		}
+		clearstatcache();
+
+		$second = $this->reserve_and_run( $made, $this->custom_plugin_context() );
+
+		$this->assertCount( $count, $this->stat_findings( $made, $second['run_id'] ) );
 	}
 }

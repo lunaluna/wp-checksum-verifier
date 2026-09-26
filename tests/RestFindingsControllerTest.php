@@ -198,4 +198,36 @@ class RestFindingsControllerTest extends TestCase {
 		$with = WPCV_Rest_Findings_Controller::handle_findings( new WP_REST_Request( array( 'include_suppressed' => '1' ) ) );
 		$this->assertCount( 1, $with->data['findings'] );
 	}
+
+	/**
+	 * `status=stat_changed` で絞り込めて、応答に `detail` 列が含まれることを確認する(v0.5 §Step8).
+	 *
+	 * @return void
+	 */
+	public function test_handle_findings_filters_by_stat_changed_status() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_runs', array( 'started_at' => '2026-09-08 03:00:00', 'status' => 'partial', 'run_trigger' => 'rest', 'runner' => 'sync' ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 1, 'path' => 'modified.php' ) ) );
+		$wpdb->insert(
+			'wp_wpcv_findings',
+			wpcv_test_make_finding_row(
+				array(
+					'run_id' => 1,
+					'path'   => 'stat.php',
+					'status' => 'stat_changed',
+					'detail' => '{"timestomp":false}',
+				)
+			)
+		);
+
+		wpcv_test_inject_run_repository( new WPCV_Run_Repository( $wpdb ) );
+		wpcv_test_inject_finding_repository( new WPCV_Finding_Repository( $wpdb ) );
+
+		$response = WPCV_Rest_Findings_Controller::handle_findings( new WP_REST_Request( array( 'status' => 'stat_changed' ) ) );
+
+		$this->assertNotInstanceOf( WP_Error::class, $response );
+		$this->assertCount( 1, $response->data['findings'] );
+		$this->assertSame( 'stat.php', $response->data['findings'][0]['path'] );
+		$this->assertSame( '{"timestomp":false}', $response->data['findings'][0]['detail'] );
+	}
 }

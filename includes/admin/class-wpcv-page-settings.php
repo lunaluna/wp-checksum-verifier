@@ -106,6 +106,7 @@ class WPCV_Page_Settings {
 		$run_time                          = WPCV_Settings::get_run_time();
 		$external_http_time_budget_seconds = WPCV_Settings::get_external_http_time_budget_seconds();
 		$strict_mode                       = WPCV_Settings::get_strict_mode();
+		$stat_detection                    = WPCV_Settings::get_stat_detection_enabled();
 		$button_state                      = self::run_now_button_state( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON );
 		?>
 		<div class="wrap">
@@ -171,6 +172,21 @@ class WPCV_Page_Settings {
 							</label>
 							<p class="description">
 								<?php echo esc_html__( 'By default, changes limited to readme.txt/readme.md are treated as a low-risk "soft change" and suppressed automatically. Enable strict mode to see every difference, including those files.', 'wp-checksum-verifier' ); ?>
+							</p>
+						</td>
+					</tr>
+					<?php // v0.5 §Step8: stat 差分検知の有効・無効. ?>
+					<tr>
+						<th scope="row">
+							<?php echo esc_html__( 'Stat-based change detection', 'wp-checksum-verifier' ); ?>
+						</th>
+						<td>
+							<label for="wpcv_stat_detection">
+								<input type="checkbox" name="wpcv_stat_detection" id="wpcv_stat_detection" value="1" <?php checked( $stat_detection ); ?> />
+								<?php echo esc_html__( 'Track file size and timestamps of plugins that cannot be verified against checksums, and report changes since the previous run.', 'wp-checksum-verifier' ); ?>
+							</label>
+							<p class="description">
+								<?php echo esc_html__( 'Applies to custom or premium plugins and mu-plugin loaders that have no official checksums. The first run only records a baseline. When a plugin version changes, its baseline is rebuilt without reporting changes. File contents are not read.', 'wp-checksum-verifier' ); ?>
 							</p>
 						</td>
 					</tr>
@@ -317,6 +333,9 @@ class WPCV_Page_Settings {
 		// (`wpcv_run_hour`等の数値項目のような「未送信時は既定値を使う」フォールバックは
 		// 不要).
 		WPCV_Settings::update_strict_mode( isset( $_POST['wpcv_strict_mode'] ) );
+
+		// v0.5 §Step8: strict mode と同じく、未チェック時はキー自体が送られてこない.
+		WPCV_Settings::update_stat_detection_enabled( isset( $_POST['wpcv_stat_detection'] ) );
 
 		return true;
 	}

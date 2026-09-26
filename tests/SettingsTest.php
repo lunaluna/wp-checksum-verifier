@@ -197,4 +197,23 @@ class SettingsTest extends TestCase {
 
 		$this->assertSame( array( 'hour' => 5, 'minute' => 30 ), WPCV_Settings::get_run_time() );
 	}
+
+	/**
+	 * Stat 差分検知は未保存なら有効(既定 true)で、保存した値がそのまま返り、
+	 * 他の設定を巻き戻さないことを確認する(v0.5 §Step8).
+	 *
+	 * @return void
+	 */
+	public function test_stat_detection_defaults_to_enabled_and_persists() {
+		$this->assertTrue( WPCV_Settings::get_stat_detection_enabled() );
+
+		WPCV_Settings::update_strict_mode( true );
+		WPCV_Settings::update_stat_detection_enabled( false );
+
+		$this->assertFalse( WPCV_Settings::get_stat_detection_enabled() );
+		$this->assertTrue( WPCV_Settings::get_strict_mode() );
+
+		WPCV_Settings::update_stat_detection_enabled( true );
+		$this->assertTrue( WPCV_Settings::get_stat_detection_enabled() );
+	}
 }

@@ -279,7 +279,7 @@ class WPCV_Plugin {
 	 */
 	private static function build_run_coordinator() {
 		return new WPCV_Run_Coordinator(
-			new WPCV_Run_Planner( self::suppression_repository() ),
+			new WPCV_Run_Planner( self::suppression_repository(), WPCV_Settings::get_stat_detection_enabled() ),
 			self::run_repository(),
 			self::target_run_repository(),
 			self::sync_dispatcher()

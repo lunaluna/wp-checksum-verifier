@@ -108,7 +108,7 @@ class WPCV_Chunk_Dispatcher {
 	 *
 	 * 未実測: 暫定値(2026-09-26 ユーザー合意)。実際にプラグインを更新して変わる
 	 * ファイルの割合を実地検証で測ってから確定する(プラン rev.3 §9.3 #8).
-	 * 設定画面から変えられるようにするのは v0.5 §Step8.
+	 * `wpcv_stat_rollup_min_count` フィルターで変えられる(v0.5 §Step8).
 	 *
 	 * @var int
 	 */
@@ -118,6 +118,7 @@ class WPCV_Chunk_Dispatcher {
 	 * Stat 差分検知で、変更 finding を1件にまとめる割合(比較したファイル数に対する割合).
 	 *
 	 * 未実測: 暫定値(`DEFAULT_STAT_ROLLUP_MIN_COUNT` と同じ扱い).
+	 * `wpcv_stat_rollup_ratio` フィルターで変えられる(v0.5 §Step8).
 	 *
 	 * @var float
 	 */
@@ -877,8 +878,23 @@ class WPCV_Chunk_Dispatcher {
 				'previous_version'     => $target_run['version'],
 				'budget'               => $this->default_budget(),
 				'rollup'               => array(
-					'min_count' => self::DEFAULT_STAT_ROLLUP_MIN_COUNT,
-					'ratio'     => self::DEFAULT_STAT_ROLLUP_RATIO,
+					/**
+					 * Stat 差分検知で変更 finding を1件にまとめる最小件数を変える(v0.5 §Step8).
+					 *
+					 * 既定値は未実測の暫定値のため、設定画面ではなくフィルターだけで
+					 * 変えられるようにしている(2026-09-26 ユーザー判断).
+					 *
+					 * @param int    $min_count 既定 `DEFAULT_STAT_ROLLUP_MIN_COUNT`.
+					 * @param string $target_id stat target の target_id.
+					 */
+					'min_count' => (int) apply_filters( 'wpcv_stat_rollup_min_count', self::DEFAULT_STAT_ROLLUP_MIN_COUNT, $target_id ),
+					/**
+					 * Stat 差分検知で変更 finding を1件にまとめる割合(0〜1)を変える(v0.5 §Step8).
+					 *
+					 * @param float  $ratio     既定 `DEFAULT_STAT_ROLLUP_RATIO`.
+					 * @param string $target_id stat target の target_id.
+					 */
+					'ratio'     => (float) apply_filters( 'wpcv_stat_rollup_ratio', self::DEFAULT_STAT_ROLLUP_RATIO, $target_id ),
 				),
 				'target_root_path'     => $scan['root_path'],
 			)

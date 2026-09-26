@@ -167,4 +167,66 @@ class PageFindingsTest extends TestCase {
 
 		$this->assertInstanceOf( 'WP_Error', $data );
 	}
+
+	/**
+	 * `format_detail()` が stat_changed の前回値→今回値を、変わった項目だけ短い文にすることを
+	 * 確認する(v0.5 §Step8).
+	 *
+	 * @return void
+	 */
+	public function test_format_detail_describes_changed_stat_values() {
+		$text = WPCV_Page_Findings::format_detail(
+			array(
+				'detail' => wp_json_encode(
+					array(
+						'size'      => array(
+							'old' => 4021,
+							'new' => 4160,
+						),
+						'ctime'     => array(
+							'old' => 1757000000,
+							'new' => 1757600000,
+						),
+						'mtime'     => array(
+							'old' => 1740000000,
+							'new' => 1740000000,
+						),
+						'timestomp' => true,
+					)
+				),
+			)
+		);
+
+		$this->assertStringContainsString( 'size: 4021 → 4160', $text );
+		$this->assertStringContainsString( 'ctime: 2025-09-04 15:33:20 → 2025-09-11 14:13:20', $text );
+		$this->assertStringNotContainsString( 'mtime:', $text );
+		$this->assertStringContainsString( 'timestamp forgery', $text );
+	}
+
+	/**
+	 * まとめた finding は件数と代表パスを、detail を持たない finding は空文字を返すことを
+	 * 確認する(v0.5 §Step8).
+	 *
+	 * @return void
+	 */
+	public function test_format_detail_for_rollup_and_empty_detail() {
+		$text = WPCV_Page_Findings::format_detail(
+			array(
+				'detail' => wp_json_encode(
+					array(
+						'rollup'        => true,
+						'count'         => 24,
+						'added'         => 0,
+						'files_scanned' => 26,
+						'sample_paths'  => array( 'a.php', 'b.php' ),
+					)
+				),
+			)
+		);
+
+		$this->assertStringContainsString( '24 of 26 files changed', $text );
+		$this->assertStringContainsString( 'a.php, b.php', $text );
+		$this->assertSame( '', WPCV_Page_Findings::format_detail( array( 'detail' => null ) ) );
+		$this->assertSame( '', WPCV_Page_Findings::format_detail( array() ) );
+	}
 }

@@ -54,7 +54,7 @@ class WPCV_Page_Findings {
 	 *
 	 * @var string[]
 	 */
-	const VALID_STATUSES = array( 'added', 'modified', 'missing', 'unreadable' );
+	const VALID_STATUSES = array( 'added', 'modified', 'missing', 'unreadable', 'stat_changed' );
 
 	/**
 	 * `severity`絞り込みのallowlist(`WPCV_Rest_Findings_Controller::VALID_SEVERITIES`と
@@ -209,6 +209,7 @@ class WPCV_Page_Findings {
 					<th><?php echo esc_html__( 'Target', 'wp-checksum-verifier' ); ?></th>
 					<th><?php echo esc_html__( 'Path', 'wp-checksum-verifier' ); ?></th>
 					<th><?php echo esc_html__( 'Status', 'wp-checksum-verifier' ); ?></th>
+					<th><?php echo esc_html__( 'Details', 'wp-checksum-verifier' ); ?></th>
 					<th><?php echo esc_html__( 'Severity', 'wp-checksum-verifier' ); ?></th>
 					<th><?php echo esc_html__( 'Version', 'wp-checksum-verifier' ); ?></th>
 					<th><?php echo esc_html__( 'Suppressed', 'wp-checksum-verifier' ); ?></th>
@@ -221,6 +222,7 @@ class WPCV_Page_Findings {
 						<td><?php echo esc_html( $finding['dimension'] . ':' . $finding['slug'] ); ?></td>
 						<td><?php echo esc_html( $finding['path'] ); ?></td>
 						<td><?php echo esc_html( $finding['status'] ); ?></td>
+						<td><?php echo esc_html( self::format_detail( $finding ) ); ?></td>
 						<td><?php echo esc_html( $finding['severity'] ); ?></td>
 						<td><?php echo esc_html( (string) $finding['version'] ); ?></td>
 						<td><?php echo esc_html( self::suppressed_label( $finding ) ); ?></td>
@@ -230,6 +232,60 @@ class WPCV_Page_Findings {
 			</tbody>
 		</table>
 		<?php
+	}
+
+	/**
+	 * Finding の `detail`(stat 差分検知の前回値→今回値. v0.5 §Step8)を
+	 * 一覧の1セルに収まる短い文にする.
+	 *
+	 * `detail` を持たない finding(チェックサム照合の結果)は空文字を返す。
+	 * 日時は UTC の `Y-m-d H:i:s` で出す(ctime/mtime はファイルシステムの値であり
+	 * 投稿日時ではないため、サイトの日付フォーマット設定は使わない).
+	 *
+	 * @param array $finding `WPCV_Finding_Repository::query()` の1行.
+	 * @return string 表示用の文(エスケープ前).
+	 */
+	public static function format_detail( array $finding ) {
+		if ( empty( $finding['detail'] ) ) {
+			return '';
+		}
+
+		$detail = json_decode( (string) $finding['detail'], true );
+
+		if ( ! is_array( $detail ) ) {
+			return '';
+		}
+
+		if ( ! empty( $detail['rollup'] ) ) {
+			return sprintf(
+				/* translators: 1: number of changed files, 2: number of files compared, 3: sample paths. */
+				__( '%1$d of %2$d files changed (rolled up). Examples: %3$s', 'wp-checksum-verifier' ),
+				(int) $detail['count'],
+				(int) $detail['files_scanned'],
+				implode( ', ', isset( $detail['sample_paths'] ) ? (array) $detail['sample_paths'] : array() )
+			);
+		}
+
+		$parts = array();
+
+		foreach ( array( 'size', 'ctime', 'mtime' ) as $key ) {
+			if ( ! isset( $detail[ $key ]['old'], $detail[ $key ]['new'] ) || $detail[ $key ]['old'] === $detail[ $key ]['new'] ) {
+				continue;
+			}
+
+			$old = (int) $detail[ $key ]['old'];
+			$new = (int) $detail[ $key ]['new'];
+
+			$parts[] = 'size' === $key
+				? sprintf( 'size: %d → %d', $old, $new )
+				: sprintf( '%s: %s → %s', $key, gmdate( 'Y-m-d H:i:s', $old ), gmdate( 'Y-m-d H:i:s', $new ) );
+		}
+
+		if ( ! empty( $detail['timestomp'] ) ) {
+			$parts[] = __( 'possible timestamp forgery (size changed but mtime did not)', 'wp-checksum-verifier' );
+		}
+
+		return implode( ' / ', $parts );
 	}
 
 	/**

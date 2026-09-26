@@ -56,6 +56,8 @@ if ( ! defined( 'ABSPATH' ) ) {
  * (`queued_stat_target_run()` 参照)。本体の直後に置くのは、claim が id 昇順で
  * 行われるため、本体の処理が先に進み stat target が待たされにくくするため.
  * `plan()` の戻り値件数はそのぶん増える.
+ * v0.5 §Step8 で、設定で stat 差分検知を無効にしていれば列挙しないようにした
+ * (`$stat_detection_enabled`).
  */
 class WPCV_Run_Planner {
 
@@ -78,12 +80,26 @@ class WPCV_Run_Planner {
 	private $suppression_repository;
 
 	/**
+	 * Stat 差分検知 target を列挙するか(v0.5 §Step8).
+	 *
+	 * 設定(`WPCV_Settings::get_stat_detection_enabled()`)を呼び出し元が渡す.
+	 * このクラスがオプションを直接読まないのは、列挙を入力だけで決まる処理に
+	 * 保ち、テストで設定を切り替えやすくするため.
+	 *
+	 * @var bool
+	 */
+	private $stat_detection_enabled;
+
+	/**
 	 * コンストラクタ.
 	 *
 	 * @param WPCV_Suppression_Repository $suppression_repository `exclude_target` 抑制ルールの取得元.
+	 * @param bool                        $stat_detection_enabled stat 差分検知 target を列挙するか
+	 *                                                            (v0.5 §Step8. 既定 true).
 	 */
-	public function __construct( WPCV_Suppression_Repository $suppression_repository ) {
+	public function __construct( WPCV_Suppression_Repository $suppression_repository, $stat_detection_enabled = true ) {
 		$this->suppression_repository = $suppression_repository;
+		$this->stat_detection_enabled = (bool) $stat_detection_enabled;
 	}
 
 	/**
@@ -170,7 +186,9 @@ class WPCV_Run_Planner {
 				)
 			);
 
-			$target_runs[] = $this->maybe_apply_exclude_target( self::queued_stat_target_run( $body_target_id, WPCV_Target_Resolver::DIMENSION_PLUGIN, $resolved['slug'], $plugin_version ) );
+			if ( $this->stat_detection_enabled ) {
+				$target_runs[] = $this->maybe_apply_exclude_target( self::queued_stat_target_run( $body_target_id, WPCV_Target_Resolver::DIMENSION_PLUGIN, $resolved['slug'], $plugin_version ) );
+			}
 		}
 
 		if ( ! empty( $context['mu_plugin_dir'] ) ) {
@@ -193,7 +211,9 @@ class WPCV_Run_Planner {
 					)
 				);
 
-				$target_runs[] = $this->maybe_apply_exclude_target( self::queued_stat_target_run( $body_target_id, $dimension, (string) $basename, '' ) );
+				if ( $this->stat_detection_enabled ) {
+					$target_runs[] = $this->maybe_apply_exclude_target( self::queued_stat_target_run( $body_target_id, $dimension, (string) $basename, '' ) );
+				}
 			}
 
 			// サブディレクトリ配下の未知ファイル走査用の合成target

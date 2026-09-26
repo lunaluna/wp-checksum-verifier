@@ -18,7 +18,41 @@ WordPress のコア・プラグイン・MU プラグインの checksum を検証
 - **MU プラグイン**: 公式の checksum ソースが存在しないため、未知ファイルの検出のみ行う.
 - **未知ファイル**: 上記いずれの対象についても、マニフェストに存在しないファイルは
   finding として報告する.
+- **公式 checksum の無いプラグイン**(独自・有料プラグイン、MU プラグインの loader):
+  stat 差分検知で変更を追跡する(下記).
 - 未実装: 公式テーマの照合、GitHub Releases 上の非公式プラグイン/テーマの照合.
+
+### stat 差分検知
+
+checksum で「正しいファイルか」を確かめられるのは、比べる公式の配布物がある場合だけです。
+配布物が無いプラグインについては、各ファイルのサイズ・ctime・mtime を記録し
+(`lstat()` を使うので symlink はたどらず、ファイルの中身も読みません)、前回の run から
+変わったものを報告します。確認すべきファイルを指し示すための機能で、変更が悪意によるものか
+どうかは判定しません.
+
+- **対象**: checksum の取得結果が「配布物が無い」(`manifest_not_found`・`unknown_source`・
+  `version_unknown`)だったプラグインと、MU プラグインの loader だけです。checksum で照合
+  できたプラグインは省略します(`checksum_covered`)。取得が一時的に失敗したプラグイン
+  (`http_error`・`rate_limited`)もその run では省略し、wordpress.org の障害で不意に
+  ベースラインが作られないようにしています。対象のプラグインごとに `plugin:{slug}:_stat`
+  (loader は `muplugin:{file}:_stat`)という target が追加され、抑制ルールは本体と共有します.
+- **初回**: ベースラインを記録するだけで、何も報告しません.
+- **finding**: `stat_changed`(サイズ・ctime・mtime のいずれかが変化。`detail` に前回値と
+  今回値が入る)、`added`(新しいファイル)、`missing`(ベースラインにあったファイルが消えた。
+  1回だけ報告し、ベースラインから外す)。サイズが変わったのに mtime が変わっていない場合は
+  タイムスタンプ擬装の疑いとして severity を `high` に上げます.
+- **プラグインの更新**: プラグインの version がベースライン作成時の version と違う場合、
+  変更を報告せずにベースラインを作り直し、target に `baseline_rebuilt` を記録します
+  (比較しなかった run であることが実行履歴から分かるようにするため).
+- **version を上げない大量変更**: 最大 500 ファイルの処理単位の中で、変更が 20 件以上かつ
+  比較したファイルの 50% 以上なら、プラグインのルートを path にした1件の `stat_changed` に
+  まとめます(タイムスタンプ擬装の疑いがある finding は常に個別に残します)。閾値は暫定値で、
+  `wpcv_stat_rollup_min_count`・`wpcv_stat_rollup_ratio` フィルターで変えられます.
+- **無効にする**: 設定画面の「Stat-based change detection」のチェックを外します(既定は有効)。
+  既存のベースラインは残るため、あとで有効に戻すと古いベースラインと比較します.
+- **既知の制限**: 同じサイズで書き換えて mtime も元に戻された場合も ctime で検出できますが、
+  擬装ではなく通常の `stat_changed` として報告されます。アンインストールしたプラグインの
+  ベースライン行はまだ削除されません.
 
 ## 検証の実行方法
 
@@ -170,13 +204,15 @@ read scopeのトークンが必要。`current_run`(進行中のrun。無けれ�
 #### `GET /findings`
 
 read scopeのトークンが必要。1つのrun(既定は最新run。`run_id`クエリ
-パラメータで指定も可能)のfindingsを返す。`dimension`・`status`・
+パラメータで指定も可能)のfindingsを返す。`dimension`・`status`(`stat_changed`を含む)・
 `severity`(単一値または配列。例: `dimension[]=core&dimension[]=plugin`。
 それぞれ固定のallowlist外の値を渡すと`400`)・`sort`/`order`
 (allowlistされた列のみ)・`page`/`per_page`(小さい既定値・上限あり)の
 pagination に対応する。suppressed・closedなfindingは既定で除外し、
 `include_suppressed=1`/`include_closed=1` で含められる。応答には
-`findings`・`run_id`・`page`・`per_page`・`total`・`total_pages` を含む.
+`findings`・`run_id`・`page`・`per_page`・`total`・`total_pages` を含む。
+各findingの`detail`は、stat差分検知のfindingでのみ前回値・今回値のサイズ/ctime/mtime
+(まとめたfindingでは変更件数と代表パス)をJSON文字列で持ち、それ以外は`null`.
 
 応答例:
 
@@ -213,7 +249,9 @@ pagination に対応する。suppressed・closedなfindingは既定で除外し�
   対象となるhashを実際に持つもの ―— にのみ表示)、**targetごと除外**
   (そのプラグイン・コア・MUプラグインを次回run以降まるごと検証対象外に
   する`exclude_target`ルールを作成)。いずれも画面に表示中のfindingを
-  遡って書き換えることはなく、次回run以降から適用される.
+  遡って書き換えることはなく、次回run以降から適用される。stat差分検知の
+  findingは**Details**列に何が変わったか(サイズ・時刻の前回値→今回値、
+  またはまとめた件数)を表示する.
 - **抑制一覧(Suppressions)** — これまでに作成された全ての抑制ルール
   (3種別すべて)を、対象・理由・作成者・作成日時・(`allowlist_hash`のみ)
   承認済みversionとhashの先頭部分とともに表示する。有効なルールは
@@ -234,8 +272,8 @@ run」を反映するだけで、サーバーにWP-CLI自体がインストー�
 どうかを検出するものではない)。その下から、日次実行時刻
 (UTC。WP-CronとRESTの日次due判定が共通で使う)・RESTエンドポイントの
 時間予算・strict mode(readme.txt/readme.mdの変更を低リスクな「soft change」
-として抑制せず、通常のfindingとして報告する。既定は無効)・RESTトークンの
-発行を設定できる.
+として抑制せず、通常のfindingとして報告する。既定は無効)・stat差分検知
+(既定は有効)・RESTトークンの発行を設定できる.
 
 ## 配布方針
 

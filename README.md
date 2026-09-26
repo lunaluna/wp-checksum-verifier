@@ -23,8 +23,51 @@ manifest.
   source exists for MU plugins).
 - **Unknown files**: files present on disk but absent from the relevant
   manifest are reported as findings, for every target above.
+- **Plugins without official checksums** (custom or premium plugins, and
+  MU-plugin loaders): tracked by stat-based change detection (see below).
 - Not yet implemented: official theme verification, and checksum
   verification for unofficial plugins/themes hosted on GitHub Releases.
+
+### Stat-based change detection
+
+Checksums can only prove a file is correct when an official copy exists to
+compare against. For plugins that have none, the plugin instead records
+each file's size, ctime, and mtime (via `lstat()`, so symlinks are not
+followed and file contents are never read) and reports what changed since
+the previous run. It points you at files worth reviewing; it does not judge
+whether a change is malicious.
+
+- **Which targets**: only plugins whose checksum lookup came back as
+  "no checksums exist" (`manifest_not_found`, `unknown_source`,
+  `version_unknown`) and MU-plugin loaders. Plugins that verified against
+  checksums are skipped (`checksum_covered`), and plugins whose lookup failed
+  temporarily (`http_error`, `rate_limited`) are skipped for that run so an
+  outage on wordpress.org never creates baselines by accident. Each such
+  plugin gets an extra target named `plugin:{slug}:_stat`
+  (`muplugin:{file}:_stat` for loaders) that shares its suppression rules.
+- **First run**: only records a baseline; nothing is reported.
+- **Findings**: `stat_changed` (size, ctime, or mtime differ — the `detail`
+  field holds the old and new values), `added` (a new file), and `missing`
+  (a file from the baseline is gone; reported once, then dropped from the
+  baseline). A size change with an unchanged mtime is flagged as possible
+  timestamp forgery and raised to `high` severity.
+- **Plugin updates**: when a plugin's version differs from the version its
+  baseline was built with, the baseline is discarded and rebuilt without
+  reporting changes, and the target is marked `baseline_rebuilt` so the
+  unchecked run stays visible in Run History.
+- **Mass changes without a version bump**: when a batch of up to 500 files
+  has at least 20 changed files and at least 50% of the files compared,
+  they are rolled up into a single `stat_changed` finding for the plugin
+  root (timestamp-forgery findings are always kept individually). These
+  thresholds are provisional; adjust them with the
+  `wpcv_stat_rollup_min_count` and `wpcv_stat_rollup_ratio` filters.
+- **Turning it off**: uncheck "Stat-based change detection" in Settings
+  (on by default). Existing baselines are kept, so turning it back on later
+  compares against the old baseline.
+- **Known limitations**: a same-size edit that also restores the original
+  mtime is still caught by ctime, but it is reported as an ordinary
+  `stat_changed` rather than as forgery. Baseline rows of plugins that have
+  been uninstalled are not cleaned up yet.
 
 ## Running a verification
 
@@ -184,14 +227,17 @@ Example response:
 
 Requires a read-scope token. Returns findings for one run — the most
 recent one by default, or a specific `run_id` query parameter. Supports
-`dimension`, `status`, and `severity` filters (a single value or an array,
+`dimension`, `status` (including `stat_changed`), and `severity` filters (a single value or an array,
 e.g. `dimension[]=core&dimension[]=plugin`; each value must be from a fixed
 allowlist or the request returns `400`), `sort`/`order` (allowlisted
 columns only), and `page`/`per_page`
 pagination (small default, capped maximum). Suppressed and closed findings
 are excluded by default; pass `include_suppressed=1`/`include_closed=1` to
 include them. The response includes `findings`, `run_id`, `page`,
-`per_page`, `total`, and `total_pages`.
+`per_page`, `total`, and `total_pages`. Each finding's `detail` is `null`
+except for stat-based findings, where it is a JSON string with the old and
+new size/ctime/mtime (or, for a rolled-up finding, the change count and
+sample paths).
 
 Example response:
 
@@ -231,7 +277,8 @@ menu on multisite):
   `exclude_target` rule, skipping verification of that plugin/core/MU-plugin
   entirely from the next run onward). None of these retroactively change
   the findings currently on screen — the rule takes effect starting with
-  the next run.
+  the next run. A **Details** column shows what changed for stat-based
+  findings (old → new size and timestamps, or the rolled-up count).
 - **Suppressions** — every suppression rule ever created (all three types),
   with its target, reason, creator, creation time, and (for `allowlist_hash`
   rules) the approved version and hash prefix. Active rules can be revoked
@@ -255,7 +302,8 @@ installed on the server). Below that, you can configure: the daily run time
 (UTC, shared by WP-Cron and the REST endpoint's due check), the REST
 endpoint's per-request time budget, strict mode (reports readme.txt/readme.md
 changes as findings instead of suppressing them as a low-risk "soft change";
-off by default), and REST token issuance.
+off by default), stat-based change detection (on by default), and REST
+token issuance.
 
 ## Distribution
 
