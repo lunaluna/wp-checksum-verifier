@@ -194,6 +194,18 @@ class WPCV_Test_Fake_WPDB {
 			return false;
 		}
 
+		if ( 'wp_wpcv_findings' === $table ) {
+			// 本番の `WPCV_Finding_Repository::save_findings()` は
+			// diff_state/ended_in_run_id/end_reason 等(差分処理が後から書く列)を
+			// insert時には一切渡さない ―― 実DBならNULL default列としてSELECT時に
+			// 返ってくるが、このダブルは渡されたキーしか保持しないため、後続の
+			// 差分処理コード(`WPCV_Finding_Repository`の各readメソッド)がこれらの
+			// キーへの直接アクセスで「Undefined array key」になる. 実スキーマの
+			// NULL defaultをここで模して補う(統合テストで`save_findings()`本体を
+			// 経由させたときに顕在化した欠落. 2026-09-26).
+			$data = array_merge( self::findings_column_defaults(), $data );
+		}
+
 		if ( ! isset( $this->next_id[ $table ] ) ) {
 			$this->next_id[ $table ] = 1;
 		}
@@ -205,6 +217,24 @@ class WPCV_Test_Fake_WPDB {
 		$this->insert_id             = $id;
 
 		return 1;
+	}
+
+	/**
+	 * `wp_wpcv_findings`のうち、`save_findings()`がinsert時に渡さない列の
+	 * NULL defaultを返す(`insert()`参照。列名は`wpcv_test_make_finding_row()`の
+	 * 追加分と同じ).
+	 *
+	 * @return array<string, null>
+	 */
+	private static function findings_column_defaults() {
+		return array(
+			'closed_at'       => null,
+			'closed_reason'   => null,
+			'diff_state'      => null,
+			'notified_at'     => null,
+			'ended_in_run_id' => null,
+			'end_reason'      => null,
+		);
 	}
 
 	/**
