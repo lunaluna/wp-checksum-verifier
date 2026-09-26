@@ -247,9 +247,12 @@ class MigratorTest extends TestCase {
 	/**
 	 * `parse_column_names()`(`schema_is_current()` 専用のヘルパー。v0.4.0コード
 	 * レビューCR-05是正)が、1列1行のCREATE TABLE文から列名だけを正しく抽出し、
-	 * `PRIMARY KEY`/`KEY` 行を除外することを確認する。手書きの独立したSQL片で
-	 * 検証することで、`table_definitions()` 自身の出力を使った他のテストとは
-	 * 独立に抽出ロジックの正しさを確認できるようにしている.
+	 * `PRIMARY KEY`/`KEY`/`UNIQUE KEY` 等のインデックス行を除外することを確認する。
+	 * 手書きの独立したSQL片で検証することで、`table_definitions()` 自身の出力を
+	 * 使った他のテストとは独立に抽出ロジックの正しさを確認できるようにしている.
+	 *
+	 * `UNIQUE KEY` 行は v0.5 で `wpcv_file_states` に追加した際に `UNIQUE` を
+	 * 列名と誤認し、有効化が必ず失敗する不具合の原因になった(回帰防止).
 	 *
 	 * @return void
 	 */
@@ -262,10 +265,80 @@ class MigratorTest extends TestCase {
 	name varchar(191) NOT NULL,
 	created_at datetime NULL,
 	PRIMARY KEY (id),
-	KEY idx_name (name)
+	UNIQUE KEY idx_unique_name (name),
+	unique index idx_lower (created_at),
+	KEY idx_name (name),
+	INDEX idx_created (created_at),
+	FULLTEXT KEY idx_ft (name)
 ) utf8mb4_general_ci;";
 
 		$this->assertSame( array( 'id', 'name', 'created_at' ), $method->invoke( null, $sql ) );
+	}
+
+	/**
+	 * `wpcv_file_states` の定義から抽出される列名が、実DBの `DESCRIBE` が返す
+	 * はずの列名と完全に一致することを、`parse_column_names()` に依存しない
+	 * 手書きの期待値で確認する.
+	 *
+	 * `test_schema_is_current_*` はフェイクwpdbの「正しいスキーマ」自体を
+	 * `parse_column_names()` で組み立てるため、パーサーが余計な列名
+	 * (`UNIQUE` 等)を返しても期待値側にも同じ誤りが入って打ち消し合い、
+	 * 検出できなかった. その穴を塞ぐための独立した検証.
+	 *
+	 * @return void
+	 */
+	public function test_parse_column_names_matches_explicit_file_states_columns() {
+		$GLOBALS['wpdb'] = new WPCV_Test_Fake_WPDB();
+
+		$definitions = new ReflectionMethod( WPCV_Migrator::class, 'table_definitions' );
+		$definitions->setAccessible( true );
+		$parse = new ReflectionMethod( WPCV_Migrator::class, 'parse_column_names' );
+		$parse->setAccessible( true );
+
+		$sqls = $definitions->invoke( null );
+
+		$this->assertSame(
+			array(
+				'id',
+				'state_key',
+				'target_id',
+				'dimension',
+				'slug',
+				'path',
+				'file_size',
+				'ctime',
+				'mtime',
+				'content_hash',
+				'hash_algorithm',
+				'baseline_version',
+				'first_seen_run_id',
+				'last_seen_run_id',
+				'updated_at',
+			),
+			$parse->invoke( null, $sqls[4] )
+		);
+	}
+
+	/**
+	 * 5テーブルすべてについて、抽出した列名にインデックス・制約のキーワードが
+	 * 紛れ込んでいないことを確認する(今後 `table_definitions()` に新しい種類の
+	 * インデックス行を追加した場合の回帰防止).
+	 *
+	 * @return void
+	 */
+	public function test_parse_column_names_never_returns_sql_keywords_for_table_definitions() {
+		$GLOBALS['wpdb'] = new WPCV_Test_Fake_WPDB();
+
+		$definitions = new ReflectionMethod( WPCV_Migrator::class, 'table_definitions' );
+		$definitions->setAccessible( true );
+		$parse = new ReflectionMethod( WPCV_Migrator::class, 'parse_column_names' );
+		$parse->setAccessible( true );
+
+		foreach ( $definitions->invoke( null ) as $sql ) {
+			foreach ( $parse->invoke( null, $sql ) as $column ) {
+				$this->assertNotContains( strtoupper( $column ), WPCV_Migrator::NON_COLUMN_LINE_KEYWORDS, "parsed SQL keyword as column: {$column}" );
+			}
+		}
 	}
 
 	/**

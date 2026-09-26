@@ -203,12 +203,27 @@ class WPCV_Migrator {
 	}
 
 	/**
-	 * 1つの CREATE TABLE 文から列名だけを抽出する(`PRIMARY KEY`/`KEY` 行は除く。
+	 * インデックス・制約定義の行の先頭に来るキーワード(`parse_column_names()` 専用).
+	 *
+	 * これらで始まる行は列定義ではないため、列名として扱わない. v0.5 で
+	 * `wpcv_file_states` に `UNIQUE KEY idx_state_key (state_key)` を追加した際、
+	 * 以前のパーサーが `PRIMARY KEY`/`KEY` 行しか除外しておらず `UNIQUE` を列名と
+	 * 誤認したため、実DBに存在しない列を期待して `schema_is_current()` が常に
+	 * false になり、有効化が必ず失敗する不具合があった. 今後 dbDelta が解釈できる
+	 * 他の種類のインデックス行を追加しても同じ事故にならないよう、まとめて列挙する.
+	 *
+	 * @var string[]
+	 */
+	const NON_COLUMN_LINE_KEYWORDS = array( 'PRIMARY', 'KEY', 'INDEX', 'UNIQUE', 'FULLTEXT', 'SPATIAL', 'CONSTRAINT', 'FOREIGN', 'CHECK' );
+
+	/**
+	 * 1つの CREATE TABLE 文から列名だけを抽出する(インデックス・制約の行は除く。
 	 * `expected_columns_by_table()` 専用のヘルパー)。
 	 *
 	 * `table_definitions()` のSQLは「1列 = 1行、行頭が列名」という単純な整形
 	 * ルールで書かれているため、この前提に依存した簡易パーサーで十分(汎用的な
-	 * SQL構文解析は行わない).
+	 * SQL構文解析は行わない). 行頭の単語が `NON_COLUMN_LINE_KEYWORDS` に
+	 * 含まれる行はインデックス・制約定義として読み飛ばす.
 	 *
 	 * @param string $sql CREATE TABLE 文.
 	 * @return string[]
@@ -219,13 +234,20 @@ class WPCV_Migrator {
 		foreach ( explode( "\n", $sql ) as $line ) {
 			$line = trim( $line );
 
-			if ( '' === $line || 0 === stripos( $line, 'CREATE TABLE' ) || 0 === stripos( $line, 'PRIMARY KEY' ) || 0 === stripos( $line, 'KEY ' ) || 0 === strpos( $line, ')' ) ) {
+			if ( '' === $line || 0 === stripos( $line, 'CREATE TABLE' ) || 0 === strpos( $line, ')' ) ) {
 				continue;
 			}
 
-			if ( 1 === preg_match( '/^(\w+)\s/', $line, $matches ) ) {
-				$columns[] = $matches[1];
+			if ( 1 !== preg_match( '/^(\w+)\s/', $line, $matches ) ) {
+				continue;
 			}
+
+			// 行頭がインデックス・制約のキーワードなら列定義ではない(大文字小文字は区別しない).
+			if ( in_array( strtoupper( $matches[1] ), self::NON_COLUMN_LINE_KEYWORDS, true ) ) {
+				continue;
+			}
+
+			$columns[] = $matches[1];
 		}
 
 		return $columns;
