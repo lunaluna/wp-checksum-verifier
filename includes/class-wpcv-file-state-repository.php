@@ -277,6 +277,84 @@ class WPCV_File_State_Repository {
 	}
 
 	/**
+	 * 今回の run で列挙された stat target 以外の行をすべて削除する
+	 * (v0.5 §Step9. D8「アンインストールされたプラグインの `wpcv_file_states` 行は、
+	 * 差分処理のときに消す」).
+	 *
+	 * アンインストールされたプラグインは、次回以降の run で `WPCV_Run_Planner` が
+	 * そもそも target_run を作らなくなる(=「列挙されない」). stale行検出
+	 * (`delete_stale()`)は同じ target 内での path 単位の削除であり、target 自体が
+	 * 二度と現れないケースは対象にできないため、別のメソッドとして用意する.
+	 *
+	 * このテーブルは stat 差分検知(層1)専用であり、全行の target_id は必ず
+	 * stat target(クラスdocblock参照). `SELECT DISTINCT target_id` は対象が
+	 * target数(数十件程度)に留まるため、1 target あたり数万行になりうる本体の
+	 * 行数には影響されない.
+	 *
+	 * @param string[] $enumerated_target_ids 今回の run で target_run が作られた
+	 *                                        stat target_id の一覧(status を問わない.
+	 *                                        `http_error` 等で `unverifiable`/`failed` に
+	 *                                        なった target も、`checksum_covered` で
+	 *                                        `skipped` になった target も「列挙された」
+	 *                                        ことに変わりはないため含める).
+	 * @return string[] 削除した target_id の一覧.
+	 *
+	 * @throws RuntimeException `delete_by_target()` が例外を投げた場合、そのまま伝播する.
+	 */
+	public function delete_targets_not_enumerated( array $enumerated_target_ids ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_file_states';
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only, no variables) built above.
+		$rows = $this->wpdb->get_results( "SELECT DISTINCT target_id FROM {$table}", ARRAY_A );
+		$rows = is_array( $rows ) ? $rows : array();
+
+		$existing_target_ids = array_unique(
+			array_map(
+				static function ( $row ) {
+					return (string) $row['target_id'];
+				},
+				$rows
+			)
+		);
+
+		$enumerated_target_ids = array_map( 'strval', $enumerated_target_ids );
+		$stale_target_ids      = array_values( array_diff( $existing_target_ids, $enumerated_target_ids ) );
+
+		foreach ( $stale_target_ids as $target_id ) {
+			$this->delete_by_target( $target_id );
+		}
+
+		return $stale_target_ids;
+	}
+
+	/**
+	 * 指定した複数の target のベースラインをまとめて削除する(v0.5 §Step9.
+	 * `exclude_target` ルールが有効化された stat target の行を消す).
+	 *
+	 * `exclude_target` ルールが有効な stat target は、以後の run でも
+	 * `status = skipped`・`error_code = excluded` の target_run が作られ続ける
+	 * (`WPCV_Run_Planner::maybe_apply_exclude_target()`)ため、
+	 * `delete_targets_not_enumerated()` の「列挙されない」には該当しない.
+	 * どの target_id が今回 excluded になったかは plan 時点の情報を持つ
+	 * 呼び出し側(v0.5 §Step12 の差分処理)が判定し、その一覧をそのまま渡す想定
+	 * (このメソッド自身は status/error_code を判定しない).
+	 *
+	 * @param string[] $target_ids 削除する target_id の一覧.
+	 * @return int 削除した行数の合計.
+	 *
+	 * @throws RuntimeException `delete_by_target()` が例外を投げた場合、そのまま伝播する.
+	 */
+	public function delete_excluded_targets( array $target_ids ) {
+		$deleted = 0;
+
+		foreach ( array_unique( array_map( 'strval', $target_ids ) ) as $target_id ) {
+			$deleted += $this->delete_by_target( $target_id );
+		}
+
+		return $deleted;
+	}
+
+	/**
 	 * 指定した id の行を削除する(v0.5 §Step7. 削除検出で `missing` にした行を消す).
 	 *
 	 * `delete_stale()` と違い、削除対象を呼び出し元が決める。dispatcher は

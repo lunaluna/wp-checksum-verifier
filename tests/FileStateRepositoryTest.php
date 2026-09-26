@@ -313,6 +313,80 @@ class FileStateRepositoryTest extends TestCase {
 	}
 
 	/**
+	 * `delete_targets_not_enumerated()` が、今回列挙されなかった target の行だけを
+	 * 削除することを確認する(v0.5 §Step9・D8. アンインストールされたプラグインの
+	 * stat target を想定).「列挙された」target には、`http_error` 等で
+	 * `unverifiable`/`failed` になった target も含める必要があるため、そちらの行が
+	 * 残ることも合わせて確認する.
+	 *
+	 * @return void
+	 */
+	public function test_delete_targets_not_enumerated_deletes_only_targets_absent_from_this_run() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_File_State_Repository( $wpdb );
+
+		$uninstalled_row = $this->make_row(
+			array(
+				'target_id' => 'plugin:removed-plugin:_stat',
+				'path'      => 'removed.php',
+			)
+		);
+		$http_error_row  = $this->make_row(
+			array(
+				'target_id' => 'plugin:flaky-plugin:_stat',
+				'path'      => 'flaky.php',
+			)
+		);
+
+		$still_enumerated_id = 'plugin:acme-widgets:_stat';
+		$enumerated_row       = $this->make_row(
+			array(
+				'target_id' => $still_enumerated_id,
+				'path'      => 'acme.php',
+			)
+		);
+
+		$repository->upsert_many( array( $uninstalled_row, $http_error_row, $enumerated_row ) );
+
+		// 今回の run では removed-plugin の target_run が作られず、flaky-plugin は
+		// http_error で unverifiable になった(=target_runは作られた)状況を模す.
+		$deleted = $repository->delete_targets_not_enumerated( array( $still_enumerated_id, 'plugin:flaky-plugin:_stat' ) );
+
+		$this->assertSame( array( 'plugin:removed-plugin:_stat' ), $deleted );
+
+		$remaining_target_ids = array_column( $wpdb->rows['wp_wpcv_file_states'], 'target_id' );
+		$this->assertContains( 'plugin:flaky-plugin:_stat', $remaining_target_ids, 'http_error等でskippedになったtargetの行は残らなければならない' );
+		$this->assertContains( $still_enumerated_id, $remaining_target_ids );
+		$this->assertNotContains( 'plugin:removed-plugin:_stat', $remaining_target_ids );
+	}
+
+	/**
+	 * `delete_excluded_targets()` が、渡した target_id の行だけを削除することを
+	 * 確認する(v0.5 §Step9. `exclude_target` ルールで excluded になった stat target
+	 * の掃除用).対象外の target(http_error等でskippedになったもの)の行は
+	 * 残ることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_delete_excluded_targets_deletes_only_given_targets() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_File_State_Repository( $wpdb );
+
+		$excluded_row   = $this->make_row( array( 'target_id' => 'plugin:excluded-plugin:_stat', 'path' => 'excluded.php' ) );
+		$http_error_row = $this->make_row( array( 'target_id' => 'plugin:flaky-plugin:_stat', 'path' => 'flaky.php' ) );
+
+		$repository->upsert_many( array( $excluded_row, $http_error_row ) );
+
+		$deleted_count = $repository->delete_excluded_targets( array( 'plugin:excluded-plugin:_stat' ) );
+
+		$this->assertSame( 1, $deleted_count );
+
+		$remaining_target_ids = array_column( $wpdb->rows['wp_wpcv_file_states'], 'target_id' );
+		$this->assertContains( 'plugin:flaky-plugin:_stat', $remaining_target_ids );
+		$this->assertNotContains( 'plugin:excluded-plugin:_stat', $remaining_target_ids );
+	}
+
+	/**
 	 * `has_baseline_before_run()` が、対象targetに過去runの行があれば true を
 	 * 返すことを確認する.
 	 *

@@ -178,6 +178,54 @@ class VerifierTest extends TestCase {
 	}
 
 	/**
+	 * `core` dimension で `wp-content/` 配下のファイルが欠落していても、
+	 * finding を作らないことを確認する(v0.5 §Step9・U2. 同梱の hello.php・
+	 * akismet・既定テーマを自動更新やユーザーの削除で消しても、他の照合対象
+	 * (plugin dimension)から既に除外済みのため二重にノイズが出るのを防ぐ).
+	 *
+	 * @return void
+	 */
+	public function test_compare_one_file_does_not_flag_missing_wp_content_file_for_core_dimension() {
+		$result = WPCV_Verifier::compare_one_file( 'core', 'core', 'wordpress', '6.8', 'wporg', rtrim( ABSPATH, '/' ), 'wp-content/plugins/hello.php', $this->sha256_entry( 'anything' ) );
+
+		$this->assertFalse( $result['verified'] );
+		$this->assertNull( $result['finding'] );
+	}
+
+	/**
+	 * `core` dimension でも、`wp-content/` 配下のファイルが**改変**されている場合は
+	 * 引き続き `modified` finding を作ることを確認する(v0.5 §Step9・U2. 欠落だけを
+	 * 除外し、改変の検出は落とさない. core 照合だけが hello.php 等の改変を
+	 * 拾える経路であるため).
+	 *
+	 * @return void
+	 */
+	public function test_compare_one_file_still_detects_modified_wp_content_file_for_core_dimension() {
+		$this->put_fixture_file( 'wp-content/plugins/hello.php', 'tampered-content' );
+
+		$result = WPCV_Verifier::compare_one_file( 'core', 'core', 'wordpress', '6.8', 'wporg', rtrim( ABSPATH, '/' ), 'wp-content/plugins/hello.php', $this->sha256_entry( 'original-content' ) );
+
+		$this->assertFalse( $result['verified'] );
+		$this->assertSame( 'modified', $result['finding']['status'] );
+	}
+
+	/**
+	 * `wp-content/` 配下の欠落除外は core dimension 限定であり、plugin dimension
+	 * (`slug` を伴う照合)では引き続き `missing` finding を作ることを確認する
+	 * (v0.5 §Step9・U2. 除外対象は「コア照合が wp-content 配下を照合する」という
+	 * core dimension 固有の事情によるものであり、plugin 自体の欠落検出を弱めては
+	 * ならない).
+	 *
+	 * @return void
+	 */
+	public function test_compare_one_file_still_detects_missing_wp_content_file_for_plugin_dimension() {
+		$result = WPCV_Verifier::compare_one_file( 'plugin:acme-widgets', 'plugin', 'acme-widgets', '1.0', 'wporg', rtrim( ABSPATH, '/' ), 'wp-content/plugins/acme-widgets/acme-widgets.php', $this->sha256_entry( 'anything' ) );
+
+		$this->assertFalse( $result['verified'] );
+		$this->assertSame( 'missing', $result['finding']['status'] );
+	}
+
+	/**
 	 * ローカルのパスがディレクトリ(=読み取れないファイル扱い)の場合、
 	 * `unreadable` finding になることを確認する.
 	 *

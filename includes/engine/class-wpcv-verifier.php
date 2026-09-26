@@ -126,6 +126,13 @@ class WPCV_Verifier {
 		$expected_hash   = isset( $expected_hashes[0] ) ? $expected_hashes[0] : null;
 
 		if ( ! file_exists( $absolute_path ) ) {
+			if ( self::is_core_wp_content_missing_exempt( $dimension, $finding_path ) ) {
+				return array(
+					'finding'  => null,
+					'verified' => false,
+				);
+			}
+
 			return array(
 				'finding'  => self::make_finding( $target_id, $dimension, $slug, $version, $source, $finding_path, 'missing', 'medium', $algorithm, $expected_hash, null, null ),
 				'verified' => false,
@@ -485,6 +492,25 @@ class WPCV_Verifier {
 			'actual_hash'    => $actual_hash,
 			'file_size'      => $file_size,
 		);
+	}
+
+	/**
+	 * コア照合の `missing` を、`wp-content/` 配下では finding にしない対象かどうかを
+	 * 判定する(v0.5後半プラン §0.1 U2・§0.4).
+	 *
+	 * WP-CLI の checksum-command(`Checksum_Core_Command.php`)は `wp-content/`
+	 * 配下のファイルを欠落・改変どちらの照合からも外すが、本プラグインは
+	 * **欠落だけ**を外す. hello.php は plugin 次元の照合から既に除外している
+	 * (`WPCV_Run_Planner::CORE_BUNDLED_PLUGIN_FILES`)ため、改変を拾えるのは
+	 * core 照合だけになる. `modified` を core 照合からも外すと、同梱ファイルの
+	 * 改ざんを一切検出できなくなってしまう.
+	 *
+	 * @param string $dimension     dimension.
+	 * @param string $finding_path  ABSPATH 相対パス(`WPCV_Path_Normalizer::to_relative()` 済み).
+	 * @return bool
+	 */
+	private static function is_core_wp_content_missing_exempt( $dimension, $finding_path ) {
+		return WPCV_Target_Resolver::DIMENSION_CORE === $dimension && 0 === strpos( $finding_path, 'wp-content/' );
 	}
 
 	/**
