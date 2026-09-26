@@ -107,6 +107,7 @@ class WPCV_Page_Settings {
 		$external_http_time_budget_seconds = WPCV_Settings::get_external_http_time_budget_seconds();
 		$strict_mode                       = WPCV_Settings::get_strict_mode();
 		$stat_detection                    = WPCV_Settings::get_stat_detection_enabled();
+		$alert_to                          = WPCV_Settings::get_alert_to();
 		$button_state                      = self::run_now_button_state( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON );
 		?>
 		<div class="wrap">
@@ -187,6 +188,18 @@ class WPCV_Page_Settings {
 							</label>
 							<p class="description">
 								<?php echo esc_html__( 'Applies to custom or premium plugins and mu-plugin loaders that have no official checksums. The first run only records a baseline. When a plugin version changes, its baseline is rebuilt without reporting changes. File contents are not read.', 'wp-checksum-verifier' ); ?>
+							</p>
+						</td>
+					</tr>
+					<?php // v0.5後半 §Step14: アラートの宛先. 空なら送らず、管理画面に警告を出す(プラン U1). ?>
+					<tr>
+						<th scope="row">
+							<label for="wpcv_alert_to"><?php echo esc_html__( 'Alert recipients', 'wp-checksum-verifier' ); ?></label>
+						</th>
+						<td>
+							<textarea name="wpcv_alert_to" id="wpcv_alert_to" rows="3" cols="50" class="large-text code"><?php echo esc_textarea( implode( "\n", $alert_to ) ); ?></textarea>
+							<p class="description">
+								<?php echo esc_html__( 'Email addresses that receive an alert when new or resolved findings appear. One per line (commas and semicolons also work). Invalid addresses are dropped when saving. If empty, no alert is sent and a warning is shown in the admin screens.', 'wp-checksum-verifier' ); ?>
 							</p>
 						</td>
 					</tr>
@@ -336,6 +349,15 @@ class WPCV_Page_Settings {
 
 		// v0.5 §Step8: strict mode と同じく、未チェック時はキー自体が送られてこない.
 		WPCV_Settings::update_stat_detection_enabled( isset( $_POST['wpcv_stat_detection'] ) );
+
+		// v0.5後半 §Step14: アラートの宛先. プラン §6 の順序(nonce → capability →
+		// `wp_unslash()` → 再サニタイズ)どおり. `sanitize_textarea_field()`は改行を残す
+		// ため区切りが保たれ、そのあと`parse_email_list()`がアドレス単位で検証し直す.
+		// テキストエリアは空でもキーごと送られてくるので、キーが無いとき(このフォーム
+		// 以外からの POST)だけは既存の値を変えない.
+		if ( isset( $_POST['wpcv_alert_to'] ) ) {
+			WPCV_Settings::update_alert_to( sanitize_textarea_field( wp_unslash( $_POST['wpcv_alert_to'] ) ) );
+		}
 
 		return true;
 	}

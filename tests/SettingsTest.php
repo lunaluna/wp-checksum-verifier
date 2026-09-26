@@ -216,4 +216,93 @@ class SettingsTest extends TestCase {
 		WPCV_Settings::update_stat_detection_enabled( true );
 		$this->assertTrue( WPCV_Settings::get_stat_detection_enabled() );
 	}
+
+	// ------------------------------------------------------------------
+	// v0.5後半 §Step14: `parse_email_list()`(WPMAR からの移植)と `alert_to`.
+	// 最初の3件は WPMAR `tests/SettingsTest.php` と同じ入力・同じ期待値にそろえている.
+	// ------------------------------------------------------------------
+
+	/**
+	 * 有効なアドレスを受け付けることを確認する(WPMAR と同じ入力).
+	 *
+	 * @return void
+	 */
+	public function test_parse_email_list_accepts_valid_addresses() {
+		$result = WPCV_Settings::parse_email_list( "user@example.com\nadmin@example.org" );
+
+		$this->assertContains( 'user@example.com', $result );
+		$this->assertContains( 'admin@example.org', $result );
+	}
+
+	/**
+	 * 無効なアドレスを除くことを確認する(WPMAR と同じ入力).
+	 *
+	 * @return void
+	 */
+	public function test_parse_email_list_rejects_invalid_addresses() {
+		$result = WPCV_Settings::parse_email_list( "valid@example.com\nnot-an-email\n@@broken" );
+
+		$this->assertContains( 'valid@example.com', $result );
+		$this->assertNotContains( 'not-an-email', $result );
+		$this->assertNotContains( '@@broken', $result );
+	}
+
+	/**
+	 * 重複を除くことを確認する(WPMAR と同じ入力).
+	 *
+	 * @return void
+	 */
+	public function test_parse_email_list_deduplicates() {
+		$result = WPCV_Settings::parse_email_list( "foo@bar.com\nfoo@bar.com\nfoo@bar.com" );
+
+		$this->assertCount( 1, $result );
+	}
+
+	/**
+	 * 改行(CRLF 含む)・`,`・`;` のどれでも区切れ、前後の空白と空の要素を無視し、
+	 * 入力順を保つことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_parse_email_list_splits_on_newlines_commas_and_semicolons() {
+		$this->assertSame(
+			array( 'a@example.com', 'b@example.com', 'c@example.com', 'd@example.com' ),
+			WPCV_Settings::parse_email_list( " a@example.com ,b@example.com;\r\n\r\nc@example.com;;, d@example.com\n" )
+		);
+		$this->assertSame( array(), WPCV_Settings::parse_email_list( '' ) );
+	}
+
+	/**
+	 * `alert_to` は未設定なら空配列で、保存時に検証され、他の設定を巻き戻さない
+	 * ことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_alert_to_defaults_to_empty_and_persists_parsed_list() {
+		$this->assertSame( array(), WPCV_Settings::get_alert_to() );
+
+		WPCV_Settings::update_strict_mode( true );
+		WPCV_Settings::update_alert_to( "ops@example.com\nnot-an-email\nops@example.com, dev@example.com" );
+
+		$this->assertSame( array( 'ops@example.com', 'dev@example.com' ), WPCV_Settings::get_alert_to() );
+		$this->assertTrue( WPCV_Settings::get_strict_mode() );
+
+		WPCV_Settings::update_alert_to( '' );
+		$this->assertSame( array(), WPCV_Settings::get_alert_to() );
+	}
+
+	/**
+	 * Option を直接書き換えられて不正な値が入っていても、`get_alert_to()`は
+	 * 検証し直した一覧だけを返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_get_alert_to_revalidates_stored_value() {
+		$GLOBALS['_wpcv_test_is_multisite']                           = false;
+		$GLOBALS['_wpcv_test_options'][ WPCV_Settings::OPTION_NAME ] = array(
+			'alert_to' => array( 'ok@example.com', "evil@example.com\r\nBcc: x@example.com", 'broken' ),
+		);
+
+		$this->assertSame( array( 'ok@example.com', 'evil@example.com' ), WPCV_Settings::get_alert_to() );
+	}
 }

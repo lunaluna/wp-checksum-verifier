@@ -722,6 +722,43 @@ if ( ! function_exists( 'wp_specialchars_decode' ) ) {
 	}
 }
 
+if ( ! function_exists( 'sanitize_email' ) ) {
+	/**
+	 * Stub sanitize_email() — WPMAR の tests/wp-stubs.php と同じく前後の空白を除くだけ
+	 * (`WPCV_Settings::parse_email_list()`のテストを WPMAR と同じ条件にそろえるため).
+	 *
+	 * @param string $email 入力値.
+	 * @return string
+	 */
+	function sanitize_email( $email ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return trim( (string) $email );
+	}
+}
+
+if ( ! function_exists( 'is_email' ) ) {
+	/**
+	 * Stub is_email() — WPMAR の tests/wp-stubs.php と同じく`FILTER_VALIDATE_EMAIL`で判定する.
+	 *
+	 * @param string $email 入力値.
+	 * @return bool
+	 */
+	function is_email( $email ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return false !== filter_var( (string) $email, FILTER_VALIDATE_EMAIL );
+	}
+}
+
+if ( ! function_exists( 'sanitize_textarea_field' ) ) {
+	/**
+	 * Stub sanitize_textarea_field() — タグを除き、改行は残す(本番と同じ性質だけを模す).
+	 *
+	 * @param string $value 入力値.
+	 * @return string
+	 */
+	function sanitize_textarea_field( $value ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return trim( strip_tags( (string) $value ) );
+	}
+}
+
 if ( ! function_exists( 'wp_strip_all_tags' ) ) {
 	/**
 	 * Stub wp_strip_all_tags().
