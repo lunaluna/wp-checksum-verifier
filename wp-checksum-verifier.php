@@ -170,6 +170,14 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-suppressi
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-finding-key.php';
 
 /**
+ * 世代比較(NEW/CONTINUING/RESOLVED)の判定ロジック(v0.5後半 §Step11. DBに触れない
+ * 純粋ロジック). 差分処理の実行(Step12以降)が呼び出し元になる予定だが、
+ * `WPCV_Target_Status`/`WPCV_Error_Code` に依存するため、それらより後・
+ * 差分処理本体より前のこの位置で読み込む.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-generation-differ.php';
+
+/**
  * DB 永続化層(§4.2. v0.4.0 §Step1でrun/target_run/findingの3責務に分割)と、
  * 1回分の run のライフサイクルを統括する Coordinator.
  */
