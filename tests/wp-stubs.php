@@ -307,6 +307,33 @@ if ( ! function_exists( 'add_action' ) ) {
 	}
 }
 
+if ( ! function_exists( 'do_action' ) ) {
+	/**
+	 * Stub do_action() — records the call in
+	 * $GLOBALS['_wpcv_test_do_action_calls'][$hook][] and actually invokes any
+	 * callbacks registered via the add_action() stub above (mirrors the real
+	 * do_action()'s behavior, so tests can assert on both "was the hook fired"
+	 * and "did the registered handler actually run").
+	 *
+	 * @param string $hook Hook name.
+	 * @param mixed  ...$args Arguments passed to the hook.
+	 * @return void
+	 */
+	function do_action( $hook, ...$args ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_do_action_calls'][ $hook ][] = $args;
+
+		if ( empty( $GLOBALS['_wpcv_test_added_actions'][ $hook ] ) ) {
+			return;
+		}
+
+		foreach ( $GLOBALS['_wpcv_test_added_actions'][ $hook ] as $registration ) {
+			list( $callback, , $accepted_args ) = $registration;
+
+			call_user_func_array( $callback, array_slice( $args, 0, (int) $accepted_args ) );
+		}
+	}
+}
+
 if ( ! function_exists( 'as_enqueue_async_action' ) ) {
 	/**
 	 * Stub as_enqueue_async_action() — records the call in

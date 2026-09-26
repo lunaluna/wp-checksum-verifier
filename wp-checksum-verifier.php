@@ -114,6 +114,12 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-run-statu
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-target-status.php';
 
 /**
+ * `wpcv_runs.diff_status` の状態定数(v0.5後半 §Step12). `WPCV_Run_Repository` が
+ * 参照するため、他のstatus定数クラスと同じ位置(Repository群より前)に置く.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-diff-status.php';
+
+/**
  * 抑制ルールのtype定数(v0.4.0 §Step8). `WPCV_Suppression_Repository`/
  * `WPCV_Run_Planner` 等より前に読み込む必要がある.
  */
@@ -216,6 +222,12 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-run-plan
  * がコンストラクタで型宣言するため先に読み込む必要がある.
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-chunk-dispatcher.php';
+
+/**
+ * 差分処理(v0.5後半 §Step12)のdispatcher。`WPCV_Generation_Differ`
+ * (`determine_diff_mode()`等)に依存するため、それより後に読み込む必要がある.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-diff-dispatcher.php';
 
 /**
  * Run開始時の「列挙(plan)→保存」を失敗時の後始末込みで行う共通処理

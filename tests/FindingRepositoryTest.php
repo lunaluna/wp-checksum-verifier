@@ -7,6 +7,8 @@
 
 require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-finding-key.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-generation-differ.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
 require_once __DIR__ . '/doubles.php';
 
@@ -295,5 +297,260 @@ class FindingRepositoryTest extends TestCase {
 
 		$this->assertSame( $expected, $wpdb->rows['wp_wpcv_findings'][1]['finding_key'] );
 		$this->assertSame( 64, strlen( $wpdb->rows['wp_wpcv_findings'][1]['finding_key'] ) );
+	}
+
+	/**
+	 * `is_baseline_usable()` が、finding が1件も無い target_run(前回クリーンだった)
+	 * を使える基準として扱うことを確認する(v0.5後半 §Step12・§1.4: 「finding_key
+	 * 付きの行が無い」ことと「finding自体が無い」ことを区別する設計).
+	 *
+	 * @return void
+	 */
+	public function test_is_baseline_usable_true_when_no_findings() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$this->assertTrue( $repository->is_baseline_usable( 7 ) );
+	}
+
+	/**
+	 * `is_baseline_usable()` が、`finding_key` を1件でも持つ target_run を
+	 * 使える基準として扱うことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_is_baseline_usable_true_when_has_finding_key() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 7, 'finding_key' => str_repeat( 'a', 64 ) ) ) );
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$this->assertTrue( $repository->is_baseline_usable( 7 ) );
+	}
+
+	/**
+	 * `is_baseline_usable()` が、`finding_key` を持たない行(v4より前)しか無い
+	 * target_run を使えない基準として扱うことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_is_baseline_usable_false_when_only_legacy_rows() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 7, 'finding_key' => null ) ) );
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$this->assertFalse( $repository->is_baseline_usable( 7 ) );
+	}
+
+	/**
+	 * `find_batch_by_target_run()` が、指定 target_run 以外の行を除外し、
+	 * `id` 昇順・`after_id` より大きい行だけを `limit` 件までに絞ることを確認する
+	 * (v0.5後半 §Step12・§1.4 Pass 1のバッチ取得).
+	 *
+	 * @return void
+	 */
+	public function test_find_batch_by_target_run_filters_orders_and_limits() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 9, 'path' => 'other.php' ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 7, 'path' => 'a.php' ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 7, 'path' => 'b.php' ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 7, 'path' => 'c.php' ) ) );
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$first_batch = $repository->find_batch_by_target_run( 7, 0, 2 );
+		$this->assertSame( array( 'a.php', 'b.php' ), array_column( $first_batch, 'path' ) );
+
+		$second_batch = $repository->find_batch_by_target_run( 7, $first_batch[1]['id'], 2 );
+		$this->assertSame( array( 'c.php' ), array_column( $second_batch, 'path' ) );
+	}
+
+	/**
+	 * `find_baseline_batch()` が、抑制済み・`finding_key`無し・既に終了済みの行を
+	 * 除外することを確認する(v0.5後半 §Step12・§1.4 Pass 2の事前絞り込み).
+	 *
+	 * @return void
+	 */
+	public function test_find_baseline_batch_excludes_non_comparable_rows() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 7, 'path' => 'ok.php', 'finding_key' => str_repeat( 'a', 64 ) ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 7, 'path' => 'legacy.php', 'finding_key' => null ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 7, 'path' => 'suppressed.php', 'finding_key' => str_repeat( 'b', 64 ), 'suppressed_by' => 'soft_change' ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 7, 'path' => 'ended.php', 'finding_key' => str_repeat( 'c', 64 ), 'ended_in_run_id' => 3 ) ) );
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$this->assertSame( array( 'ok.php' ), array_column( $repository->find_baseline_batch( 7, 0, 10 ), 'path' ) );
+	}
+
+	/**
+	 * `find_matching_keys()` が、`$only_comparable = true` のとき抑制済みの
+	 * finding をマッチ対象から除外し、`false` のときは含めることを確認する
+	 * (v0.5後半 §Step12・§1.4: Pass 1〔今回側の抑制状態を見る〕とPass 2〔今回側の
+	 * 抑制状態を問わない〕の違い).
+	 *
+	 * @return void
+	 */
+	public function test_find_matching_keys_respects_only_comparable() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 7, 'finding_key' => 'key-a' ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 7, 'finding_key' => 'key-b', 'suppressed_by' => 'soft_change' ) ) );
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$this->assertSame( array( 'key-a' ), $repository->find_matching_keys( 7, array( 'key-a', 'key-b', 'key-missing' ), true ) );
+
+		$without_filter = $repository->find_matching_keys( 7, array( 'key-a', 'key-b', 'key-missing' ), false );
+		sort( $without_filter );
+		$this->assertSame( array( 'key-a', 'key-b' ), $without_filter );
+	}
+
+	/**
+	 * `find_matching_keys()` が空の `$keys` を渡されたら空配列を返し、
+	 * `IN ()` のような不正なSQLを組み立てないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_find_matching_keys_returns_empty_for_empty_keys() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$this->assertSame( array(), $repository->find_matching_keys( 7, array() ) );
+	}
+
+	/**
+	 * `mark_ended_by_ids()` が指定 id の finding だけに `ended_in_run_id`/
+	 * `end_reason` を書き込み、他の finding には触れないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_mark_ended_by_ids_updates_only_specified_ids() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'path' => 'target.php' ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'path' => 'other.php' ) ) );
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+		$repository->mark_ended_by_ids( 99, array( 1 ), WPCV_Generation_Differ::END_REASON_SUPPRESSED );
+
+		$this->assertSame( 99, $wpdb->rows['wp_wpcv_findings'][1]['ended_in_run_id'] );
+		$this->assertSame( WPCV_Generation_Differ::END_REASON_SUPPRESSED, $wpdb->rows['wp_wpcv_findings'][1]['end_reason'] );
+		$this->assertNull( $wpdb->rows['wp_wpcv_findings'][2]['ended_in_run_id'] );
+	}
+
+	/**
+	 * `mark_ended_by_ids()` が空の `$ids` を渡されたら何も更新しないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_mark_ended_by_ids_noop_for_empty_ids() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row() );
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+		$repository->mark_ended_by_ids( 99, array(), WPCV_Generation_Differ::END_REASON_SUPPRESSED );
+
+		$this->assertNull( $wpdb->rows['wp_wpcv_findings'][1]['ended_in_run_id'] );
+	}
+
+	/**
+	 * `mark_ended_by_keys()` が、指定 target_run・指定キーで、かつまだ終わって
+	 * いない finding だけを終わらせることを確認する(既に終了済みの行を
+	 * 上書きしない.§1.4「pass 2に到達する基準行はまだ終わっていないものだけ」
+	 * という前提をこの書き込み自身でも保証する設計).
+	 *
+	 * @return void
+	 */
+	public function test_mark_ended_by_keys_skips_already_ended_rows() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 7, 'finding_key' => 'key-a' ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 7, 'finding_key' => 'key-b', 'ended_in_run_id' => 1, 'end_reason' => 'excluded' ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 8, 'finding_key' => 'key-a' ) ) );
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+		$repository->mark_ended_by_keys( 99, 7, array( 'key-a', 'key-b' ), WPCV_Generation_Differ::END_REASON_RESOLVED );
+
+		$this->assertSame( 99, $wpdb->rows['wp_wpcv_findings'][1]['ended_in_run_id'] );
+		$this->assertSame( WPCV_Generation_Differ::END_REASON_RESOLVED, $wpdb->rows['wp_wpcv_findings'][1]['end_reason'] );
+		// 既に終了済み(target_run_id=7・key-b)は上書きされない.
+		$this->assertSame( 1, $wpdb->rows['wp_wpcv_findings'][2]['ended_in_run_id'] );
+		$this->assertSame( 'excluded', $wpdb->rows['wp_wpcv_findings'][2]['end_reason'] );
+		// 別target_run(id=8)の同じキーには触れない.
+		$this->assertNull( $wpdb->rows['wp_wpcv_findings'][3]['ended_in_run_id'] );
+	}
+
+	/**
+	 * `end_all_for_target_run()` が、指定 target_run の未終了 finding をすべて
+	 * 同じ理由で終わらせ、既に終了済みの行・他の target_run には触れないことを
+	 * 確認する(v0.5後半 §Step12・§1.3 bulk mode用).
+	 *
+	 * @return void
+	 */
+	public function test_end_all_for_target_run_ends_only_unended_rows() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 7 ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 7, 'ended_in_run_id' => 1, 'end_reason' => 'resolved' ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 8 ) ) );
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+		$repository->end_all_for_target_run( 99, 7, WPCV_Generation_Differ::END_REASON_TARGET_REMOVED );
+
+		$this->assertSame( 99, $wpdb->rows['wp_wpcv_findings'][1]['ended_in_run_id'] );
+		$this->assertSame( WPCV_Generation_Differ::END_REASON_TARGET_REMOVED, $wpdb->rows['wp_wpcv_findings'][1]['end_reason'] );
+		$this->assertSame( 1, $wpdb->rows['wp_wpcv_findings'][2]['ended_in_run_id'] );
+		$this->assertNull( $wpdb->rows['wp_wpcv_findings'][3]['ended_in_run_id'] );
+	}
+
+	/**
+	 * `mark_diff_state_for_target_run()` が `$only_unsuppressed = true` のとき
+	 * 抑制済みの finding には触れず(既定NULLのまま)、`false` のときはすべて
+	 * 設定することを確認する(v0.5後半 §Step12・§1.4「抑制されていれば
+	 * diff_stateはNULLのまま」).
+	 *
+	 * @return void
+	 */
+	public function test_mark_diff_state_for_target_run_respects_only_unsuppressed() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 7 ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_run_id' => 7, 'suppressed_by' => 'soft_change' ) ) );
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+		$repository->mark_diff_state_for_target_run( 7, WPCV_Generation_Differ::DIFF_STATE_NEW, true );
+
+		$this->assertSame( WPCV_Generation_Differ::DIFF_STATE_NEW, $wpdb->rows['wp_wpcv_findings'][1]['diff_state'] );
+		$this->assertNull( $wpdb->rows['wp_wpcv_findings'][2]['diff_state'] );
+
+		$repository->mark_diff_state_for_target_run( 7, WPCV_Generation_Differ::DIFF_STATE_EVENT, false );
+
+		$this->assertSame( WPCV_Generation_Differ::DIFF_STATE_EVENT, $wpdb->rows['wp_wpcv_findings'][2]['diff_state'] );
+	}
+
+	/**
+	 * `aggregate_diff_counts()` が、今回の run の `new`/`continuing` と、
+	 * この run が終わらせた(`ended_in_run_id`が一致する)`resolved` を正しく
+	 * 集計することを確認する(`resolved`対象は基準〔別run〕に属する行のため、
+	 * `run_id`ではなく`ended_in_run_id`で絞り込む設計. v0.5後半 §Step12).
+	 *
+	 * @return void
+	 */
+	public function test_aggregate_diff_counts() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		// 今回の run(id=99)の finding: new 2件・continuing 1件.
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 99, 'diff_state' => WPCV_Generation_Differ::DIFF_STATE_NEW ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 99, 'diff_state' => WPCV_Generation_Differ::DIFF_STATE_NEW ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 99, 'diff_state' => WPCV_Generation_Differ::DIFF_STATE_CONTINUING ) ) );
+		// 別runで抑制されたため diff_state=NULL のまま(集計されない).
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 99, 'diff_state' => null ) ) );
+		// 基準(別run=1)の finding。今回のrun(99)がresolvedとして終わらせた.
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 1, 'ended_in_run_id' => 99, 'end_reason' => WPCV_Generation_Differ::END_REASON_RESOLVED ) ) );
+		// 別の理由(suppressed)で終わった行はresolvedに数えない.
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 1, 'ended_in_run_id' => 99, 'end_reason' => WPCV_Generation_Differ::END_REASON_SUPPRESSED ) ) );
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$this->assertSame(
+			array( 'new' => 2, 'resolved' => 1, 'continuing' => 1 ),
+			$repository->aggregate_diff_counts( 99 )
+		);
 	}
 }

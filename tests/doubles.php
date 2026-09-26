@@ -391,6 +391,126 @@ class WPCV_Test_Fake_WPDB {
 
 		if ( 1 === preg_match( '/^INSERT INTO\s+(\S+)\s*\(([^)]+)\)\s*VALUES\s*(.+?)\s*ON DUPLICATE KEY UPDATE/is', $query, $matches ) ) {
 			$this->apply_bulk_upsert( $matches[1], $matches[2], $matches[3] );
+		} elseif ( 1 === preg_match( '/^UPDATE\s+(\S+)\s+SET\s+(.+?)\s+WHERE\s+(.+)$/is', $query, $matches ) ) {
+			$this->apply_bulk_update( $matches[1], $matches[2], $matches[3] );
+		}
+
+		return true;
+	}
+
+	/**
+	 * `UPDATE {table} SET col = val, ... WHERE cond AND cond ...` を解釈し、
+	 * `$this->rows` へ反映する(`query()` 専用のヘルパー. v0.5後半 §Step12:
+	 * `WPCV_Finding_Repository` の一括終了処理・一括 diff_state 設定が、
+	 * `$wpdb->update()` では組み立てられない `IN (...)`/`IS NULL` 条件のWHEREを
+	 * 生SQLで発行するようになったため追加した。`apply_bulk_upsert()` と同じ
+	 * 「本プラグインが実際に発行する形だけを解釈する簡易パーサー」であり、
+	 * 汎用SQLパーサーではない ―― WHERE は `AND` で結んだ
+	 * `column = literal` / `column IN (literal, ...)` / `column IS NULL` の
+	 * 3種のみ(`OR`・括弧のネストは非対応).
+	 *
+	 * @param string $table      テーブル名.
+	 * @param string $set_str    `SET` 直後、`WHERE` 直前までのカラム=値のカンマ区切り文字列.
+	 * @param string $where_str  `WHERE` 直後の条件文字列(`AND` 区切り).
+	 * @return void
+	 */
+	private function apply_bulk_update( $table, $set_str, $where_str ) {
+		if ( ! isset( $this->rows[ $table ] ) ) {
+			return;
+		}
+
+		$assignments = $this->parse_set_assignments( $set_str );
+		$conditions  = $this->parse_where_conditions( $where_str );
+
+		foreach ( $this->rows[ $table ] as $id => $row ) {
+			if ( $this->row_matches_conditions( $row, $conditions ) ) {
+				$this->rows[ $table ][ $id ] = array_merge( $row, $assignments );
+			}
+		}
+	}
+
+	/**
+	 * `apply_bulk_update()` 専用: `SET` 句(`col1 = 'a', col2 = 2` のような
+	 * カンマ区切り)をカラム => 値の配列に変換する。値がカンマを含まない
+	 * (このプラグインが実際にSETへ渡す値は整数・NULL・短い列挙文字列のみ)
+	 * 前提のため、単純な `explode( ',', ... )` で十分.
+	 *
+	 * @param string $set_str `SET` 句.
+	 * @return array<string, mixed>
+	 */
+	private function parse_set_assignments( $set_str ) {
+		$assignments = array();
+
+		foreach ( explode( ',', $set_str ) as $piece ) {
+			if ( 1 === preg_match( '/^\s*(\w+)\s*=\s*(.+?)\s*$/s', $piece, $matches ) ) {
+				$assignments[ $matches[1] ] = $this->parse_sql_value_literal( $matches[2] );
+			}
+		}
+
+		return $assignments;
+	}
+
+	/**
+	 * `apply_bulk_update()` 専用: `WHERE` 句(`AND` 区切り)を条件の配列に変換する.
+	 * 各条件は `array( 'eq'|'in'|'is_null', column, value )` の形(`is_null` は
+	 * 3要素目を持たない).
+	 *
+	 * @param string $where_str `WHERE` 句.
+	 * @return array<int, array>
+	 */
+	private function parse_where_conditions( $where_str ) {
+		$conditions = array();
+
+		foreach ( preg_split( '/\s+AND\s+/i', trim( $where_str ) ) as $piece ) {
+			$piece = trim( $piece );
+
+			if ( 1 === preg_match( '/^(\w+)\s+IS\s+NULL$/i', $piece, $matches ) ) {
+				$conditions[] = array( 'is_null', $matches[1] );
+				continue;
+			}
+
+			if ( 1 === preg_match( '/^(\w+)\s+IN\s*\((.+)\)$/is', $piece, $matches ) ) {
+				$conditions[] = array(
+					'in',
+					$matches[1],
+					array_map( array( $this, 'parse_sql_value_literal' ), $this->split_sql_value_literals( $matches[2] ) ),
+				);
+				continue;
+			}
+
+			if ( 1 === preg_match( '/^(\w+)\s*=\s*(.+)$/s', $piece, $matches ) ) {
+				$conditions[] = array( 'eq', $matches[1], $this->parse_sql_value_literal( trim( $matches[2] ) ) );
+			}
+		}
+
+		return $conditions;
+	}
+
+	/**
+	 * `apply_bulk_update()` 専用: 1行が `parse_where_conditions()` の全条件を
+	 * 満たすかどうかを判定する(すべて `AND`).
+	 *
+	 * @param array $row        行.
+	 * @param array $conditions `parse_where_conditions()` の戻り値.
+	 * @return bool
+	 */
+	private function row_matches_conditions( array $row, array $conditions ) {
+		foreach ( $conditions as $condition ) {
+			$type   = $condition[0];
+			$column = $condition[1];
+			$value  = array_key_exists( $column, $row ) ? $row[ $column ] : null;
+
+			if ( 'is_null' === $type && null !== $value ) {
+				return false;
+			}
+
+			if ( 'eq' === $type && $value !== $condition[2] ) {
+				return false;
+			}
+
+			if ( 'in' === $type && ! in_array( $value, $condition[2], true ) ) {
+				return false;
+			}
 		}
 
 		return true;
@@ -872,6 +992,14 @@ function wpcv_test_make_finding_row( array $overrides = array() ) {
 			'suppression_id'  => null,
 			'closed_at'       => null,
 			'closed_reason'   => null,
+			// v0.5後半 §Step10で追加した列(WPCV_Finding_Repositoryの差分処理系
+			// メソッドが読み書きする。既定は「差分処理がまだ触れていない finding」).
+			'detail'          => null,
+			'finding_key'     => null,
+			'diff_state'      => null,
+			'notified_at'     => null,
+			'ended_in_run_id' => null,
+			'end_reason'      => null,
 		),
 		$overrides
 	);

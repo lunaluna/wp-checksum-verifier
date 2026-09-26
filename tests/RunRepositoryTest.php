@@ -7,6 +7,7 @@
 
 require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once __DIR__ . '/doubles.php';
 
@@ -17,6 +18,22 @@ use PHPUnit\Framework\TestCase;
  * から分割)のテスト. 分割前の `RepositoryTest` からrun関連のテストのみを移植した.
  */
 class RunRepositoryTest extends TestCase {
+
+	/**
+	 * 各テストの前に前回の残骸を掃除する(`wpcv_run_terminated`フックの記録用).
+	 *
+	 * `_wpcv_test_added_actions` はここで unset しない。他クラスのファイルが
+	 * require された時点で1回だけ `add_action()` を呼んで登録している
+	 * (`WPCV_Chunk_Dispatcher::HOOK`/`WPCV_Runner_Async::HOOK` 等)ため、ここで
+	 * 消すとテストスイート全体を通しで実行したときにその登録が失われ、
+	 * 他のテストファイル(`RunnerAsyncTest`等)を壊してしまう(実際に踏んだ事故).
+	 *
+	 * @return void
+	 */
+	protected function setUp(): void {
+		parent::setUp();
+		unset( $GLOBALS['_wpcv_test_do_action_calls'] );
+	}
 
 	/**
 	 * 固定時刻を返す Repository を作る.
@@ -293,6 +310,8 @@ class RunRepositoryTest extends TestCase {
 		$this->assertSame( 'failed', $row['status'] );
 		$this->assertSame( '2026-09-08 12:00:00', $row['finished_at'] );
 		$this->assertSame( 'RuntimeException: boom', $row['notes'] );
+		// v0.5後半 §Step12: failed/abortedになったrunは差分処理の対象にしない(§3.1「NULL→skipped」).
+		$this->assertSame( 'skipped', $row['diff_status'] );
 	}
 
 	/**
@@ -365,6 +384,8 @@ class RunRepositoryTest extends TestCase {
 			$this->assertTrue( $repository->mark_run_aborted( 1, 'deadline exceeded' ), "status={$status}" );
 			$this->assertSame( 'aborted', $wpdb->rows['wp_wpcv_runs'][1]['status'], "status={$status}" );
 			$this->assertSame( 'deadline exceeded', $wpdb->rows['wp_wpcv_runs'][1]['notes'], "status={$status}" );
+			// v0.5後半 §Step12: failed/abortedになったrunは差分処理の対象にしない.
+			$this->assertSame( 'skipped', $wpdb->rows['wp_wpcv_runs'][1]['diff_status'], "status={$status}" );
 		}
 	}
 
@@ -1018,5 +1039,392 @@ class RunRepositoryTest extends TestCase {
 		$repository = $this->make_repository( $wpdb );
 
 		$this->assertNull( $repository->find_most_recent_by_trigger( 'cli' ) );
+	}
+
+	// ------------------------------------------------------------------
+	// v0.5後半 §Step12: `wpcv_run_terminated` フック
+	// ------------------------------------------------------------------
+
+	/**
+	 * `mark_run_failed()`/`mark_run_aborted()`/`finish_run()` がそれぞれ実際に
+	 * 更新できた場合に `wpcv_run_terminated` フックを1回だけ発火することを確認する
+	 * (§3.4「実際に行を更新できたときだけ」・「状態遷移が成功した場所1か所に集める」).
+	 *
+	 * @return void
+	 */
+	public function test_terminal_transitions_fire_wpcv_run_terminated_hook() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $repository->reserve_run()['run_id'];
+		$repository->mark_run_failed( $run_id, 'boom' );
+
+		$this->assertSame(
+			array( array( $run_id, 'failed' ) ),
+			$GLOBALS['_wpcv_test_do_action_calls']['wpcv_run_terminated']
+		);
+
+		unset( $GLOBALS['_wpcv_test_do_action_calls'] );
+		$run_id = $repository->reserve_run()['run_id'];
+		$repository->mark_run_aborted( $run_id, 'deadline' );
+
+		$this->assertSame(
+			array( array( $run_id, 'aborted' ) ),
+			$GLOBALS['_wpcv_test_do_action_calls']['wpcv_run_terminated']
+		);
+
+		unset( $GLOBALS['_wpcv_test_do_action_calls'] );
+		$run_id = $repository->reserve_run()['run_id'];
+		$repository->mark_planning_running( $run_id );
+		$repository->finish_run( $run_id, array(
+			'status'               => 'success',
+			'targets_total'        => 1,
+			'targets_verified'     => 1,
+			'targets_unverifiable' => 0,
+			'targets_failed'       => 0,
+			'findings_total'       => 0,
+		) );
+
+		$this->assertSame(
+			array( array( $run_id, 'success' ) ),
+			$GLOBALS['_wpcv_test_do_action_calls']['wpcv_run_terminated']
+		);
+	}
+
+	/**
+	 * 対象行が既に active な状態のいずれでもない(=更新できない)場合、
+	 * `wpcv_run_terminated` フックが発火しないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_mark_run_failed_does_not_fire_hook_when_update_fails() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-08 08:00:00',
+				'status'      => 'success',
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$this->assertFalse( $repository->mark_run_failed( 1, 'too late' ) );
+		$this->assertArrayNotHasKey( 'wpcv_run_terminated', $GLOBALS['_wpcv_test_do_action_calls'] ?? array() );
+	}
+
+	// ------------------------------------------------------------------
+	// v0.5後半 §Step12: 差分処理のclaim/lease(`claim_diff()`)
+	// ------------------------------------------------------------------
+
+	/**
+	 * `diff_status = pending` の run を claim でき、`processing` へ遷移し
+	 * `diff_owner`/`diff_lease_expires_at` が設定されることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_claim_diff_claims_pending_run() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $repository->reserve_run()['run_id'];
+		$repository->mark_planning_running( $run_id );
+		$repository->finish_run( $run_id, $this->make_summary() );
+
+		$result = $repository->claim_diff( $run_id, 'owner-a', 120, 5 );
+
+		$this->assertTrue( $result['claimed'] );
+		$this->assertFalse( $result['failed'] );
+		$this->assertSame( 'processing', $result['run']['diff_status'] );
+		$this->assertSame( 'owner-a', $result['run']['diff_owner'] );
+		$this->assertSame( '2026-09-08 12:02:00', $result['run']['diff_lease_expires_at'] );
+		$this->assertSame( 0, (int) ( $result['run']['diff_attempt_count'] ?? 0 ), '通常claimではattempt_countを消費しない' );
+	}
+
+	/**
+	 * Lease有効中の `processing` を他のownerがclaimしようとしても失敗する
+	 * (二重claimが弾かれる)ことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_claim_diff_rejects_second_claim_while_lease_is_active() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $repository->reserve_run()['run_id'];
+		$repository->mark_planning_running( $run_id );
+		$repository->finish_run( $run_id, $this->make_summary() );
+
+		$this->assertTrue( $repository->claim_diff( $run_id, 'owner-a' )['claimed'] );
+
+		$second = $repository->claim_diff( $run_id, 'owner-b' );
+
+		$this->assertFalse( $second['claimed'] );
+		$this->assertFalse( $second['failed'] );
+		$this->assertSame( 'owner-a', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_owner'], '他ownerに上書きされてはならない' );
+	}
+
+	/**
+	 * Lease切れの `processing` を、試行上限内であれば別ownerが再claimできる
+	 * (worker crashからの再開)ことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_claim_diff_reclaims_after_lease_expiry_within_attempt_limit() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $repository->reserve_run()['run_id'];
+		$repository->mark_planning_running( $run_id );
+		$repository->finish_run( $run_id, $this->make_summary() );
+
+		// lease有効期間を実質0秒にして、直後にlease切れの状態を作る.
+		$this->assertTrue( $repository->claim_diff( $run_id, 'owner-a', -1, 5 )['claimed'] );
+
+		$result = $repository->claim_diff( $run_id, 'owner-b', 120, 5 );
+
+		$this->assertTrue( $result['claimed'] );
+		$this->assertSame( 'owner-b', $result['run']['diff_owner'] );
+		$this->assertSame( 1, (int) $result['run']['diff_attempt_count'], 'lease切れの検知1回分だけattempt_countが増える' );
+	}
+
+	/**
+	 * Lease切れの検知が試行上限を超えたら `failed` へ倒し、`claimed` は
+	 * 常にfalseになることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_claim_diff_marks_failed_after_exceeding_max_attempts() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $repository->reserve_run()['run_id'];
+		$repository->mark_planning_running( $run_id );
+		$repository->finish_run( $run_id, $this->make_summary() );
+
+		// 試行上限0回: 最初のclaimの後、lease切れの検知1回目で即座に上限超過になる.
+		$this->assertTrue( $repository->claim_diff( $run_id, 'owner-a', -1, 0 )['claimed'] );
+
+		$result = $repository->claim_diff( $run_id, 'owner-b', 120, 0 );
+
+		$this->assertFalse( $result['claimed'] );
+		$this->assertTrue( $result['failed'] );
+		$this->assertSame( 'failed', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_status'] );
+		$this->assertSame( 1, (int) $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_attempt_count'] );
+	}
+
+	/**
+	 * `diff_status` が対象外(NULL・`done`・`skipped`等)の run は claim できず、
+	 * 行にも一切触れないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_claim_diff_returns_not_claimable_when_not_applicable() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-08 08:00:00',
+				'status'      => 'success',
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+				'diff_status' => 'done',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$result = $repository->claim_diff( 1, 'owner-a' );
+
+		$this->assertFalse( $result['claimed'] );
+		$this->assertFalse( $result['failed'] );
+		$this->assertSame( 'done', $wpdb->rows['wp_wpcv_runs'][1]['diff_status'] );
+	}
+
+	// ------------------------------------------------------------------
+	// v0.5後半 §Step12: `finalize_diff_chunk()`/`finalize_diff_alerting()`
+	// ------------------------------------------------------------------
+
+	/**
+	 * 未完了のchunk確定が `pending` へ戻し、`diff_cursor` を保存し、
+	 * `diff_attempt_count` を変えないことを確認する(正常なyield).
+	 *
+	 * @return void
+	 */
+	public function test_finalize_diff_chunk_incomplete_reverts_to_pending_with_cursor() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $repository->reserve_run()['run_id'];
+		$repository->mark_planning_running( $run_id );
+		$repository->finish_run( $run_id, $this->make_summary() );
+		$repository->claim_diff( $run_id, 'owner-a' );
+
+		$cursor = '{"target_run_id":5,"pass":1,"last_id":42}';
+		$ok     = $repository->finalize_diff_chunk( $run_id, 'owner-a', $cursor, false );
+
+		$this->assertTrue( $ok );
+		$row = $wpdb->rows['wp_wpcv_runs'][ $run_id ];
+		$this->assertSame( 'pending', $row['diff_status'] );
+		$this->assertNull( $row['diff_owner'] );
+		$this->assertNull( $row['diff_lease_expires_at'] );
+		$this->assertSame( $cursor, $row['diff_cursor'] );
+		$this->assertSame( 0, (int) ( $row['diff_attempt_count'] ?? 0 ) );
+	}
+
+	/**
+	 * 完了時のchunk確定が `alerting` へ進め、件数(new/resolved/continuing)を
+	 * 書き込み、`diff_cursor` をクリアすることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_finalize_diff_chunk_complete_advances_to_alerting_with_counts() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $repository->reserve_run()['run_id'];
+		$repository->mark_planning_running( $run_id );
+		$repository->finish_run( $run_id, $this->make_summary() );
+		$repository->claim_diff( $run_id, 'owner-a' );
+
+		$ok = $repository->finalize_diff_chunk(
+			$run_id,
+			'owner-a',
+			null,
+			true,
+			array(
+				'new'        => 3,
+				'resolved'   => 1,
+				'continuing' => 2,
+			)
+		);
+
+		$this->assertTrue( $ok );
+		$row = $wpdb->rows['wp_wpcv_runs'][ $run_id ];
+		$this->assertSame( 'alerting', $row['diff_status'] );
+		$this->assertNull( $row['diff_owner'] );
+		$this->assertNull( $row['diff_cursor'] );
+		$this->assertSame( 3, (int) $row['findings_new'] );
+		$this->assertSame( 1, (int) $row['findings_resolved'] );
+		$this->assertSame( 2, (int) $row['findings_continuing'] );
+	}
+
+	/**
+	 * `diff_owner` が一致しない(既に別ownerに再claimされた)確定の書き込みが
+	 * fencingにより静かに無視される(falseを返すだけ)ことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_finalize_diff_chunk_fencing_rejects_stale_owner() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $repository->reserve_run()['run_id'];
+		$repository->mark_planning_running( $run_id );
+		$repository->finish_run( $run_id, $this->make_summary() );
+		$repository->claim_diff( $run_id, 'owner-a' );
+
+		$ok = $repository->finalize_diff_chunk( $run_id, 'owner-stale', null, false );
+
+		$this->assertFalse( $ok );
+		$this->assertSame( 'processing', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_status'] );
+		$this->assertSame( 'owner-a', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_owner'] );
+	}
+
+	/**
+	 * `finalize_diff_alerting()` が `alerting` を `done` へ進めることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_finalize_diff_alerting_advances_to_done() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $repository->reserve_run()['run_id'];
+		$repository->mark_planning_running( $run_id );
+		$repository->finish_run( $run_id, $this->make_summary() );
+		$repository->claim_diff( $run_id, 'owner-a' );
+		$repository->finalize_diff_chunk( $run_id, 'owner-a', null, true, array( 'new' => 0, 'resolved' => 0, 'continuing' => 0 ) );
+
+		$this->assertTrue( $repository->finalize_diff_alerting( $run_id ) );
+		$this->assertSame( 'done', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_status'] );
+	}
+
+	/**
+	 * `finalize_diff_alerting()` が `alerting` 以外の run には何もしないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_finalize_diff_alerting_no_ops_when_not_alerting() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $repository->reserve_run()['run_id'];
+		$repository->mark_planning_running( $run_id );
+		$repository->finish_run( $run_id, $this->make_summary() );
+
+		$this->assertFalse( $repository->finalize_diff_alerting( $run_id ) );
+		$this->assertSame( 'pending', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_status'] );
+	}
+
+	// ------------------------------------------------------------------
+	// v0.5後半 §Step12: `find_stale_diff_run()`(取りこぼしの回収)
+	// ------------------------------------------------------------------
+
+	/**
+	 * `pending`、またはlease切れの`processing`の run のうち、最も古い(id最小)
+	 * ものだけを1件返すことを確認する(lease有効な`processing`・terminalな
+	 * `done`は候補にしない).
+	 *
+	 * @return void
+	 */
+	public function test_find_stale_diff_run_returns_oldest_candidate_only() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		// id=1: lease有効なprocessing(対象外).
+		$wpdb->insert( 'wp_wpcv_runs', array( 'status' => 'success', 'run_trigger' => 'cron', 'runner' => 'sync', 'diff_status' => 'processing', 'diff_owner' => 'x', 'diff_lease_expires_at' => '2026-09-08 23:59:59' ) );
+		// id=2: lease切れのalerting(対象、最古の候補).
+		$wpdb->insert( 'wp_wpcv_runs', array( 'status' => 'success', 'run_trigger' => 'cron', 'runner' => 'sync', 'diff_status' => 'alerting', 'diff_owner' => 'y', 'diff_lease_expires_at' => '2026-09-08 00:00:00' ) );
+		// id=3: pending(対象).
+		$wpdb->insert( 'wp_wpcv_runs', array( 'status' => 'success', 'run_trigger' => 'cron', 'runner' => 'sync', 'diff_status' => 'pending' ) );
+		// id=4: done(対象外).
+		$wpdb->insert( 'wp_wpcv_runs', array( 'status' => 'success', 'run_trigger' => 'cron', 'runner' => 'sync', 'diff_status' => 'done' ) );
+
+		$this->assertSame( 2, $repository->find_stale_diff_run() );
+	}
+
+	/**
+	 * 候補が1件も無ければ `null` を返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_find_stale_diff_run_returns_null_when_no_candidates() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$wpdb->insert( 'wp_wpcv_runs', array( 'status' => 'success', 'run_trigger' => 'cron', 'runner' => 'sync', 'diff_status' => 'done' ) );
+
+		$this->assertNull( $repository->find_stale_diff_run() );
+	}
+
+	/**
+	 * `WPCV_Verifier::summarize()` 相当の固定summary配列を作る(`finish_run()` の
+	 * 引数用. このテストファイルでは差分処理の前提として run を success/partial に
+	 * するためだけに使うので内容は問わない).
+	 *
+	 * @return array
+	 */
+	private function make_summary() {
+		return array(
+			'status'               => 'success',
+			'targets_total'        => 1,
+			'targets_verified'     => 1,
+			'targets_unverifiable' => 0,
+			'targets_failed'       => 0,
+			'findings_total'       => 0,
+		);
 	}
 }

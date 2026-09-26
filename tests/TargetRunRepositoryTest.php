@@ -819,4 +819,107 @@ class TargetRunRepositoryTest extends TestCase {
 
 		$repository->mark_scan_incomplete( $target_run_id, 'lease-1' );
 	}
+
+	// ------------------------------------------------------------------
+	// v0.5後半 §Step12: `find_baseline_target_run()`
+	// ------------------------------------------------------------------
+
+	/**
+	 * 直近の `status = success` の target_run(今回の run より前)を基準として
+	 * 返すことを確認する. 同じ target で更に古い success の行があっても、
+	 * より新しい方(run_idが大きい方)を選ぶことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_find_baseline_target_run_returns_most_recent_success_before_run() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$repository->save_target_runs( 10, array( wpcv_test_make_target_run( array( 'version' => '1.0.0' ) ) ) );
+		$repository->save_target_runs( 20, array( wpcv_test_make_target_run( array( 'version' => '1.1.0' ) ) ) );
+
+		$baseline = $repository->find_baseline_target_run( 'core', 30 );
+
+		$this->assertNotNull( $baseline );
+		$this->assertSame( '1.1.0', $baseline['version'] );
+	}
+
+	/**
+	 * 今回のrun以降(同じか未来)のtarget_runは基準の候補にしないことを確認する
+	 * (「今回の run より前」の境界確認).
+	 *
+	 * @return void
+	 */
+	public function test_find_baseline_target_run_excludes_current_and_future_runs() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$repository->save_target_runs( 10, array( wpcv_test_make_target_run( array( 'version' => '1.0.0' ) ) ) );
+
+		$this->assertNull( $repository->find_baseline_target_run( 'core', 10 ) );
+	}
+
+	/**
+	 * `status = success` 以外の行(unverifiable/failed等)は基準にしないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_find_baseline_target_run_ignores_non_success_rows() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$repository->save_target_runs( 10, array( wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::UNVERIFIABLE ) ) ) );
+
+		$this->assertNull( $repository->find_baseline_target_run( 'core', 20 ) );
+	}
+
+	/**
+	 * 該当する行が無ければ `null` を返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_find_baseline_target_run_returns_null_when_none_exists() {
+		$repository = new WPCV_Target_Run_Repository( new WPCV_Test_Fake_WPDB() );
+
+		$this->assertNull( $repository->find_baseline_target_run( 'plugin:nonexistent', 100 ) );
+	}
+
+	// ------------------------------------------------------------------
+	// v0.5後半 §Step12: `update_diff_mode()`
+	// ------------------------------------------------------------------
+
+	/**
+	 * `diff_mode`/`baseline_target_run_id` を書き込むことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_update_diff_mode_writes_mode_and_baseline_id() {
+		$wpdb           = new WPCV_Test_Fake_WPDB();
+		$repository     = new WPCV_Target_Run_Repository( $wpdb );
+		$target_run_ids = $repository->save_target_runs( 1, array( wpcv_test_make_target_run() ) );
+
+		$repository->update_diff_mode( $target_run_ids['core'], 'compared', 5 );
+
+		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_ids['core'] ];
+		$this->assertSame( 'compared', $row['diff_mode'] );
+		$this->assertSame( 5, $row['baseline_target_run_id'] );
+	}
+
+	/**
+	 * 基準が無い場合(`first`等)、`baseline_target_run_id` を `null` のまま
+	 * 書き込むことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_update_diff_mode_allows_null_baseline() {
+		$wpdb           = new WPCV_Test_Fake_WPDB();
+		$repository     = new WPCV_Target_Run_Repository( $wpdb );
+		$target_run_ids = $repository->save_target_runs( 1, array( wpcv_test_make_target_run() ) );
+
+		$repository->update_diff_mode( $target_run_ids['core'], 'first', null );
+
+		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_ids['core'] ];
+		$this->assertSame( 'first', $row['diff_mode'] );
+		$this->assertNull( $row['baseline_target_run_id'] );
+	}
 }

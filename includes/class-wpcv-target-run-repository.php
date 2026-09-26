@@ -790,6 +790,102 @@ class WPCV_Target_Run_Repository {
 	}
 
 	/**
+	 * 指定 target の「基準」target_run を探す(v0.5後半プラン §2.1: その target の
+	 * 直近の `status = success` の target_run〔今回の run より前〕.Step12の
+	 * 差分処理〔`WPCV_Diff_Dispatcher`〕が呼び出し元).
+	 *
+	 * `usable` は §1.4「v4 より前の行(finding_key を持たない行)しか無い基準は
+	 * 基準なし(first)として扱う」の判定材料であり、このメソッド自身は判定しない
+	 * (finding の有無を知らないため.呼び出し元が
+	 * `WPCV_Finding_Repository::is_baseline_usable()` の結果を渡してこの戻り値に
+	 * 合成し `WPCV_Generation_Differ::determine_diff_mode()` へ渡す設計).
+	 *
+	 * @param string $target_id      対象の target_id.
+	 * @param int    $before_run_id  この run より前の target_run だけを対象にする.
+	 * @return array{id: int, version: string|null}|null 見つからなければ `null`.
+	 */
+	public function find_baseline_target_run( $target_id, $before_run_id ) {
+		$candidates = array();
+
+		foreach ( $this->all_rows() as $row ) {
+			if ( (string) $row['target_id'] !== (string) $target_id ) {
+				continue;
+			}
+
+			if ( WPCV_Target_Status::SUCCESS !== $row['status'] ) {
+				continue;
+			}
+
+			if ( (int) $row['run_id'] >= (int) $before_run_id ) {
+				continue;
+			}
+
+			$candidates[] = $row;
+		}
+
+		if ( empty( $candidates ) ) {
+			return null;
+		}
+
+		usort(
+			$candidates,
+			static function ( $a, $b ) {
+				return (int) $b['run_id'] <=> (int) $a['run_id'];
+			}
+		);
+
+		return array(
+			'id'      => (int) $candidates[0]['id'],
+			'version' => $candidates[0]['version'],
+		);
+	}
+
+	/**
+	 * 差分処理(v0.5後半 §Step12)が決定した `diff_mode`/`baseline_target_run_id` を
+	 * 書き込む.
+	 *
+	 * このメソッド自身にfencingは無い(差分処理は run 単位の
+	 * `WPCV_Run_Repository::claim_diff()` が排他制御を担い、この書き込みは
+	 * そのlease保持中にだけ行われる前提のため.`WPCV_Target_Run_Repository`の
+	 * 他メソッドが行うtarget単位のlease fencing〔`lease_owner`〕とは異なる層の
+	 * 排他である).
+	 *
+	 * @param int      $target_run_id          対象の target_run の id.
+	 * @param string   $diff_mode              `WPCV_Generation_Differ::DIFF_MODE_*`
+	 *                                          のいずれか(stat targetは `event`).
+	 * @param int|null $baseline_target_run_id 比較に使った基準の target_run の id
+	 *                                          (基準が無ければ `null`).
+	 * @return void
+	 *
+	 * @throws RuntimeException `$wpdb->update()` がSQLエラーで `false` を返した場合.
+	 */
+	public function update_diff_mode( $target_run_id, $diff_mode, $baseline_target_run_id ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
+
+		$updated = $this->wpdb->update(
+			$table,
+			array(
+				'diff_mode'              => (string) $diff_mode,
+				'baseline_target_run_id' => null === $baseline_target_run_id ? null : (int) $baseline_target_run_id,
+			),
+			array( 'id' => (int) $target_run_id ),
+			array( '%s', '%d' ),
+			array( '%d' )
+		);
+
+		if ( false === $updated ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf(
+						'WPCV_Target_Run_Repository::update_diff_mode() の update に失敗しました: %s',
+						(string) $this->wpdb->last_error
+					)
+				)
+			);
+		}
+	}
+
+	/**
 	 * 指定 run に属する、まだ終端状態(`WPCV_Target_Status::TERMINAL`)に達していない
 	 * target_run をすべて `WPCV_Target_Status::ABORTED` にする(v0.4.0 §Step4:
 	 * run deadline超過sweep。`WPCV_Chunk_Dispatcher` から呼ぶ).

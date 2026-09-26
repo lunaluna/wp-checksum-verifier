@@ -51,6 +51,15 @@ class WPCV_Generation_Differ {
 	/** §2.1: exclude_target 以外の理由で今回 skipped になった(基準を変えない). */
 	const DIFF_MODE_SKIPPED = 'skipped';
 
+	/**
+	 * §2.3(D2): stat 差分検知 target が実際に走査を実行した(status=success).
+	 * stat target は世代比較の概念を持たないため(クラス docblock参照)、
+	 * `determine_diff_mode()` はこの値を返さない ―― 呼び出し元
+	 * (`WPCV_Diff_Dispatcher`)が stat target かどうかを先に判定し、
+	 * success の場合のみこの値を直接使う(v0.5後半 §Step12).
+	 */
+	const DIFF_MODE_EVENT = 'event';
+
 	/** §2.1/§2.3: 基準に無いキー、または stat 由来で新規に検出された. */
 	const DIFF_STATE_NEW = 'new';
 

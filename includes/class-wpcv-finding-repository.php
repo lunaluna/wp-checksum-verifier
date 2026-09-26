@@ -320,6 +320,470 @@ class WPCV_Finding_Repository {
 	}
 
 	/**
+	 * 指定 target_run が「使える基準」かどうかを判定する(v0.5後半 §Step12・§1.4:
+	 * `WPCV_Generation_Differ::determine_diff_mode()` の `$baseline_target_run['usable']`
+	 * に渡す値).
+	 *
+	 * 「使えない」のは、基準の target_run に finding が1件以上あるのに、その
+	 * すべてが `finding_key` を持たない(v4 より前に保存された行しか無い)場合のみ。
+	 * finding が1件も無い(=前回の検証で何も検出されなかった)場合は、比較の
+	 * 基準として正当に使えるため `true` を返す(この2つを区別しないと、正常に
+	 * 「クリーンだった」基準まで`first`扱いにしてしまう).
+	 *
+	 * @param int $target_run_id 対象の target_run の id.
+	 * @return bool
+	 */
+	public function is_baseline_usable( $target_run_id ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_findings';
+		$sql   = "SELECT * FROM {$table} WHERE target_run_id = %d";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; target_run_id is bound via %d below.
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (int) $target_run_id ), ARRAY_A );
+		$rows = is_array( $rows ) ? $rows : array();
+
+		$found_any = false;
+
+		foreach ( $rows as $row ) {
+			if ( (int) $row['target_run_id'] !== (int) $target_run_id ) {
+				continue;
+			}
+
+			$found_any = true;
+
+			if ( null !== $row['finding_key'] ) {
+				return true;
+			}
+		}
+
+		return ! $found_any;
+	}
+
+	/**
+	 * 指定 target_run の今回側 finding を `id` 昇順で K 件バッチ取得する
+	 * (v0.5後半 §Step12・§1.4 Pass 1用. `WPCV_Diff_Dispatcher` から呼ぶ).
+	 *
+	 * 抑制の有無・`diff_state`が既に設定済みかを問わず、対象 target_run の
+	 * finding をすべて対象にする(抑制済みの finding も「抑制終了」判定の
+	 * 材料として Pass 1 が読む必要があるため。§1.4参照).
+	 *
+	 * @param int $target_run_id 対象の target_run の id.
+	 * @param int $after_id      この id より大きい行だけを対象にする(前回バッチの続き.
+	 *                           初回は 0).
+	 * @param int $limit         最大取得件数.
+	 * @return array<int, array> `id` 昇順. 件数が `$limit` 未満なら「この target_run を
+	 *                           読み切った」ことを意味する.
+	 */
+	public function find_batch_by_target_run( $target_run_id, $after_id, $limit ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_findings';
+		$sql   = "SELECT * FROM {$table} WHERE target_run_id = %d AND id > %d ORDER BY id ASC LIMIT %d";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via %d below.
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (int) $target_run_id, (int) $after_id, (int) $limit ), ARRAY_A );
+		$rows = is_array( $rows ) ? $rows : array();
+
+		return self::filter_sort_and_limit(
+			$rows,
+			static function ( $row ) use ( $target_run_id, $after_id ) {
+				return (int) $row['target_run_id'] === (int) $target_run_id && (int) $row['id'] > (int) $after_id;
+			},
+			(int) $limit
+		);
+	}
+
+	/**
+	 * 指定 target_run の基準側 finding を `id` 昇順で K 件バッチ取得する
+	 * (v0.5後半 §Step12・§1.4 Pass 2用).
+	 *
+	 * `finding_key IS NOT NULL AND suppressed_by IS NULL AND suppression_id IS NULL
+	 * AND ended_in_run_id IS NULL` で事前に絞り込み済み(§1.4「pass 2に到達する
+	 * 基準行はまだ終わっていないものだけ」).
+	 *
+	 * @param int $target_run_id 対象の target_run の id.
+	 * @param int $after_id      この id より大きい行だけを対象にする. 初回は 0.
+	 * @param int $limit         最大取得件数.
+	 * @return array<int, array> `id` 昇順.
+	 */
+	public function find_baseline_batch( $target_run_id, $after_id, $limit ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_findings';
+		$sql   = "SELECT * FROM {$table} WHERE target_run_id = %d AND id > %d
+			AND finding_key IS NOT NULL AND suppressed_by IS NULL AND suppression_id IS NULL AND ended_in_run_id IS NULL
+			ORDER BY id ASC LIMIT %d";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via %d below.
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (int) $target_run_id, (int) $after_id, (int) $limit ), ARRAY_A );
+		$rows = is_array( $rows ) ? $rows : array();
+
+		return self::filter_sort_and_limit(
+			$rows,
+			static function ( $row ) use ( $target_run_id, $after_id ) {
+				return (int) $row['target_run_id'] === (int) $target_run_id
+					&& (int) $row['id'] > (int) $after_id
+					&& self::is_comparable( $row );
+			},
+			(int) $limit
+		);
+	}
+
+	/**
+	 * `$keys` のうち、指定 target_run に実在する `finding_key` の集合を返す
+	 * (v0.5後半 §Step12・§1.4 Pass 1・Pass 2共通の「targeted lookup」).
+	 *
+	 * `$only_comparable` が true の場合、抑制済み・`finding_key` 無し・
+	 * `ended_in_run_id` 設定済みの行はマッチ対象に含めない(Pass 1が今回側の
+	 * finding をこの基準に照会する際の条件. §1.4参照)。false の場合は
+	 * `finding_key` が一致するかどうかだけを見る(Pass 2が基準側の finding を
+	 * 今回側に照会する際の条件. 今回側の抑制状態は問わない.§1.4「pass 2の
+	 * 単純化したマッチ判定」参照).
+	 *
+	 * @param int      $target_run_id   対象の target_run の id.
+	 * @param string[] $keys            照会する `finding_key` の一覧.
+	 * @param bool     $only_comparable 既定 true.
+	 * @return string[] マッチした `finding_key`(重複なし).
+	 */
+	public function find_matching_keys( $target_run_id, array $keys, $only_comparable = true ) {
+		$keys = array_values( array_unique( $keys ) );
+
+		if ( empty( $keys ) ) {
+			return array();
+		}
+
+		$table        = $this->wpdb->base_prefix . 'wpcv_findings';
+		$placeholders = implode( ', ', array_fill( 0, count( $keys ), '%s' ) );
+		$sql          = "SELECT * FROM {$table} WHERE target_run_id = %d AND finding_key IN ( {$placeholders} )";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only, placeholder count matches $args) built above; all dynamic values are bound via prepare() below.
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, array_merge( array( (int) $target_run_id ), $keys ) ), ARRAY_A );
+		$rows = is_array( $rows ) ? $rows : array();
+
+		$matched = array();
+
+		foreach ( $rows as $row ) {
+			if ( (int) $row['target_run_id'] !== (int) $target_run_id ) {
+				continue;
+			}
+
+			if ( ! in_array( $row['finding_key'], $keys, true ) ) {
+				continue;
+			}
+
+			if ( $only_comparable && ! self::is_comparable( $row ) ) {
+				continue;
+			}
+
+			$matched[ $row['finding_key'] ] = true;
+		}
+
+		return array_keys( $matched );
+	}
+
+	/**
+	 * 指定 id 群の finding を一括で終わらせる(v0.5後半 §Step12. `mark_ended_by_keys()`
+	 * と異なり id で直接指定する版. 現時点では bulk mode〔§1.3〕からの利用は
+	 * 想定していないが、Pass 1 の「抑制終了」対象(id で集めた集合)向けに用意する).
+	 *
+	 * `$wpdb->update()` は WHERE に `IN (...)` を組み立てられないため生SQLを使う
+	 * (`WPCV_Test_Fake_WPDB::apply_bulk_update()` 参照。テストダブルもこの形の
+	 * SQLだけを解釈する).
+	 *
+	 * @param int    $run_id     終わらせる run の id(`ended_in_run_id` に書く値).
+	 * @param int[]  $ids        対象の finding の id 一覧(空なら何もしない).
+	 * @param string $end_reason `WPCV_Generation_Differ::END_REASON_*` のいずれか.
+	 * @return void
+	 *
+	 * @throws RuntimeException `$wpdb->query()` がSQLエラーで `false` を返した場合.
+	 */
+	public function mark_ended_by_ids( $run_id, array $ids, $end_reason ) {
+		$ids = array_values( array_unique( array_map( 'intval', $ids ) ) );
+
+		if ( empty( $ids ) ) {
+			return;
+		}
+
+		$table        = $this->wpdb->base_prefix . 'wpcv_findings';
+		$placeholders = implode( ', ', array_fill( 0, count( $ids ), '%d' ) );
+		$sql          = "UPDATE {$table} SET ended_in_run_id = %d, end_reason = %s WHERE id IN ( {$placeholders} )";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only, placeholder count matches $args) built above; all dynamic values are bound via prepare() below.
+		$result = $this->wpdb->query( $this->wpdb->prepare( $sql, array_merge( array( (int) $run_id, (string) $end_reason ), $ids ) ) );
+
+		if ( false === $result ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf( 'WPCV_Finding_Repository::mark_ended_by_ids() の query に失敗しました: %s', (string) $this->wpdb->last_error )
+				)
+			);
+		}
+	}
+
+	/**
+	 * 指定 `finding_key` 群のうち、まだ終わっていない基準側 finding を一括で
+	 * 終わらせる(v0.5後半 §Step12・§1.4 Pass 1の「抑制終了」・Pass 2の
+	 * 「resolved」がどちらも使う).
+	 *
+	 * `ended_in_run_id IS NULL` を WHERE に含めるのは、既に別の理由で終わって
+	 * いる行を上書きしないため(§1.4「pass 2に到達する基準行はまだ終わっていない
+	 * ものだけ」という前提を、この書き込み自身でも保証する).
+	 *
+	 * @param int      $run_id        終わらせる run の id.
+	 * @param int      $target_run_id 対象の target_run の id.
+	 * @param string[] $keys          対象の `finding_key` 一覧(空なら何もしない).
+	 * @param string   $end_reason    `WPCV_Generation_Differ::END_REASON_*` のいずれか.
+	 * @return void
+	 *
+	 * @throws RuntimeException `$wpdb->query()` がSQLエラーで `false` を返した場合.
+	 */
+	public function mark_ended_by_keys( $run_id, $target_run_id, array $keys, $end_reason ) {
+		$keys = array_values( array_unique( $keys ) );
+
+		if ( empty( $keys ) ) {
+			return;
+		}
+
+		$table        = $this->wpdb->base_prefix . 'wpcv_findings';
+		$placeholders = implode( ', ', array_fill( 0, count( $keys ), '%s' ) );
+		$sql          = "UPDATE {$table} SET ended_in_run_id = %d, end_reason = %s
+			WHERE target_run_id = %d AND finding_key IN ( {$placeholders} ) AND ended_in_run_id IS NULL";
+
+		$args = array_merge( array( (int) $run_id, (string) $end_reason, (int) $target_run_id ), $keys );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only, placeholder count matches $args) built above; all dynamic values are bound via prepare() below.
+		$result = $this->wpdb->query( $this->wpdb->prepare( $sql, $args ) );
+
+		if ( false === $result ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf( 'WPCV_Finding_Repository::mark_ended_by_keys() の query に失敗しました: %s', (string) $this->wpdb->last_error )
+				)
+			);
+		}
+	}
+
+	/**
+	 * 指定 target_run の、まだ終わっていない finding をすべて同じ理由で終わらせる
+	 * (v0.5後半 §Step12・§1.3 bulk mode用. `version_changed`/`excluded`/
+	 * `target_removed` のように、基準側を無条件・全件終わらせるモード向け).
+	 *
+	 * @param int    $run_id        終わらせる run の id.
+	 * @param int    $target_run_id 対象の target_run の id.
+	 * @param string $end_reason    `WPCV_Generation_Differ::END_REASON_*` のいずれか.
+	 * @return void
+	 *
+	 * @throws RuntimeException `$wpdb->query()` がSQLエラーで `false` を返した場合.
+	 */
+	public function end_all_for_target_run( $run_id, $target_run_id, $end_reason ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_findings';
+		$sql   = "UPDATE {$table} SET ended_in_run_id = %d, end_reason = %s WHERE target_run_id = %d AND ended_in_run_id IS NULL";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via prepare() below.
+		$result = $this->wpdb->query( $this->wpdb->prepare( $sql, (int) $run_id, (string) $end_reason, (int) $target_run_id ) );
+
+		if ( false === $result ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf( 'WPCV_Finding_Repository::end_all_for_target_run() の query に失敗しました: %s', (string) $this->wpdb->last_error )
+				)
+			);
+		}
+	}
+
+	/**
+	 * 指定 id 群の finding に同じ `diff_state` を一括設定する(v0.5後半
+	 * §Step12・§1.4 Pass 1用. 1バッチ内でnew/continuingが混在するため、
+	 * `mark_diff_state_for_target_run()`(target_run全体に1つの値)とは異なり
+	 * id単位でグルーピングして呼ぶ設計〔`WPCV_Diff_Dispatcher`側でnew用/
+	 * continuing用の2回に分けて呼ぶ〕).
+	 *
+	 * @param int[]  $ids        対象の finding の id 一覧(空なら何もしない).
+	 * @param string $diff_state `WPCV_Generation_Differ::DIFF_STATE_*` のいずれか.
+	 * @return void
+	 *
+	 * @throws RuntimeException `$wpdb->query()` がSQLエラーで `false` を返した場合.
+	 */
+	public function mark_diff_state_by_ids( array $ids, $diff_state ) {
+		$ids = array_values( array_unique( array_map( 'intval', $ids ) ) );
+
+		if ( empty( $ids ) ) {
+			return;
+		}
+
+		$table        = $this->wpdb->base_prefix . 'wpcv_findings';
+		$placeholders = implode( ', ', array_fill( 0, count( $ids ), '%d' ) );
+		$sql          = "UPDATE {$table} SET diff_state = %s WHERE id IN ( {$placeholders} )";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only, placeholder count matches $args) built above; all dynamic values are bound via prepare() below.
+		$result = $this->wpdb->query( $this->wpdb->prepare( $sql, array_merge( array( (string) $diff_state ), $ids ) ) );
+
+		if ( false === $result ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf( 'WPCV_Finding_Repository::mark_diff_state_by_ids() の query に失敗しました: %s', (string) $this->wpdb->last_error )
+				)
+			);
+		}
+	}
+
+	/**
+	 * 指定 target_run の finding に同じ `diff_state` を一括設定する(v0.5後半
+	 * §Step12・§1.3 bulk mode用. `first`/`version_changed`の今回側〔全件new〕・
+	 * stat の `event`〔抑制無しのみ〕が使う).
+	 *
+	 * `$only_unsuppressed` が true の場合、`suppressed_by IS NULL AND
+	 * suppression_id IS NULL` を WHERE に含め、抑制済みの finding は触らない
+	 * (既定値 `NULL` のまま残る。§1.4「抑制されていれば diff_state は NULL の
+	 * まま」・§2.3「stat findingは抑制無しのみevent」と同じ考え方).
+	 *
+	 * @param int    $target_run_id      対象の target_run の id.
+	 * @param string $diff_state         `WPCV_Generation_Differ::DIFF_STATE_*` のいずれか.
+	 * @param bool   $only_unsuppressed  既定 true.
+	 * @return void
+	 *
+	 * @throws RuntimeException `$wpdb->query()` がSQLエラーで `false` を返した場合.
+	 */
+	public function mark_diff_state_for_target_run( $target_run_id, $diff_state, $only_unsuppressed = true ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_findings';
+		$sql   = $only_unsuppressed
+			? "UPDATE {$table} SET diff_state = %s WHERE target_run_id = %d AND suppressed_by IS NULL AND suppression_id IS NULL"
+			: "UPDATE {$table} SET diff_state = %s WHERE target_run_id = %d";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via prepare() below.
+		$result = $this->wpdb->query( $this->wpdb->prepare( $sql, (string) $diff_state, (int) $target_run_id ) );
+
+		if ( false === $result ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf( 'WPCV_Finding_Repository::mark_diff_state_for_target_run() の query に失敗しました: %s', (string) $this->wpdb->last_error )
+				)
+			);
+		}
+	}
+
+	/**
+	 * Run 1回分の差分集計(`new`/`resolved`/`continuing`)を求める(v0.5後半
+	 * §Step12: `WPCV_Run_Repository::finalize_diff_chunk()` の `$counts` に渡す).
+	 *
+	 * `new`/`continuing` は今回の run(`run_id`列が一致)の finding を対象にする。
+	 * `resolved` は「この run が終わらせた」finding(`ended_in_run_id`列が一致)を
+	 * 対象にする ―― resolved になる finding 自体は基準(過去の別run)に属する行
+	 * であり `run_id` 列は一致しないため、別の列で絞り込む必要がある(index
+	 * `idx_ended_run` が効く).stat由来の `event` はこの3集計のいずれにも
+	 * 含めない(専用の列を持たないため。v0.5後半プランに `findings_event` 相当の
+	 * 列は無い. 将来必要になれば列追加とあわせて再検討すること).
+	 *
+	 * @param int $run_id 対象の run の id.
+	 * @return array{new: int, resolved: int, continuing: int}
+	 */
+	public function aggregate_diff_counts( $run_id ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_findings';
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; run_id is bound via %d below.
+		$current_rows = $this->wpdb->get_results( $this->wpdb->prepare( "SELECT * FROM {$table} WHERE run_id = %d", (int) $run_id ), ARRAY_A );
+		$current_rows = is_array( $current_rows ) ? $current_rows : array();
+
+		$new        = 0;
+		$continuing = 0;
+
+		foreach ( $current_rows as $row ) {
+			if ( (int) $row['run_id'] !== (int) $run_id ) {
+				continue;
+			}
+
+			if ( WPCV_Generation_Differ::DIFF_STATE_NEW === $row['diff_state'] ) {
+				++$new;
+			} elseif ( WPCV_Generation_Differ::DIFF_STATE_CONTINUING === $row['diff_state'] ) {
+				++$continuing;
+			}
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; run_id is bound via %d below.
+		$ended_rows = $this->wpdb->get_results( $this->wpdb->prepare( "SELECT * FROM {$table} WHERE ended_in_run_id = %d", (int) $run_id ), ARRAY_A );
+		$ended_rows = is_array( $ended_rows ) ? $ended_rows : array();
+
+		$resolved = 0;
+
+		foreach ( $ended_rows as $row ) {
+			if ( (int) ( $row['ended_in_run_id'] ?? 0 ) !== (int) $run_id ) {
+				continue;
+			}
+
+			if ( WPCV_Generation_Differ::END_REASON_RESOLVED === $row['end_reason'] ) {
+				++$resolved;
+			}
+		}
+
+		return array(
+			'new'        => $new,
+			'resolved'   => $resolved,
+			'continuing' => $continuing,
+		);
+	}
+
+	/**
+	 * まだ終わっていない(`ended_in_run_id IS NULL`)finding を持つ target_id の
+	 * 一覧を返す(v0.5後半 §Step12: `WPCV_Diff_Dispatcher` の target_removed
+	 * 〔アンインストール〕検出用. 今回の run の target_run 一覧に含まれない
+	 * target_id が見つかれば、その target はアンインストールされたとみなせる).
+	 *
+	 * @return string[] 重複なしの target_id 一覧.
+	 */
+	public function find_unresolved_target_ids() {
+		$table = $this->wpdb->base_prefix . 'wpcv_findings';
+		$sql   = "SELECT * FROM {$table} WHERE ended_in_run_id IS NULL";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only, no bound values) built above.
+		$rows = $this->wpdb->get_results( $sql, ARRAY_A );
+		$rows = is_array( $rows ) ? $rows : array();
+
+		$target_ids = array();
+
+		foreach ( $rows as $row ) {
+			if ( null === $row['ended_in_run_id'] ) {
+				$target_ids[ $row['target_id'] ] = true;
+			}
+		}
+
+		return array_keys( $target_ids );
+	}
+
+	/**
+	 * 1件の finding 行が、Pass 1/Pass 2 の「比較対象として扱ってよい」条件
+	 * (`finding_key` 有り・抑制なし・未終了)を満たすかどうかを判定する
+	 * (`find_baseline_batch()`・`find_matching_keys( $only_comparable = true )` 共通).
+	 *
+	 * @param array $row finding行.
+	 * @return bool
+	 */
+	private static function is_comparable( array $row ) {
+		return null !== $row['finding_key']
+			&& empty( $row['suppressed_by'] )
+			&& empty( $row['suppression_id'] )
+			&& empty( $row['ended_in_run_id'] );
+	}
+
+	/**
+	 * テストダブルがWHERE句・ORDER BY・LIMITを解釈しないための、PHP側での
+	 * 絞り込み・id昇順ソート・件数制限をまとめたヘルパー(`find_batch_by_target_run()`・
+	 * `find_baseline_batch()` 共通. 本番の実SQLは既に絞り込み・ソート・LIMIT済みだが、
+	 * テストダブル経由では全件が返るため、ここで確定的に同じ結果になるようにする).
+	 *
+	 * @param array<int, array> $rows      `get_results()` の戻り値.
+	 * @param callable          $predicate `function( array $row ): bool`.
+	 * @param int               $limit     最大件数.
+	 * @return array<int, array>
+	 */
+	private static function filter_sort_and_limit( array $rows, callable $predicate, $limit ) {
+		$filtered = array_values( array_filter( $rows, $predicate ) );
+
+		usort(
+			$filtered,
+			static function ( $a, $b ) {
+				return (int) $a['id'] <=> (int) $b['id'];
+			}
+		);
+
+		return array_slice( $filtered, 0, $limit );
+	}
+
+	/**
 	 * `usort()` に渡す比較関数を組み立てる.
 	 *
 	 * `$sort` が `SORTABLE_COLUMNS` に無ければ `id` にフォールバックする(呼び出し元

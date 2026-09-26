@@ -18,6 +18,7 @@ require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-sou
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-verifier.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-cursor.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-verifier.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-finding-key.php';
