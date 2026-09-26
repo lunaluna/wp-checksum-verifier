@@ -539,7 +539,7 @@ class WPCV_Diff_Dispatcher {
 			$current_target_ids[ (string) $target_run['target_id'] ] = true;
 		}
 
-		foreach ( $this->finding_repository->find_unresolved_target_ids() as $target_id ) {
+		foreach ( $this->target_run_repository->find_all_known_target_ids() as $target_id ) {
 			if ( isset( $current_target_ids[ $target_id ] ) ) {
 				continue;
 			}

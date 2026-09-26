@@ -885,6 +885,42 @@ class TargetRunRepositoryTest extends TestCase {
 	}
 
 	// ------------------------------------------------------------------
+	// v0.5後半 §Step12: `find_all_known_target_ids()`(schema v5)
+	// ------------------------------------------------------------------
+
+	/**
+	 * これまでに検証対象になったことがあるtarget_idを、runをまたいでも重複なく
+	 * 返すことを確認する(`find_unresolved_target_ids()`〔`wpcv_findings`側〕を
+	 * schema v5で置き換えた新設メソッド. 実地検証で見つかった性能上の懸念への対応).
+	 *
+	 * @return void
+	 */
+	public function test_find_all_known_target_ids_returns_distinct_target_ids_across_runs() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$repository->save_target_runs( 10, array( wpcv_test_make_target_run( array( 'target_id' => 'core' ) ) ) );
+		$repository->save_target_runs( 20, array( wpcv_test_make_target_run( array( 'target_id' => 'core' ) ) ) );
+		$repository->save_target_runs( 20, array( wpcv_test_make_target_run( array( 'target_id' => 'plugin:foo' ) ) ) );
+
+		$target_ids = $repository->find_all_known_target_ids();
+
+		sort( $target_ids );
+		$this->assertSame( array( 'core', 'plugin:foo' ), $target_ids );
+	}
+
+	/**
+	 * target_runが1件も無ければ空配列を返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_find_all_known_target_ids_returns_empty_array_when_no_rows() {
+		$repository = new WPCV_Target_Run_Repository( new WPCV_Test_Fake_WPDB() );
+
+		$this->assertSame( array(), $repository->find_all_known_target_ids() );
+	}
+
+	// ------------------------------------------------------------------
 	// v0.5後半 §Step12: `update_diff_mode()`
 	// ------------------------------------------------------------------
 

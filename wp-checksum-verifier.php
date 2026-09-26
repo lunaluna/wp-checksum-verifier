@@ -34,8 +34,15 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 差分検出基盤・アラート(v0.5後半プラン §1)用に、runs/target_runs/findingsへ
  * finding_key・diff_state・diff_status等の列とインデックスを追加したため、
  * v0.5後半 §Step10で4へ更新した.
+ *
+ * Step12の実地検証(test-armfu.local、1万・10万件規模)で、
+ * `WPCV_Finding_Repository::find_batch_by_target_run()`/`find_baseline_batch()`
+ * (`WHERE target_run_id=? AND id>? ORDER BY id ASC LIMIT ?`)が
+ * `(target_run_id, finding_key)`しか無いためPRIMARY(id)スキャンになり、
+ * テーブル全体の件数に比例してコストが増える性能上の懸念が見つかったため、
+ * `(target_run_id, id)`の複合indexを追加してv0.5後半 §Step12で5へ更新した.
  */
-define( 'WPCV_DB_VERSION', 4 );
+define( 'WPCV_DB_VERSION', 5 );
 
 /**
  * Public API contract のバージョン. 後方互換を維持する契約(§10).

@@ -386,6 +386,14 @@ class WPCV_Migrator {
 		// ended_in_run_id/end_reasonを書いても既存の`query()`の絞り込み
 		// (closed_at基準)には影響しない(過去のrunを開いたときにfindingが
 		// 消えないようにするための設計. D3参照).
+		// idx_target_run_id_seqはv0.5後半 §Step12で追加(schema v5). 差分処理の
+		// `find_batch_by_target_run()`/`find_baseline_batch()`が発行する
+		// `WHERE target_run_id=? AND id>? ORDER BY id ASC LIMIT ?`は、既存の
+		// `idx_target_run_key(target_run_id, finding_key)`ではid順に読めず、
+		// 実地検証(test-armfu.local、1万・10万件規模)でPRIMARY(id)を使う
+		// クエリプランになっていることが判明した(テーブル全体の件数に比例して
+		// コストが増える). `(target_run_id, id)`の複合indexを追加し、
+		// target_run単位でid順に直接絞り込めるようにする.
 		$sql_findings = "CREATE TABLE {$findings_table} (
 	id bigint unsigned NOT NULL auto_increment,
 	run_id bigint unsigned NOT NULL,
@@ -422,7 +430,8 @@ class WPCV_Migrator {
 	KEY idx_target_run_key (target_run_id, finding_key),
 	KEY idx_run_diff (run_id, diff_state),
 	KEY idx_key_notified (finding_key, notified_at),
-	KEY idx_ended_run (ended_in_run_id)
+	KEY idx_ended_run (ended_in_run_id),
+	KEY idx_target_run_id_seq (target_run_id, id)
 ) {$charset_collate};";
 
 		// §7: 抑制 3 層(対象除外・パス除外・ハッシュ承認)を 1 テーブルに保持する.

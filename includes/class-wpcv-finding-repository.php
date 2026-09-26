@@ -375,7 +375,15 @@ class WPCV_Finding_Repository {
 	 */
 	public function find_batch_by_target_run( $target_run_id, $after_id, $limit ) {
 		$table = $this->wpdb->base_prefix . 'wpcv_findings';
-		$sql   = "SELECT * FROM {$table} WHERE target_run_id = %d AND id > %d ORDER BY id ASC LIMIT %d";
+		// FORCE INDEXはStep12の実地検証(test-armfu.local)で見つかった性能上の
+		// 懸念への対応(schema v5で追加した`idx_target_run_id_seq(target_run_id, id)`
+		// をこのクエリに使わせる). `EXPLAIN ANALYZE`で確認したところ、この
+		// FORCE INDEXが無いとMySQLの optimizer は`ORDER BY id ASC`をPRIMARY(id)
+		// だけで満たそうとし、`idx_target_run_id_seq`が`possible_keys`に挙がって
+		// いても選ばない(実測: PRIMARY経由で約87ms・100,506行スキャン に対し、
+		// このindexを強制すると約1ms・500行のみ. 全体件数が増えるほどPRIMARY経由の
+		// 差は開く).
+		$sql = "SELECT * FROM {$table} FORCE INDEX (idx_target_run_id_seq) WHERE target_run_id = %d AND id > %d ORDER BY id ASC LIMIT %d";
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via %d below.
 		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (int) $target_run_id, (int) $after_id, (int) $limit ), ARRAY_A );
@@ -405,7 +413,8 @@ class WPCV_Finding_Repository {
 	 */
 	public function find_baseline_batch( $target_run_id, $after_id, $limit ) {
 		$table = $this->wpdb->base_prefix . 'wpcv_findings';
-		$sql   = "SELECT * FROM {$table} WHERE target_run_id = %d AND id > %d
+		// FORCE INDEXの理由は`find_batch_by_target_run()`と同じ(§実地検証参照).
+		$sql = "SELECT * FROM {$table} FORCE INDEX (idx_target_run_id_seq) WHERE target_run_id = %d AND id > %d
 			AND finding_key IS NOT NULL AND suppressed_by IS NULL AND suppression_id IS NULL AND ended_in_run_id IS NULL
 			ORDER BY id ASC LIMIT %d";
 
@@ -715,33 +724,6 @@ class WPCV_Finding_Repository {
 			'resolved'   => $resolved,
 			'continuing' => $continuing,
 		);
-	}
-
-	/**
-	 * まだ終わっていない(`ended_in_run_id IS NULL`)finding を持つ target_id の
-	 * 一覧を返す(v0.5後半 §Step12: `WPCV_Diff_Dispatcher` の target_removed
-	 * 〔アンインストール〕検出用. 今回の run の target_run 一覧に含まれない
-	 * target_id が見つかれば、その target はアンインストールされたとみなせる).
-	 *
-	 * @return string[] 重複なしの target_id 一覧.
-	 */
-	public function find_unresolved_target_ids() {
-		$table = $this->wpdb->base_prefix . 'wpcv_findings';
-		$sql   = "SELECT * FROM {$table} WHERE ended_in_run_id IS NULL";
-
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only, no bound values) built above.
-		$rows = $this->wpdb->get_results( $sql, ARRAY_A );
-		$rows = is_array( $rows ) ? $rows : array();
-
-		$target_ids = array();
-
-		foreach ( $rows as $row ) {
-			if ( null === $row['ended_in_run_id'] ) {
-				$target_ids[ $row['target_id'] ] = true;
-			}
-		}
-
-		return array_keys( $target_ids );
 	}
 
 	/**

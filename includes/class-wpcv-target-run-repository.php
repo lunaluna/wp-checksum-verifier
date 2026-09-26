@@ -790,6 +790,42 @@ class WPCV_Target_Run_Repository {
 	}
 
 	/**
+	 * これまでに1回でも検証対象になったことがある target_id の一覧を返す
+	 * (v0.5後半 §Step12: `WPCV_Diff_Dispatcher` の target_removed〔アンインストール〕
+	 * 検出用. 今回の run の target_run 一覧に含まれない target_id が見つかれば、
+	 * その target はアンインストールされたとみなせる).
+	 *
+	 * 当初は`WPCV_Finding_Repository::find_unresolved_target_ids()`
+	 * (`wpcv_findings`から`ended_in_run_id IS NULL`の行を全件取得して絞り込む
+	 * 設計)だったが、実地検証(test-armfu.local、1万・10万件規模)でこれが
+	 * インストール全体の累積findings件数に比例して重くなる(LIMIT無しの
+	 * 全件取得)ことが判明したため、schema v5でこちらへ置き換えた. こちらは
+	 * `wpcv_target_runs`(target_idの種類数だけに比例する。既存の
+	 * `idx_target_id`が使える)を見るため、target_idが「まだ未解決のfindingを
+	 * 持つか」を問わない(=戻り値は旧実装よりわずかに広い集合になりうるが、
+	 * 呼び出し元の`end_all_for_target_run()`は対象が0件でも安全なno-opのため
+	 * 実害は無い).
+	 *
+	 * @return string[] 重複なしの target_id 一覧.
+	 */
+	public function find_all_known_target_ids() {
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
+		$sql   = "SELECT DISTINCT target_id FROM {$table}";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only, no bound values) built above.
+		$rows = $this->wpdb->get_results( $sql, ARRAY_A );
+		$rows = is_array( $rows ) ? $rows : array();
+
+		$target_ids = array();
+
+		foreach ( $rows as $row ) {
+			$target_ids[ $row['target_id'] ] = true;
+		}
+
+		return array_keys( $target_ids );
+	}
+
+	/**
 	 * 指定 target の「基準」target_run を探す(v0.5後半プラン §2.1: その target の
 	 * 直近の `status = success` の target_run〔今回の run より前〕.Step12の
 	 * 差分処理〔`WPCV_Diff_Dispatcher`〕が呼び出し元).
@@ -800,14 +836,36 @@ class WPCV_Target_Run_Repository {
 	 * `WPCV_Finding_Repository::is_baseline_usable()` の結果を渡してこの戻り値に
 	 * 合成し `WPCV_Generation_Differ::determine_diff_mode()` へ渡す設計).
 	 *
+	 * 実地検証(test-armfu.local)で見つかった性能上の懸念への対応(v0.5後半 §Step12.
+	 * schema変更は不要): `all_rows()`(`SELECT * FROM wpcv_target_runs`. テーブル
+	 * 全件取得)を使わず、`target_id`/`status`/`run_id`をSQLのWHERE句に含めた
+	 * クエリに変更した. これは既存の`idx_target_status_run(target_id, status,
+	 * run_id)`(Step10で「基準target_runの検索に使う」目的で追加済みだったが、
+	 * 実装がSQL側で絞り込んでおらず未使用のまま埋もれていた)を使わせるため.
+	 * 特に、target_removed検出(`WPCV_Diff_Dispatcher::handle_target_removed()`)が
+	 * 「今回runに現れない既知target」1件ごとにこのメソッドを呼ぶため、既知target数
+	 * だけ`all_rows()`の全件取得を繰り返す形になっており、実測でtarget_runs
+	 * 2,934行×既知target86件分の取得が1回のfinalizeで発生し4.5秒かかっていた.
+	 *
 	 * @param string $target_id      対象の target_id.
 	 * @param int    $before_run_id  この run より前の target_run だけを対象にする.
 	 * @return array{id: int, version: string|null}|null 見つからなければ `null`.
 	 */
 	public function find_baseline_target_run( $target_id, $before_run_id ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
+		$sql   = "SELECT * FROM {$table} WHERE target_id = %s AND status = %s AND run_id < %d ORDER BY run_id DESC LIMIT 1";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via prepare() below.
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (string) $target_id, WPCV_Target_Status::SUCCESS, (int) $before_run_id ), ARRAY_A );
+		$rows = is_array( $rows ) ? $rows : array();
+
 		$candidates = array();
 
-		foreach ( $this->all_rows() as $row ) {
+		// テストダブル(`WPCV_Test_Fake_WPDB::get_results()`)はWHERE/ORDER BY/LIMITを
+		// 解釈せずテーブル全件を返すため、本番の実SQLが既に絞り込み・ソート・LIMIT
+		// 済みでも、ここでもう一度確定的にPHP側で絞り込む(`WPCV_Finding_Repository::
+		// filter_sort_and_limit()`と同じ設計方針).
+		foreach ( $rows as $row ) {
 			if ( (string) $row['target_id'] !== (string) $target_id ) {
 				continue;
 			}
