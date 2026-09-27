@@ -860,6 +860,34 @@ class RunRepositoryTest extends TestCase {
 	}
 
 	/**
+	 * 翌日の 00:00:00 ちょうどに予定された run は「当日分」に数えないことを確認する
+	 * (コードレビュー指摘5で、日付部分の文字列比較から
+	 * `scheduled_for >= 当日 00:00:00 AND scheduled_for < 翌日 00:00:00` の範囲指定に
+	 * 変えたため、その境界を確かめる).
+	 *
+	 * @return void
+	 */
+	public function test_reserve_due_run_ignores_run_scheduled_at_next_midnight() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'status'        => 'success',
+				'run_trigger'   => 'rest',
+				'runner'        => 'sync',
+				'scheduled_for' => '2026-09-09 00:00:00',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$reservation = $repository->reserve_due_run( 11, 0 );
+
+		$this->assertTrue( $reservation['created'], '翌日分のrunは当日分に数えない' );
+		$this->assertSame( '2026-09-08 11:00:00', $wpdb->rows['wp_wpcv_runs'][ $reservation['run_id'] ]['scheduled_for'] );
+	}
+
+	/**
 	 * `reserve_due_run()` も `reserve_run()` と同じく advisory lock の取得に失敗
 	 * した場合 `lock_failed: true` を返すことを確認する.
 	 *
@@ -1651,7 +1679,64 @@ class RunRepositoryTest extends TestCase {
 			'findings_total'       => 0,
 		);
 	}
+
+	/**
+	 * `WPCV_Run_Repository`の読み取りメソッドが、runsテーブルを全件読む
+	 * `SELECT`(WHEREもLIMITも無いもの)を発行しないことを確認する(コードレビュー
+	 * 指摘5. 以前は`all_rows()`で全runを読んでPHPで絞り込んでおり、運用年数に
+	 * 比例して無駄が増えていた).
+	 *
+	 * @return void
+	 */
+	public function test_read_methods_do_not_select_whole_runs_table() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $repository->reserve_run()['run_id'];
+		$repository->mark_planning_running( $run_id );
+		$repository->finish_run( $run_id, $this->make_summary() );
+
+		$repository->find_by_id( $run_id );
+		$repository->find_most_recent_run();
+		$repository->find_most_recent_by_trigger( 'cli' );
+		$repository->find_most_recent_terminal_run();
+		$repository->find_all( array( 'page' => 2, 'per_page' => 10 ) );
+		$repository->find_stale_diff_run();
+		$repository->claim_diff( $run_id, 'owner-a' );
+		$repository->reserve_due_run( 11, 0 );
+
+		$this->assertNotEmpty( $wpdb->get_results_calls );
+
+		foreach ( $wpdb->get_results_calls as $query ) {
+			if ( false === strpos( $query, 'wp_wpcv_runs' ) ) {
+				continue;
+			}
+
+			$this->assertMatchesRegularExpression( '/\\s(WHERE|LIMIT)\\s/i', $query, "全件取得のSELECTが発行された: {$query}" );
+		}
+	}
+
+	/**
+	 * `find_all()`がSQLのORDER BY・LIMIT・OFFSETでページを切り出し、総件数を
+	 * `COUNT(*)`で返すことを確認する(コードレビュー指摘5).
+	 *
+	 * @return void
+	 */
+	public function test_find_all_paginates_newest_first_with_total() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		for ( $i = 1; $i <= 25; $i++ ) {
+			$wpdb->insert( 'wp_wpcv_runs', array( 'status' => 'success', 'run_trigger' => 'cron', 'runner' => 'sync' ) );
+		}
+
+		$page = $repository->find_all( array( 'page' => 2, 'per_page' => 10 ) );
+
+		$this->assertSame( 25, $page['total'] );
+		$this->assertSame( range( 15, 6 ), array_map( 'intval', array_column( $page['rows'], 'id' ) ) );
+	}
 }
+
 
 /**
  * 最初の`update()`の直前に、1回だけコールバックを実行するフェイク(`claim_diff()`の

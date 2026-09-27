@@ -949,38 +949,30 @@ class WPCV_Run_Repository {
 	 * lease値を、claimはできるのにここでは拾えない、という不整合になりうる箇所
 	 * だったため統一した).
 	 *
+	 * 候補の読み取りは、差分処理が終わっていない(`pending`/`processing`/`alerting`)
+	 * runだけをSQLで絞り込み、古い順に読む(コードレビュー指摘5. 以前は全runを
+	 * 読んでPHPで絞り込んでいた).終わっていないrunは通常ごく少数のため、
+	 * lease切れの判定だけをPHPで行う(`pending`はleaseがNULLのため、SQLの
+	 * 1つの条件にまとめにくい).
+	 *
 	 * @return int|null 見つからなければ `null`.
 	 */
 	public function find_stale_diff_run() {
-		$candidates = array();
+		$table    = $this->wpdb->base_prefix . 'wpcv_runs';
+		$statuses = "'" . implode( "', '", array( WPCV_Diff_Status::PENDING, WPCV_Diff_Status::PROCESSING, WPCV_Diff_Status::ALERTING ) ) . "'";
 
-		foreach ( $this->all_rows() as $row ) {
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static literal (table name and a hardcoded enum list), no user input.
+		$rows = $this->wpdb->get_results( "SELECT id, diff_status, diff_lease_expires_at FROM {$table} WHERE diff_status IN ( {$statuses} ) ORDER BY id ASC", ARRAY_A );
+
+		foreach ( is_array( $rows ) ? $rows : array() as $row ) {
 			$status = (string) ( $row['diff_status'] ?? '' );
 
-			if ( WPCV_Diff_Status::PENDING === $status ) {
-				$candidates[] = $row;
-				continue;
-			}
-
-			if ( in_array( $status, array( WPCV_Diff_Status::PROCESSING, WPCV_Diff_Status::ALERTING ), true )
-				&& $this->is_past( (string) ( $row['diff_lease_expires_at'] ?? '' ) )
-			) {
-				$candidates[] = $row;
+			if ( WPCV_Diff_Status::PENDING === $status || $this->is_past( (string) ( $row['diff_lease_expires_at'] ?? '' ) ) ) {
+				return (int) $row['id'];
 			}
 		}
 
-		if ( empty( $candidates ) ) {
-			return null;
-		}
-
-		usort(
-			$candidates,
-			static function ( $a, $b ) {
-				return (int) $a['id'] <=> (int) $b['id'];
-			}
-		);
-
-		return (int) $candidates[0]['id'];
+		return null;
 	}
 
 	/**
@@ -1039,13 +1031,9 @@ class WPCV_Run_Repository {
 	 * @return array|null 見つからなければ `null`.
 	 */
 	public function find_by_id( $run_id ) {
-		foreach ( $this->all_rows() as $row ) {
-			if ( (int) $row['id'] === (int) $run_id ) {
-				return $row;
-			}
-		}
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
 
-		return null;
+		return $this->first_row( $this->wpdb->prepare( "SELECT * FROM {$table} WHERE id = %d LIMIT 1", (int) $run_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name only.
 	}
 
 	/**
@@ -1056,17 +1044,19 @@ class WPCV_Run_Repository {
 	 * @return array|null run行が1件も無ければ `null`.
 	 */
 	public function find_most_recent_run() {
-		return self::most_recent_of( $this->all_rows() );
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+
+		return $this->first_row( "SELECT * FROM {$table} ORDER BY id DESC LIMIT 1" );
 	}
 
 	/**
 	 * 全run行を、新しい(id最大の)ものから順にpagination付きで返す(v0.4.0 §Step9:
 	 * `WPCV_Page_Run_History` の実行履歴一覧画面から使う).
 	 *
-	 * `WPCV_Finding_Repository::query()` と同じ理由(テストダブルがWHERE句を
-	 * 解釈しないため)で、sort・paginationはPHP側で行う。v1では絞り込み条件を
-	 * 設けない(運用開始直後はrun件数が少なく、必要になった時点でstatus等の
-	 * 絞り込みを追加する).
+	 * 並べ替え・paginationはSQL(`ORDER BY id DESC LIMIT %d OFFSET %d`)で行い、
+	 * 総件数は`COUNT(*)`で取る(コードレビュー指摘5. 以前はテストダブルがSQLを
+	 * 解釈しなかったため、全runを読んでPHPで並べ替えていた).v1では絞り込み条件を
+	 * 設けない(必要になった時点でstatus等の絞り込みを追加する).
 	 *
 	 * @param array $args {
 	 *     省略可能なpagination条件.
@@ -1085,22 +1075,19 @@ class WPCV_Run_Repository {
 			)
 		);
 
-		$rows = $this->all_rows();
-
-		usort(
-			$rows,
-			static function ( $a, $b ) {
-				return (int) $b['id'] <=> (int) $a['id'];
-			}
-		);
-
-		$total    = count( $rows );
+		$table    = $this->wpdb->base_prefix . 'wpcv_runs';
 		$per_page = min( self::MAX_PER_PAGE, max( 1, (int) $args['per_page'] ) );
 		$page     = max( 1, (int) $args['page'] );
 		$offset   = ( $page - 1 ) * $per_page;
 
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static table literal, no user input.
+		$total = (int) $this->wpdb->get_var( "SELECT COUNT(*) FROM {$table}" );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- table name only; limit/offset are bound via prepare().
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( "SELECT * FROM {$table} ORDER BY id DESC LIMIT %d OFFSET %d", $per_page, $offset ), ARRAY_A );
+
 		return array(
-			'rows'  => array_slice( $rows, $offset, $per_page ),
+			'rows'  => is_array( $rows ) ? $rows : array(),
 			'total' => $total,
 		);
 	}
@@ -1116,16 +1103,9 @@ class WPCV_Run_Repository {
 	 * @return array|null 該当する run が1件も無ければ `null`.
 	 */
 	public function find_most_recent_by_trigger( $run_trigger ) {
-		$matching_rows = array_values(
-			array_filter(
-				$this->all_rows(),
-				static function ( $row ) use ( $run_trigger ) {
-					return isset( $row['run_trigger'] ) && (string) $row['run_trigger'] === (string) $run_trigger;
-				}
-			)
-		);
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
 
-		return self::most_recent_of( $matching_rows );
+		return $this->first_row( $this->wpdb->prepare( "SELECT * FROM {$table} WHERE run_trigger = %s ORDER BY id DESC LIMIT 1", (string) $run_trigger ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name only.
 	}
 
 	/**
@@ -1137,38 +1117,28 @@ class WPCV_Run_Repository {
 	 * @return array|null 該当する run が1件も無ければ `null`.
 	 */
 	public function find_most_recent_terminal_run() {
-		$terminal_rows = array_values(
-			array_filter(
-				$this->all_rows(),
-				static function ( $row ) {
-					return WPCV_Run_Status::is_terminal( $row['status'] );
-				}
-			)
-		);
+		$table    = $this->wpdb->base_prefix . 'wpcv_runs';
+		$statuses = "'" . implode( "', '", WPCV_Run_Status::TERMINAL ) . "'";
 
-		return self::most_recent_of( $terminal_rows );
+		return $this->first_row( "SELECT * FROM {$table} WHERE status IN ( {$statuses} ) ORDER BY id DESC LIMIT 1" );
 	}
 
 	/**
-	 * `find_most_recent_run()`/`find_most_recent_terminal_run()` で共有する
-	 * 「最も id が大きい行を返す」処理.
+	 * SELECT文を実行し、最初の1行を返す(`find_by_id()`・`find_most_recent_*()`で
+	 * 共有する.コードレビュー指摘5で、全runを読んでPHPで絞り込む`all_rows()`を
+	 * やめたときに追加した).
 	 *
-	 * @param array<int, array> $rows 対象の行群.
-	 * @return array|null `$rows` が空なら `null`.
+	 * `$sql`は呼び出し元が組み立て済みのもの(動的な値は`prepare()`済み、または
+	 * `WPCV_Run_Status`等の固定enumのみ)に限る.
+	 *
+	 * @param string $sql 実行するSELECT文(`LIMIT 1`を付けておくこと).
+	 * @return array|null 1行も無ければ `null`.
 	 */
-	private static function most_recent_of( array $rows ) {
-		if ( empty( $rows ) ) {
-			return null;
-		}
+	private function first_row( $sql ) {
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- $sql is built by the callers above (table name + prepare()d values or hardcoded enums only).
+		$rows = $this->wpdb->get_results( $sql, ARRAY_A );
 
-		usort(
-			$rows,
-			static function ( $a, $b ) {
-				return (int) $b['id'] <=> (int) $a['id'];
-			}
-		);
-
-		return $rows[0];
+		return is_array( $rows ) && ! empty( $rows ) ? $rows[0] : null;
 	}
 
 	/**
@@ -1302,17 +1272,13 @@ class WPCV_Run_Repository {
 	 * @return bool
 	 */
 	private function has_run_scheduled_for_date( $date ) {
-		foreach ( $this->all_rows() as $row ) {
-			if ( empty( $row['scheduled_for'] ) ) {
-				continue;
-			}
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+		$start = $date . ' 00:00:00';
+		$end   = gmdate( 'Y-m-d H:i:s', strtotime( $start . ' UTC' ) + DAY_IN_SECONDS );
 
-			if ( substr( (string) $row['scheduled_for'], 0, 10 ) === $date ) {
-				return true;
-			}
-		}
-
-		return false;
+		// その暦日の範囲(`[当日 00:00:00, 翌日 00:00:00)`)で絞り込む(コードレビュー
+		// 指摘5. 以前は全runを読んでPHPで日付部分を比べていた).
+		return null !== $this->first_row( $this->wpdb->prepare( "SELECT id FROM {$table} WHERE scheduled_for >= %s AND scheduled_for < %s LIMIT 1", $start, $end ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name only.
 	}
 
 	/**
@@ -1347,23 +1313,6 @@ class WPCV_Run_Repository {
 		}
 
 		return null;
-	}
-
-	/**
-	 * `find_by_id()`/`find_most_recent_run()`/`has_run_scheduled_for_date()`で
-	 * 共有する「テーブルの全行を読み取る」処理(v0.4.0 §Step6で `find_by_id()` から
-	 * 抽出。`WPCV_Target_Run_Repository::all_rows()` と同じ理由〔テストダブルが
-	 * WHERE 句を解釈しないための設計〕).
-	 *
-	 * @return array<int, array>
-	 */
-	private function all_rows() {
-		$table = $this->wpdb->base_prefix . 'wpcv_runs';
-
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static table literal, no user input.
-		$rows = $this->wpdb->get_results( "SELECT * FROM {$table}", ARRAY_A );
-
-		return is_array( $rows ) ? $rows : array();
 	}
 
 	/**

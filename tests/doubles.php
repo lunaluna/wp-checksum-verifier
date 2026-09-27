@@ -165,6 +165,14 @@ class WPCV_Test_Fake_WPDB {
 	public $get_var_calls = array();
 
 	/**
+	 * `get_results()` に渡されたクエリ文字列の記録(アサーション用.
+	 * コードレビュー指摘5: 全件取得のSELECTが発行されていないことを確かめるため).
+	 *
+	 * @var array<int, string>
+	 */
+	public $get_results_calls = array();
+
+	/**
 	 * `query()` に渡されたクエリ文字列の記録(`RELEASE_LOCK()` が確実に呼ばれた
 	 * ことをテストで確認できるようにするため).
 	 *
@@ -354,12 +362,24 @@ class WPCV_Test_Fake_WPDB {
 	}
 
 	/**
-	 * 行を読み取る(各Repositoryの `all_rows()` 系メソッド向けの簡易フェイク).
+	 * 行を読み取る(各Repositoryの読み取りメソッド向けの簡易フェイク).
 	 *
-	 * 実 `$wpdb` と異なり SQL を解釈しない。クエリ文字列から `FROM {table}` の
-	 * テーブル名だけを正規表現で拾い、そのテーブルの全行をそのまま返す
-	 * (WHERE 句によるフィルタリングは呼び出し側の PHP コードが行う設計になって
-	 * いるため、フェイク側で再現する必要が無い).
+	 * 次の単純な形のSELECTだけは解釈して、WHERE・ORDER BY・LIMIT/OFFSETを反映する
+	 * (`select_simple()`. コードレビュー指摘5で追加.本番のRepositoryが全件取得を
+	 * やめてSQLで絞り込めるようにするため):
+	 *
+	 *     SELECT * | 列名, ... FROM {table}
+	 *       [WHERE 条件 AND 条件 ...]
+	 *       [ORDER BY 列 ASC|DESC]
+	 *       [LIMIT n [OFFSET m]]
+	 *
+	 * 条件は `parse_where_conditions_strict()` が扱える形のみ.それ以外の形
+	 * (集計関数・GROUP BY・OR・FIELD() など)は従来どおりSQLを解釈せず、
+	 * テーブルの全行をそのまま返す(その場合、絞り込みは呼び出し側のPHPコードが行う.
+	 * 既存のRepositoryメソッドの多くがこの前提で書かれている).
+	 *
+	 * 列名を指定したSELECTでも、行は全列を持ったまま返す(呼び出し側は必要な列しか
+	 * 読まないため、絞り込む必要が無い).
 	 *
 	 * @param string $query  SQL文字列(`FROM {table}` を含む前提).
 	 * @param string $output 無視する(本プラグインは常に `ARRAY_A` で呼ぶ).
@@ -367,6 +387,14 @@ class WPCV_Test_Fake_WPDB {
 	 */
 	public function get_results( $query, $output = 'ARRAY_A' ) {
 		unset( $output );
+
+		$this->get_results_calls[] = $query;
+
+		$selected = $this->select_simple( $query );
+
+		if ( null !== $selected ) {
+			return $selected;
+		}
 
 		if ( 1 !== preg_match( '/FROM\s+(\S+)/i', $query, $matches ) ) {
 			return array();
@@ -378,16 +406,137 @@ class WPCV_Test_Fake_WPDB {
 	}
 
 	/**
-	 * 単一の値を返す(`WPCV_Repository::reserve_run()` の `GET_LOCK()` 専用の
-	 * 簡易フェイク)。実 SQL は実行せず、`$this->get_var_return` をそのまま返す.
+	 * 単一の値を返す.
 	 *
-	 * @param string $query クエリ文字列(記録のみ。実行はしない).
+	 * `SELECT COUNT(*) FROM {table} [WHERE ...]` の形(条件は `get_results()` と同じ
+	 * 範囲)だけは、実際に行を数えて返す(コードレビュー指摘5で追加.実行履歴一覧の
+	 * 総件数に使う).それ以外(`WPCV_Repository::reserve_run()` の `GET_LOCK()` 等)は
+	 * 実 SQL を実行せず、`$this->get_var_return` をそのまま返す.どちらの場合も
+	 * クエリは `get_var_calls` に記録する.
+	 *
+	 * @param string $query クエリ文字列.
 	 * @return string|null
 	 */
 	public function get_var( $query ) {
 		$this->get_var_calls[] = $query;
 
+		if ( 1 === preg_match( '/^\s*SELECT\s+COUNT\(\s*\*\s*\)\s+FROM\s+(\S+)(?:\s+WHERE\s+(.+?))?\s*$/is', $query, $matches ) ) {
+			$conditions = isset( $matches[2] ) ? $this->parse_where_conditions_strict( $matches[2] ) : array();
+
+			if ( null !== $conditions ) {
+				return (string) count( $this->filter_rows( $matches[1], $conditions ) );
+			}
+		}
+
 		return $this->get_var_return;
+	}
+
+	/**
+	 * `get_results()` 専用: 単純な形のSELECTを解釈して結果を返す
+	 * (解釈できない形なら `null`.`get_results()` のdocblock参照).
+	 *
+	 * @param string $query SQL文字列.
+	 * @return array<int, array>|null
+	 */
+	private function select_simple( $query ) {
+		$pattern = '/^\s*SELECT\s+(\*|\w+(?:\s*,\s*\w+)*)\s+FROM\s+(\S+)'
+			. '(?:\s+WHERE\s+(.+?))?'
+			. '(?:\s+ORDER\s+BY\s+(\w+)\s+(ASC|DESC))?'
+			. '(?:\s+LIMIT\s+(\d+)(?:\s+OFFSET\s+(\d+))?)?\s*$/is';
+
+		if ( 1 !== preg_match( $pattern, $query, $matches ) ) {
+			return null;
+		}
+
+		$where_str  = isset( $matches[3] ) ? $matches[3] : '';
+		$conditions = '' === $where_str ? array() : $this->parse_where_conditions_strict( $where_str );
+
+		if ( null === $conditions ) {
+			return null;
+		}
+
+		$rows = $this->filter_rows( $matches[2], $conditions );
+
+		if ( ! empty( $matches[4] ) ) {
+			$column     = $matches[4];
+			$descending = 0 === strcasecmp( $matches[5], 'DESC' );
+
+			usort(
+				$rows,
+				static function ( $a, $b ) use ( $column, $descending ) {
+					$cmp = ( $a[ $column ] ?? null ) <=> ( $b[ $column ] ?? null );
+
+					return $descending ? -$cmp : $cmp;
+				}
+			);
+		}
+
+		if ( isset( $matches[6] ) && '' !== $matches[6] ) {
+			$offset = isset( $matches[7] ) && '' !== $matches[7] ? (int) $matches[7] : 0;
+			$rows   = array_slice( $rows, $offset, (int) $matches[6] );
+		}
+
+		return $rows;
+	}
+
+	/**
+	 * 指定テーブルのうち、すべての条件を満たす行を返す(`select_simple()`・
+	 * `get_var()` の COUNT で共有する).
+	 *
+	 * @param string $table      テーブル名.
+	 * @param array  $conditions `parse_where_conditions_strict()` の戻り値.
+	 * @return array<int, array>
+	 */
+	private function filter_rows( $table, array $conditions ) {
+		$rows = array();
+
+		foreach ( $this->rows[ $table ] ?? array() as $row ) {
+			if ( $this->row_matches_conditions( $row, $conditions ) ) {
+				$rows[] = $row;
+			}
+		}
+
+		return $rows;
+	}
+
+	/**
+	 * `parse_where_conditions()` の厳密版: 1つでも扱えない条件があれば `null` を返す
+	 * (黙って条件を落とすと、本番と異なる行を返してしまうため).`select_simple()`・
+	 * `get_var()` 専用.
+	 *
+	 * `parse_where_conditions()` が扱う3種(`=`・`IN (...)`・`IS NULL`)に加えて、
+	 * 比較演算子(`<`・`<=`・`>`・`>=`)も扱う(日時文字列の範囲指定用).
+	 * `OR`・括弧のネストは扱わない.
+	 *
+	 * @param string $where_str `WHERE` 句.
+	 * @return array<int, array>|null
+	 */
+	private function parse_where_conditions_strict( $where_str ) {
+		// `<>`/`!=` は扱わない(比較演算子の正規表現が `<` と誤って解釈するのを防ぐ).
+		if ( 1 === preg_match( '/\sOR\s|<>|!=/i', $where_str ) ) {
+			return null;
+		}
+
+		$conditions = array();
+
+		foreach ( preg_split( '/\s+AND\s+/i', trim( $where_str ) ) as $piece ) {
+			$piece = trim( $piece );
+
+			if ( 1 === preg_match( '/^(\w+)\s*(<=|>=|<|>)\s*(.+)$/s', $piece, $matches ) ) {
+				$conditions[] = array( 'cmp', $matches[1], $this->parse_sql_value_literal( trim( $matches[3] ) ), $matches[2] );
+				continue;
+			}
+
+			$parsed = $this->parse_where_conditions( $piece );
+
+			if ( 1 !== count( $parsed ) ) {
+				return null;
+			}
+
+			$conditions[] = $parsed[0];
+		}
+
+		return $conditions;
 	}
 
 	/**
@@ -540,6 +689,26 @@ class WPCV_Test_Fake_WPDB {
 
 			if ( 'in' === $type && ! in_array( $value, $condition[2], true ) ) {
 				return false;
+			}
+
+			// 比較演算子(`parse_where_conditions_strict()` のみが作る).
+			// SQLと同じく、NULLとの比較は常に偽とする.
+			if ( 'cmp' === $type ) {
+				if ( null === $value ) {
+					return false;
+				}
+
+				$cmp = $value <=> $condition[2];
+				$ok  = array(
+					'<'  => $cmp < 0,
+					'<=' => $cmp <= 0,
+					'>'  => $cmp > 0,
+					'>=' => $cmp >= 0,
+				);
+
+				if ( ! $ok[ $condition[3] ] ) {
+					return false;
+				}
 			}
 		}
 
