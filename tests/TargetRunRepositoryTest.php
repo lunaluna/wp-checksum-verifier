@@ -958,4 +958,119 @@ class TargetRunRepositoryTest extends TestCase {
 		$this->assertSame( 'first', $row['diff_mode'] );
 		$this->assertNull( $row['baseline_target_run_id'] );
 	}
+
+	/**
+	 * `target_runs` に行を1件直接入れる(コードレビュー指摘5のテスト専用).
+	 *
+	 * @param WPCV_Test_Fake_WPDB $wpdb   `$wpdb`ダブル.
+	 * @param array               $fields 行の値.
+	 * @return int 入れた行の id.
+	 */
+	private function insert_target_run_row( WPCV_Test_Fake_WPDB $wpdb, array $fields ) {
+		$wpdb->insert( 'wp_wpcv_target_runs', array_merge( array( 'target_id' => 'core', 'attempt_count' => 0, 'retry_after' => null, 'lease_expires_at' => null ), $fields ) );
+
+		return $wpdb->insert_id;
+	}
+
+	/**
+	 * `claim_next()` が、指定runのschedulable(`queued`/`retry`)な行のうち、
+	 * `retry_after` が未来でない最もidの小さい行をclaimすることを確認する
+	 * (コードレビュー指摘5で候補の選定をSQLの絞り込みに変えたため、条件が
+	 * 以前と同じであることを確かめる).
+	 *
+	 * @return void
+	 */
+	public function test_claim_next_selects_lowest_id_schedulable_row_of_the_run() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository(
+			$wpdb,
+			static function () {
+				return '2026-09-08 12:00:00';
+			}
+		);
+
+		$this->insert_target_run_row( $wpdb, array( 'run_id' => 1, 'status' => 'queued' ) );               // 別のrun.
+		$this->insert_target_run_row( $wpdb, array( 'run_id' => 2, 'status' => 'running' ) );              // schedulableでない.
+		$this->insert_target_run_row( $wpdb, array( 'run_id' => 2, 'status' => 'retry', 'retry_after' => '2026-09-08 12:00:01' ) ); // retry_afterが未来.
+		$expected = $this->insert_target_run_row( $wpdb, array( 'run_id' => 2, 'status' => 'retry', 'retry_after' => '2026-09-08 12:00:00' ) );
+		$this->insert_target_run_row( $wpdb, array( 'run_id' => 2, 'status' => 'queued' ) );               // idが大きい.
+
+		$claimed = $repository->claim_next( 2, 'lease-a' );
+
+		$this->assertSame( $expected, (int) $claimed['id'] );
+		$this->assertSame( 'running', $wpdb->rows['wp_wpcv_target_runs'][ $expected ]['status'] );
+		$this->assertSame( 'queued', $wpdb->rows['wp_wpcv_target_runs'][1]['status'], '別のrunの行はclaimしない' );
+	}
+
+	/**
+	 * `sweep_expired_leases()` が、指定runの`running`かつlease期限切れ
+	 * (期限ちょうどを含む)の行だけを`retry`へ倒すことを確認する
+	 * (コードレビュー指摘5で対象の絞り込みをSQLに変えたため、条件が以前と同じで
+	 * あることを確かめる).
+	 *
+	 * @return void
+	 */
+	public function test_sweep_expired_leases_targets_only_expired_running_rows_of_the_run() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository(
+			$wpdb,
+			static function () {
+				return '2026-09-08 12:00:00';
+			}
+		);
+
+		$expired = $this->insert_target_run_row( $wpdb, array( 'run_id' => 2, 'status' => 'running', 'lease_expires_at' => '2026-09-08 11:00:00' ) );
+		$exact   = $this->insert_target_run_row( $wpdb, array( 'run_id' => 2, 'status' => 'running', 'lease_expires_at' => '2026-09-08 12:00:00' ) );
+		$active  = $this->insert_target_run_row( $wpdb, array( 'run_id' => 2, 'status' => 'running', 'lease_expires_at' => '2026-09-08 12:00:01' ) );
+		$no_lease = $this->insert_target_run_row( $wpdb, array( 'run_id' => 2, 'status' => 'running' ) );
+		$other   = $this->insert_target_run_row( $wpdb, array( 'run_id' => 1, 'status' => 'running', 'lease_expires_at' => '2026-09-08 11:00:00' ) );
+
+		$this->assertSame( 2, $repository->sweep_expired_leases( 2 ) );
+
+		$rows = $wpdb->rows['wp_wpcv_target_runs'];
+		$this->assertSame( 'retry', $rows[ $expired ]['status'] );
+		$this->assertSame( 'retry', $rows[ $exact ]['status'], '期限ちょうどは期限切れとして扱う' );
+		$this->assertSame( 'running', $rows[ $active ]['status'] );
+		$this->assertSame( 'running', $rows[ $no_lease ]['status'], 'leaseがNULLの行は対象外' );
+		$this->assertSame( 'running', $rows[ $other ]['status'], '別のrunの行は対象外' );
+	}
+
+	/**
+	 * `WPCV_Target_Run_Repository`の読み取りメソッドが、target_runsテーブルを
+	 * 全件読む`SELECT`(WHEREもLIMITも無いもの)を発行しないことを確認する
+	 * (コードレビュー指摘5. 以前は`all_rows()`で全runのtarget_runを読んでおり、
+	 * dispatchのたびに全履歴を読んでいた).
+	 *
+	 * `find_all_known_target_ids()`(`SELECT DISTINCT target_id`)は、既知の
+	 * target_idを全履歴から集めること自体が目的のため対象外にする.
+	 *
+	 * @return void
+	 */
+	public function test_read_methods_do_not_select_whole_target_runs_table() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository(
+			$wpdb,
+			static function () {
+				return '2026-09-08 12:00:00';
+			}
+		);
+
+		$ids = $repository->save_target_runs( 1, array( wpcv_test_make_target_run() ) );
+
+		$repository->claim_next( 1, 'lease-a' );
+		$repository->sweep_expired_leases( 1 );
+		$repository->find_all_by_run( 1 );
+		$repository->find_baseline_target_run( 'core', 2 );
+		$repository->update_chunk_progress( $ids['core'], array( 'completed' => false, 'cursor_path' => 'a.php', 'files_total' => 1, 'files_verified_delta' => 0, 'findings' => array(), 'manifest_fingerprint' => 'fp' ), 'lease-a' );
+
+		$this->assertNotEmpty( $wpdb->get_results_calls );
+
+		foreach ( $wpdb->get_results_calls as $query ) {
+			if ( false === strpos( $query, 'wp_wpcv_target_runs' ) || false !== stripos( $query, 'SELECT DISTINCT' ) ) {
+				continue;
+			}
+
+			$this->assertMatchesRegularExpression( '/\\s(WHERE|LIMIT)\\s/i', $query, "全件取得のSELECTが発行された: {$query}" );
+		}
+	}
 }

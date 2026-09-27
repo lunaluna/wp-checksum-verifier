@@ -587,12 +587,15 @@ class WPCV_Target_Run_Repository {
 	 * 2つの worker が同じ行を同時に claim しようとしても、先に成功した側だけが
 	 * 影響行数1を得て、後発は影響行数0(=claim失敗。呼び出し元は次の候補を
 	 * 探すのではなく `null` を返し、次の dispatch 呼び出しに委ねる)を得る。
-	 * 候補の選定(SELECT)自体は原子的ではない(`ORDER BY ... LIMIT 1` 相当を
-	 * 使わず、`WPCV_Run_Repository::find_active_run()` と同じ「全行取得してPHPで
-	 * 絞り込む」方式。テストダブル `WPCV_Test_Fake_WPDB::get_results()` がWHERE句を
-	 * 解釈しないため)が、claim の安全性は上記のCASのみに依存しており、候補選定の
-	 * 非原子性は「同じ行を2 workerが同時に選ぶ」ことはあっても「2 workerが両方とも
-	 * claimに成功する」ことは無い、という性質を壊さない.
+	 * 候補の選定(SELECT)自体は原子的ではないが、claim の安全性は上記のCASのみに
+	 * 依存しており、候補選定の非原子性は「同じ行を2 workerが同時に選ぶ」ことは
+	 * あっても「2 workerが両方ともclaimに成功する」ことは無い、という性質を壊さない.
+	 *
+	 * 候補は `run_id` と `status`(schedulable)をSQLで絞り込み、id順に読む
+	 * (`idx_run_status` を使う.コードレビュー指摘5. 以前は全runのtarget_runを
+	 * 読んでPHPで絞り込んでおり、dispatchのたびに全履歴を読んでいた).
+	 * `retry_after`(NULL、または現在時刻以前)の判定だけはPHPで行う
+	 * (NULLを含む条件をSQLの1つの条件にまとめにくく、1 run分の候補は少ないため).
 	 *
 	 * @param int    $run_id        対象の run の id.
 	 * @param string $lease_owner   claim した worker を識別する一意な文字列
@@ -605,35 +608,25 @@ class WPCV_Target_Run_Repository {
 		$table      = $this->wpdb->base_prefix . 'wpcv_target_runs';
 		$now_string = call_user_func( $this->now );
 
-		$candidates = array();
-		foreach ( $this->all_rows() as $row ) {
-			if ( (int) $row['run_id'] !== (int) $run_id ) {
-				continue;
-			}
+		$statuses = "'" . implode( "', '", WPCV_Target_Status::SCHEDULABLE ) . "'";
+		$sql      = "SELECT * FROM {$table} WHERE run_id = %d AND status IN ( {$statuses} ) ORDER BY id ASC";
 
-			if ( ! WPCV_Target_Status::is_schedulable( $row['status'] ) ) {
-				continue;
-			}
+		$target = null;
 
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name and hardcoded enums only) built above; dynamic values are bound via prepare().
+		foreach ( $this->select_rows( $this->wpdb->prepare( $sql, (int) $run_id ) ) as $row ) {
 			if ( ! empty( $row['retry_after'] ) && (string) $row['retry_after'] > $now_string ) {
 				continue;
 			}
 
-			$candidates[] = $row;
+			$target = $row;
+			break;
 		}
 
-		if ( empty( $candidates ) ) {
+		if ( null === $target ) {
 			return null;
 		}
 
-		usort(
-			$candidates,
-			static function ( $a, $b ) {
-				return (int) $a['id'] <=> (int) $b['id'];
-			}
-		);
-
-		$target           = $candidates[0];
 		$lease_expires_at = gmdate( 'Y-m-d H:i:s', strtotime( $now_string ) + (int) $lease_seconds );
 		$new_fields       = array(
 			'status'           => WPCV_Target_Status::RUNNING,
@@ -695,19 +688,13 @@ class WPCV_Target_Run_Repository {
 		$now_string   = call_user_func( $this->now );
 		$swept        = 0;
 
-		foreach ( $this->all_rows() as $row ) {
-			if ( (int) $row['run_id'] !== (int) $run_id ) {
-				continue;
-			}
+		// `running` のまま lease 期限を過ぎた行だけをSQLで絞り込む(コードレビュー
+		// 指摘5. `idx_run_status` を使う).`lease_expires_at` がNULLの行は
+		// SQLの比較で偽になるため、以前の「空なら対象外」と同じ結果になる.
+		$sql = "SELECT * FROM {$table} WHERE run_id = %d AND status = %s AND lease_expires_at <= %s";
 
-			if ( WPCV_Target_Status::RUNNING !== $row['status'] ) {
-				continue;
-			}
-
-			if ( empty( $row['lease_expires_at'] ) || (string) $row['lease_expires_at'] > $now_string ) {
-				continue;
-			}
-
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name and hardcoded enums only) built above; dynamic values are bound via prepare().
+		foreach ( $this->select_rows( $this->wpdb->prepare( $sql, (int) $run_id, WPCV_Target_Status::RUNNING, $now_string ) ) as $row ) {
 			$new_attempt_count = (int) $row['attempt_count'] + 1;
 
 			if ( $new_attempt_count > $max_attempts ) {
@@ -778,15 +765,11 @@ class WPCV_Target_Run_Repository {
 	 * @return array<int, array>
 	 */
 	public function find_all_by_run( $run_id ) {
-		$rows = array();
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
 
-		foreach ( $this->all_rows() as $row ) {
-			if ( (int) $row['run_id'] === (int) $run_id ) {
-				$rows[] = $row;
-			}
-		}
-
-		return $rows;
+		// `idx_run_id` で1 run分だけを読む(コードレビュー指摘5. 以前は全履歴を読んで
+		// PHPで絞り込んでいた).id順は以前の`all_rows()`の並び(挿入順)と同じ.
+		return $this->select_rows( $this->wpdb->prepare( "SELECT * FROM {$table} WHERE run_id = %d ORDER BY id ASC", (int) $run_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name only.
 	}
 
 	/**
@@ -856,45 +839,18 @@ class WPCV_Target_Run_Repository {
 		$sql   = "SELECT * FROM {$table} WHERE target_id = %s AND status = %s AND run_id < %d ORDER BY run_id DESC LIMIT 1";
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via prepare() below.
-		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (string) $target_id, WPCV_Target_Status::SUCCESS, (int) $before_run_id ), ARRAY_A );
-		$rows = is_array( $rows ) ? $rows : array();
+		$rows = $this->select_rows( $this->wpdb->prepare( $sql, (string) $target_id, WPCV_Target_Status::SUCCESS, (int) $before_run_id ) );
 
-		$candidates = array();
-
-		// テストダブル(`WPCV_Test_Fake_WPDB::get_results()`)はWHERE/ORDER BY/LIMITを
-		// 解釈せずテーブル全件を返すため、本番の実SQLが既に絞り込み・ソート・LIMIT
-		// 済みでも、ここでもう一度確定的にPHP側で絞り込む(`WPCV_Finding_Repository::
-		// filter_sort_and_limit()`と同じ設計方針).
-		foreach ( $rows as $row ) {
-			if ( (string) $row['target_id'] !== (string) $target_id ) {
-				continue;
-			}
-
-			if ( WPCV_Target_Status::SUCCESS !== $row['status'] ) {
-				continue;
-			}
-
-			if ( (int) $row['run_id'] >= (int) $before_run_id ) {
-				continue;
-			}
-
-			$candidates[] = $row;
-		}
-
-		if ( empty( $candidates ) ) {
+		// 以前はテストダブルがSQLを解釈しなかったため、ここでPHP側でも絞り込み・
+		// 並べ替えをやり直していた.コードレビュー指摘5でテストダブルがこの形の
+		// SQLを解釈するようになったため、SQLの結果をそのまま使う.
+		if ( empty( $rows ) ) {
 			return null;
 		}
 
-		usort(
-			$candidates,
-			static function ( $a, $b ) {
-				return (int) $b['run_id'] <=> (int) $a['run_id'];
-			}
-		);
-
 		return array(
-			'id'      => (int) $candidates[0]['id'],
-			'version' => $candidates[0]['version'],
+			'id'      => (int) $rows[0]['id'],
+			'version' => $rows[0]['version'],
 		);
 	}
 
@@ -1028,18 +984,19 @@ class WPCV_Target_Run_Repository {
 	}
 
 	/**
-	 * `find_by_id()`/`claim_next()`/`sweep_expired_leases()`/`find_all_by_run()`で
-	 * 共有する「テーブルの全行を読み取る」処理(v0.4.0 §Step4で `find_by_id()` から
-	 * 抽出).テストダブル(`WPCV_Test_Fake_WPDB::get_results()`)がWHERE句を
-	 * 解釈しないための設計は `find_by_id()` の docblock と同じ理由.
+	 * 組み立て済みのSELECT文を実行して行の配列を返す(`find_by_id()`/`claim_next()`/
+	 * `sweep_expired_leases()`/`find_all_by_run()`/`find_baseline_target_run()`で共有する.
+	 * コードレビュー指摘5で、テーブル全件を読む`all_rows()`を置き換えた).
 	 *
-	 * @return array<int, array>
+	 * `$sql`は呼び出し元が組み立て済みのもの(動的な値は`prepare()`済み、または
+	 * `WPCV_Target_Status`の固定enumのみ)に限る.
+	 *
+	 * @param string $sql 実行するSELECT文.
+	 * @return array<int, array> エラー時・0件時は空配列.
 	 */
-	private function all_rows() {
-		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
-
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static table literal, no user input.
-		$rows = $this->wpdb->get_results( "SELECT * FROM {$table}", ARRAY_A );
+	private function select_rows( $sql ) {
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- $sql is built by the callers above (table name + prepare()d values or hardcoded enums only).
+		$rows = $this->wpdb->get_results( $sql, ARRAY_A );
 
 		return is_array( $rows ) ? $rows : array();
 	}
@@ -1051,12 +1008,9 @@ class WPCV_Target_Run_Repository {
 	 * @return array|null 見つからなければ null.
 	 */
 	private function find_by_id( $target_run_id ) {
-		foreach ( $this->all_rows() as $row ) {
-			if ( (int) $row['id'] === (int) $target_run_id ) {
-				return $row;
-			}
-		}
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
+		$rows  = $this->select_rows( $this->wpdb->prepare( "SELECT * FROM {$table} WHERE id = %d LIMIT 1", (int) $target_run_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name only.
 
-		return null;
+		return empty( $rows ) ? null : $rows[0];
 	}
 }
