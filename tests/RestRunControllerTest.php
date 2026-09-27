@@ -477,4 +477,92 @@ class RestRunControllerTest extends TestCase {
 		$row = $made['wpdb']->rows['wp_wpcv_runs'][1];
 		$this->assertSame( 'failed', $row['status'] );
 	}
+
+	/**
+	 * 時間予算ループが`diff_finalized`(`alerting`へ進んだだけで送信はまだ)では
+	 * 止まらず、送信後の`diff_alerted`で止まることを確認する(コードレビュー
+	 * 指摘で修正. 修正前は`diff_finalized`で止まり、時間予算が残っていても
+	 * 送信がAction Scheduler任せになっていた)。検証したいのはループの継続・
+	 * 停止条件だけのため、`dispatch()`の戻り値をキューから順に返すフェイクを使う
+	 * (`RunCoordinatorTest`の同種テストと同じ考え方).
+	 *
+	 * @return void
+	 */
+	public function test_handle_run_continues_through_diff_finalized_and_stops_at_diff_alerted() {
+		$made = wpcv_test_make_fake_environment();
+		wpcv_test_inject_run_repository( $made['run_repository'] );
+		wpcv_test_inject_target_run_repository( $made['target_run_repository'] );
+		wpcv_test_inject_suppression_repository( $made['suppression_repository'] );
+
+		$fake_dispatcher = new WPCV_Test_Fake_Rest_Dispatcher_Action_Queue(
+			array(
+				array( 'action' => 'processed' ),
+				array( 'action' => 'diff_claimed' ),
+				array( 'action' => 'diff_finalized' ),
+				array( 'action' => 'diff_alerted' ),
+			)
+		);
+		wpcv_test_inject_sync_dispatcher( $fake_dispatcher );
+
+		// active run を用意して、新規run作成(due判定)を経由せずに
+		// `drain_within_time_budget()`へ入らせる.
+		$reservation = $made['run_repository']->reserve_run(
+			array(
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+			)
+		);
+		$made['run_repository']->mark_planning_running( $reservation['run_id'] );
+
+		WPCV_Rest_Run_Controller::handle_run( new WP_REST_Request() );
+
+		$this->assertSame( 4, $fake_dispatcher->call_count(), 'diff_finalizedでは止まらず、diff_alertedまでの4回が呼ばれる' );
+	}
+}
+
+/**
+ * `dispatch()`の戻り値を、呼ばれるたびにキューから順に返すフェイク
+ * (`test_handle_run_continues_through_diff_finalized_and_stops_at_diff_alerted()`専用).
+ * `WPCV_Chunk_Dispatcher`のコンストラクタは呼ばない(ループの継続・停止条件だけを
+ * 検証するため)。キューが空になったら`run_already_terminal`を返す.
+ */
+class WPCV_Test_Fake_Rest_Dispatcher_Action_Queue extends WPCV_Chunk_Dispatcher {
+
+	/**
+	 * @var array<int, array>
+	 */
+	private $queue;
+
+	/**
+	 * @var int
+	 */
+	private $calls = 0;
+
+	/**
+	 * @param array<int, array> $queue `dispatch()`が呼ばれるたびに先頭から1つ返す.
+	 */
+	public function __construct( array $queue ) {
+		$this->queue = $queue;
+	}
+
+	/**
+	 * @param int   $run_id  無視する.
+	 * @param array $context 無視する.
+	 * @return array
+	 */
+	public function dispatch( $run_id, array $context ) {
+		unset( $run_id, $context );
+		++$this->calls;
+
+		return array_shift( $this->queue ) ?? array( 'action' => 'run_already_terminal' );
+	}
+
+	/**
+	 * `dispatch()`が呼ばれた回数.
+	 *
+	 * @return int
+	 */
+	public function call_count() {
+		return $this->calls;
+	}
 }

@@ -366,16 +366,17 @@ class RunCoordinatorTest extends TestCase {
 	}
 
 	/**
-	 * `TERMINAL_ACTIONS`に`diff_finalized`/`diff_failed`を追加したことの回帰
-	 * テスト(v0.5後半 §Step12)。`run_finalized`/`diff_claimed`/`diff_not_claimable`
-	 * では継続し、`diff_finalized`で初めて止まることを、実際の
+	 * `TERMINAL_ACTIONS`の回帰テスト(v0.5後半 §Step12・コードレビュー指摘で修正)。
+	 * `processed`/`diff_claimed`/`diff_not_claimable`に加えて`diff_finalized`
+	 * (`alerting`へ進んだだけで、送信はまだ)でも継続し、送信後の`diff_alerted`で
+	 * 初めて止まることを、実際の
 	 * `WPCV_Diff_Dispatcher`を経由せず「dispatch()の戻り値をキューから順に返す
 	 * フェイク」で確認する ―― 検証したいのはループの継続・停止条件そのものであり、
 	 * 差分処理の中身は`DiffDispatcherTest`/`ChunkDispatcherTest`側で別途確認済み.
 	 *
 	 * @return void
 	 */
-	public function test_run_loop_continues_through_diff_actions_and_stops_at_diff_finalized() {
+	public function test_run_loop_continues_through_diff_finalized_and_stops_at_diff_alerted() {
 		$wpdb                   = new WPCV_Test_Fake_WPDB();
 		$now                    = static function () {
 			return '2026-09-26 12:00:00';
@@ -397,6 +398,7 @@ class RunCoordinatorTest extends TestCase {
 				array( 'action' => 'diff_not_claimable' ),
 				array( 'action' => 'diff_claimed' ),
 				array( 'action' => 'diff_finalized' ),
+				array( 'action' => 'diff_alerted' ),
 			)
 		);
 
@@ -418,13 +420,13 @@ class RunCoordinatorTest extends TestCase {
 			)
 		);
 
-		$this->assertSame( 5, $fake_dispatcher->call_count(), 'diff_finalizedに到達するまでの5回すべてが呼ばれ、そこで止まる' );
+		$this->assertSame( 6, $fake_dispatcher->call_count(), 'diff_finalizedでは止まらず、diff_alertedに到達するまでの6回すべてが呼ばれ、そこで止まる' );
 	}
 }
 
 /**
  * `dispatch()`の戻り値を、呼ばれるたびにキューから順に返すフェイク
- * (`test_run_loop_continues_through_diff_actions_and_stops_at_diff_finalized()`専用)。
+ * (`test_run_loop_continues_through_diff_finalized_and_stops_at_diff_alerted()`専用)。
  * `WPCV_Chunk_Dispatcher`のコンストラクタは呼ばない(このテストが検証したいのは
  * `WPCV_Run_Coordinator::run()`のループ継続・停止条件そのものであり、
  * dispatchの実装には依存しないため).
