@@ -606,4 +606,58 @@ class AlertSenderTest extends TestCase {
 		$this->assertSame( array( 'action' => 'sent' ), $second );
 		$this->assertSame( 'sent', $wpdb->rows['wp_wpcv_runs'][2]['alert_status'] );
 	}
+
+	/**
+	 * `send_test()`が宛先未設定のとき`no_recipient`を返し、メールを送らないことを
+	 * 確認する(v0.5後半 §Step14d).
+	 *
+	 * @return void
+	 */
+	public function test_send_test_returns_no_recipient_when_alert_to_empty() {
+		$env = $this->make_sender_environment( new WPCV_Test_Fake_WPDB() );
+
+		$result = $env['sender']->send_test();
+
+		$this->assertSame( array( 'action' => 'no_recipient', 'error' => null ), $result );
+		$this->assertArrayNotHasKey( '_wpcv_test_wp_mail_calls', $GLOBALS );
+	}
+
+	/**
+	 * `send_test()`が宛先ありで`wp_mail()`成功時に`sent`を返し、実際に
+	 * 保存済み`alert_to`宛にメールを送ることを確認する(v0.5後半 §Step14d).
+	 * DBには何も記録しない(run に紐付かないテスト送信のため)ことも確認する.
+	 *
+	 * @return void
+	 */
+	public function test_send_test_sends_to_saved_alert_to_and_records_nothing() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$env  = $this->make_sender_environment( $wpdb );
+
+		WPCV_Settings::update_alert_to( 'ops@example.com' );
+
+		$result = $env['sender']->send_test();
+
+		$this->assertSame( array( 'action' => 'sent', 'error' => null ), $result );
+		$this->assertCount( 1, $GLOBALS['_wpcv_test_wp_mail_calls'] );
+		$this->assertSame( array( 'ops@example.com' ), $GLOBALS['_wpcv_test_wp_mail_calls'][0]['to'] );
+		$this->assertStringContainsString( '[WPCV] Test alert', $GLOBALS['_wpcv_test_wp_mail_calls'][0]['subject'] );
+		$this->assertSame( array(), $wpdb->rows );
+	}
+
+	/**
+	 * `send_test()`が`wp_mail()`失敗時に`failed`とエラーメッセージを返すことを
+	 * 確認する(v0.5後半 §Step14d).
+	 *
+	 * @return void
+	 */
+	public function test_send_test_returns_failed_with_error_message() {
+		$env = $this->make_sender_environment( new WPCV_Test_Fake_WPDB() );
+
+		WPCV_Settings::update_alert_to( 'ops@example.com' );
+		$GLOBALS['_wpcv_test_wp_mail_trigger_failed'] = new WP_Error( 'wp_mail_failed', 'SMTP connect() failed' );
+
+		$result = $env['sender']->send_test();
+
+		$this->assertSame( array( 'action' => 'failed', 'error' => 'SMTP connect() failed' ), $result );
+	}
 }

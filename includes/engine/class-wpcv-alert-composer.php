@@ -391,10 +391,14 @@ class WPCV_Alert_Composer {
 	 * サイト名を件名向けに安全化する(WPMARと同じ`wp_specialchars_decode()`+
 	 * `sanitize_text_field()`に、改行・制御文字の除去を重ねる).
 	 *
+	 * `WPCV_Alert_Sender::send_test()`(v0.5後半 §Step14d)の件名組み立てからも
+	 * 使うためpublicにしてある(「Send test alert」の件名を本番のアラートと
+	 * 同じ安全化ルールにそろえるため. `compose()`を経由しない軽量な経路).
+	 *
 	 * @param string $site_name `get_option( 'blogname' )`の値.
 	 * @return string
 	 */
-	private static function clean_site_name( $site_name ) {
+	public static function clean_site_name( $site_name ) {
 		return self::strip_control_chars( sanitize_text_field( wp_specialchars_decode( $site_name, ENT_QUOTES ) ) );
 	}
 

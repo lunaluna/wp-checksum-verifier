@@ -29,6 +29,9 @@ if ( ! defined( 'ABSPATH' ) ) {
  * update_strict_mode()`/`WPCV_Suppression_Matcher`)はAPI・matcher側は実装済み
  * だったが、この保存フォームにチェックボックスと保存処理が無く通常操作では
  * 既定値`false`のまま変更できなかったため、実行時刻フォームの下に追加した.
+ * v0.5後半 §Step14aでアラートの宛先(`alert_to`)フォームを追加し、§Step14dで
+ * 「Send test alert」ボタン(`WPCV_Alert_Sender::send_test()`を同期的に呼ぶ)を
+ * 追加した.
  */
 class WPCV_Page_Settings {
 
@@ -89,6 +92,20 @@ class WPCV_Page_Settings {
 	const READ_TOKEN_NONCE_NAME = 'wpcv_read_token_nonce';
 
 	/**
+	 * 「Send test alert」フォームの nonce action(v0.5後半 §Step14d).
+	 *
+	 * @var string
+	 */
+	const SEND_TEST_ALERT_NONCE_ACTION = 'wpcv_send_test_alert';
+
+	/**
+	 * 「Send test alert」フォームの nonce name(v0.5後半 §Step14d).
+	 *
+	 * @var string
+	 */
+	const SEND_TEST_ALERT_NONCE_NAME = 'wpcv_send_test_alert_nonce';
+
+	/**
 	 * 画面を描画する.
 	 *
 	 * @return void
@@ -102,6 +119,7 @@ class WPCV_Page_Settings {
 		$run_now_result       = self::maybe_handle_run_now();
 		$generated_run_token  = self::maybe_handle_generate_token( self::TOKEN_NONCE_NAME, self::TOKEN_NONCE_ACTION, WPCV_Rest_Token::SCOPE_RUN );
 		$generated_read_token = self::maybe_handle_generate_token( self::READ_TOKEN_NONCE_NAME, self::READ_TOKEN_NONCE_ACTION, WPCV_Rest_Token::SCOPE_READ );
+		$test_alert_result    = self::maybe_handle_send_test_alert();
 
 		$run_time                          = WPCV_Settings::get_run_time();
 		$external_http_time_budget_seconds = WPCV_Settings::get_external_http_time_budget_seconds();
@@ -205,6 +223,42 @@ class WPCV_Page_Settings {
 					</tr>
 				</table>
 				<?php submit_button( __( 'Save Changes', 'wp-checksum-verifier' ) ); ?>
+			</form>
+
+			<h2><?php echo esc_html__( 'Send test alert', 'wp-checksum-verifier' ); ?></h2>
+			<?php if ( null !== $test_alert_result ) : ?>
+				<?php if ( 'sent' === $test_alert_result['action'] ) : ?>
+					<div class="notice notice-success is-dismissible">
+						<p><?php echo esc_html__( 'Test alert sent successfully.', 'wp-checksum-verifier' ); ?></p>
+					</div>
+				<?php elseif ( 'no_recipient' === $test_alert_result['action'] ) : ?>
+					<div class="notice notice-warning is-dismissible">
+						<p><?php echo esc_html__( 'Alert recipients is empty. Set at least one address above and save, then try again.', 'wp-checksum-verifier' ); ?></p>
+					</div>
+				<?php else : ?>
+					<div class="notice notice-error is-dismissible">
+						<p>
+							<?php
+							echo esc_html(
+								null === $test_alert_result['error']
+									? __( 'Test alert failed to send.', 'wp-checksum-verifier' )
+									: sprintf(
+										/* translators: %s: error message from wp_mail(). */
+										__( 'Test alert failed to send: %s', 'wp-checksum-verifier' ),
+										$test_alert_result['error']
+									)
+							);
+							?>
+						</p>
+					</div>
+				<?php endif; ?>
+			<?php endif; ?>
+			<form method="post">
+				<?php wp_nonce_field( self::SEND_TEST_ALERT_NONCE_ACTION, self::SEND_TEST_ALERT_NONCE_NAME ); ?>
+				<p class="description">
+					<?php echo esc_html__( 'Send a test email to the alert recipients above, to confirm the address is correct before relying on it.', 'wp-checksum-verifier' ); ?>
+				</p>
+				<?php submit_button( __( 'Send test alert', 'wp-checksum-verifier' ), 'secondary', 'wpcv_send_test_alert_submit' ); ?>
 			</form>
 
 			<h2><?php echo esc_html__( 'Run now', 'wp-checksum-verifier' ); ?></h2>
@@ -437,6 +491,32 @@ class WPCV_Page_Settings {
 	}
 
 	/**
+	 * 「Send test alert」フォームが POST されていれば nonce・capability を
+	 * 検証したうえで `WPCV_Alert_Sender::send_test()` を呼ぶ(v0.5後半 §Step14d.
+	 * プラン §4.4「宛先の誤りを運用前に見つけるため」).
+	 *
+	 * `maybe_handle_run_now()`と異なりWP-Cronの非同期発火を経由せず、この
+	 * リクエストの中で同期的に`wp_mail()`まで完了させる(テスト送信1通だけ
+	 * であり、検証runのように時間がかかる処理ではないため).
+	 *
+	 * @return array{action: string, error: string|null}|null POSTされていない・
+	 *         capability検証に失敗した場合は`null`(何もnoticeを表示しない).
+	 */
+	private static function maybe_handle_send_test_alert() {
+		if ( ! isset( $_POST[ self::SEND_TEST_ALERT_NONCE_NAME ] ) ) {
+			return null;
+		}
+
+		check_admin_referer( self::SEND_TEST_ALERT_NONCE_ACTION, self::SEND_TEST_ALERT_NONCE_NAME );
+
+		if ( ! current_user_can( self::required_capability() ) ) {
+			return null;
+		}
+
+		return WPCV_Plugin::alert_sender()->send_test();
+	}
+
+	/**
 	 * Active runの案内文を組み立てる(`maybe_handle_run_now()` から分離してテスト可能にする).
 	 *
 	 * @param int $run_id 対象の run の id.
@@ -584,9 +664,13 @@ class WPCV_Page_Settings {
 	/**
 	 * この画面に必要な capability を返す.
 	 *
+	 * `WPCV_Admin_Notices`(v0.5後半 §Step14d)からも同じ判定を使うため
+	 * publicにしてある(WPCVの各画面と同じcapabilityでアラート通知の表示可否を
+	 * 揃えるため. 重複を避ける).
+	 *
 	 * @return string
 	 */
-	private static function required_capability() {
+	public static function required_capability() {
 		return is_multisite() ? 'manage_network_options' : 'manage_options';
 	}
 }

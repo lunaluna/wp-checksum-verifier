@@ -19,6 +19,10 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 単一サイトでの必要 capability は manage_options を仮採用している
  * (§17-9 未決事項)。設定画面に実項目(§11: 実行モード・GitHub PAT 等)を
  * 実装する際に見直すこと.
+ *
+ * v0.5後半 §Step14dで、各画面の`add_menu_page()`/`add_submenu_page()`の
+ * 戻り値(hook_suffix)を集めて`WPCV_Admin_Notices::register()`に渡すように
+ * した(アラートの管理画面通知〔§2.5〕をWPCVの画面に限定するため).
  */
 class WPCV_Admin_Menu {
 
@@ -42,7 +46,8 @@ class WPCV_Admin_Menu {
 	 * @return void
 	 */
 	public static function add_site_menu() {
-		add_menu_page(
+		$hook_suffixes   = array();
+		$hook_suffixes[] = add_menu_page(
 			__( 'WP Checksum Verifier', 'wp-checksum-verifier' ),
 			__( 'Checksum Verifier', 'wp-checksum-verifier' ),
 			'manage_options',
@@ -51,9 +56,11 @@ class WPCV_Admin_Menu {
 			'dashicons-shield'
 		);
 
-		self::add_run_history_submenu( 'manage_options' );
-		self::add_findings_submenu( 'manage_options' );
-		self::add_suppressions_submenu( 'manage_options' );
+		$hook_suffixes[] = self::add_run_history_submenu( 'manage_options' );
+		$hook_suffixes[] = self::add_findings_submenu( 'manage_options' );
+		$hook_suffixes[] = self::add_suppressions_submenu( 'manage_options' );
+
+		WPCV_Admin_Notices::register( $hook_suffixes );
 	}
 
 	/**
@@ -62,7 +69,8 @@ class WPCV_Admin_Menu {
 	 * @return void
 	 */
 	public static function add_network_menu() {
-		add_menu_page(
+		$hook_suffixes   = array();
+		$hook_suffixes[] = add_menu_page(
 			__( 'WP Checksum Verifier', 'wp-checksum-verifier' ),
 			__( 'Checksum Verifier', 'wp-checksum-verifier' ),
 			'manage_network_options',
@@ -71,9 +79,11 @@ class WPCV_Admin_Menu {
 			'dashicons-shield'
 		);
 
-		self::add_run_history_submenu( 'manage_network_options' );
-		self::add_findings_submenu( 'manage_network_options' );
-		self::add_suppressions_submenu( 'manage_network_options' );
+		$hook_suffixes[] = self::add_run_history_submenu( 'manage_network_options' );
+		$hook_suffixes[] = self::add_findings_submenu( 'manage_network_options' );
+		$hook_suffixes[] = self::add_suppressions_submenu( 'manage_network_options' );
+
+		WPCV_Admin_Notices::register( $hook_suffixes );
 	}
 
 	/**
@@ -84,10 +94,12 @@ class WPCV_Admin_Menu {
 	 * ネットワークでtitleが同じで差異が無いため、あえて共通化していない).
 	 *
 	 * @param string $capability この画面に必要な capability.
-	 * @return void
+	 * @return string|false `add_submenu_page()`の戻り値(hook_suffix.
+	 *                       v0.5後半 §Step14d: `WPCV_Admin_Notices::register()`に
+	 *                       渡すため返すようにした).
 	 */
 	private static function add_run_history_submenu( $capability ) {
-		add_submenu_page(
+		return add_submenu_page(
 			'wpcv-settings',
 			__( 'Run History', 'wp-checksum-verifier' ),
 			__( 'Run History', 'wp-checksum-verifier' ),
@@ -102,10 +114,10 @@ class WPCV_Admin_Menu {
 	 * (`add_run_history_submenu()`と同じ理由でcapabilityだけを引数化する).
 	 *
 	 * @param string $capability この画面に必要な capability.
-	 * @return void
+	 * @return string|false `add_submenu_page()`の戻り値(hook_suffix).
 	 */
 	private static function add_findings_submenu( $capability ) {
-		add_submenu_page(
+		return add_submenu_page(
 			'wpcv-settings',
 			__( 'Findings', 'wp-checksum-verifier' ),
 			__( 'Findings', 'wp-checksum-verifier' ),
@@ -120,10 +132,10 @@ class WPCV_Admin_Menu {
 	 * (`add_run_history_submenu()`と同じ理由でcapabilityだけを引数化する).
 	 *
 	 * @param string $capability この画面に必要な capability.
-	 * @return void
+	 * @return string|false `add_submenu_page()`の戻り値(hook_suffix).
 	 */
 	private static function add_suppressions_submenu( $capability ) {
-		add_submenu_page(
+		return add_submenu_page(
 			'wpcv-settings',
 			__( 'Suppressions', 'wp-checksum-verifier' ),
 			__( 'Suppressions', 'wp-checksum-verifier' ),

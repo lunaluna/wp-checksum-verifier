@@ -327,6 +327,9 @@ if ( is_admin() ) {
 	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-page-run-history.php';
 	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-page-findings.php';
 	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-page-suppressions.php';
+	// v0.5後半 §Step14d: アラートの管理画面通知(§2.5). `WPCV_Admin_Menu`が
+	// `register()`を呼ぶため、それより先に読み込む必要がある.
+	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-admin-notices.php';
 	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-admin-menu.php';
 	WPCV_Admin_Menu::register();
 }

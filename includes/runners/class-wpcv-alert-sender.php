@@ -16,8 +16,10 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 将来WPMARと共有ライブラリへ切り出すとき、送信部分だけを移せるようにするため
  * (`WPCV_Alert_Composer`のクラスdocblock参照).
  *
- * 公開メソッドは`send_for_run( $run_id )`の1つ. このStep時点ではまだどこからも
- * 呼ばれない(配線はStep14cで`alerting`段階から行う).
+ * 公開メソッドは`send_for_run( $run_id )`(alerting段階からStep14cで配線済み)と
+ * `send_test()`(v0.5後半 §Step14d. 設定画面の「Send test alert」ボタン専用.
+ * runに依存せず、保存済み`alert_to`へ固定文面のテストメールを送るだけの軽量な
+ * 経路).
  *
  * `$unverifiable_streak_triggered`は常にfalseで`WPCV_Generation_Differ::should_send_alert()`
  * を呼ぶ(連続unverifiableのアラートはStep15の範囲).
@@ -173,6 +175,68 @@ class WPCV_Alert_Sender {
 		$this->run_repository->record_alert_result( $run_id, 'failed', $mail_error, $channel_failures );
 
 		return array( 'action' => 'failed' );
+	}
+
+	/**
+	 * 保存済み`alert_to`へ固定文面のテストメールを送る(v0.5後半 §Step14d.
+	 * 設定画面の「Send test alert」ボタン専用).
+	 *
+	 * `send_for_run()`と異なりrunに依存しない・追加チャネル(`wpcv_alert_channels`)
+	 * も実行しない(あくまで「メール送信経路そのものが機能するか」の疎通確認
+	 * であり、本番のアラート送信の代わりにはしない).DBへの記録も行わない
+	 * (`alert_status`等はrun単位の送信結果を表す列のため、run に紐付かない
+	 * このテスト送信では書かない).
+	 *
+	 * @return array{action: string, error: string|null} `action`は`no_recipient`/
+	 *         `sent`/`failed`のいずれか.`error`は`failed`のときだけ
+	 *         `WP_Error::get_error_message()`(§6: `get_error_data()`は保存しない).
+	 */
+	public function send_test() {
+		$alert_to = WPCV_Settings::get_alert_to();
+
+		if ( empty( $alert_to ) ) {
+			return array(
+				'action' => 'no_recipient',
+				'error'  => null,
+			);
+		}
+
+		$subject = self::strip_subject_control_chars(
+			sprintf(
+				/* translators: %s: site name. */
+				__( '[WPCV] Test alert from %s', 'wp-checksum-verifier' ),
+				WPCV_Alert_Composer::clean_site_name( (string) get_option( 'blogname' ) )
+			)
+		);
+		$body = __( 'This is a test alert from WP Checksum Verifier. If you received this message, your alert recipient setting is working correctly.', 'wp-checksum-verifier' ) . "\n";
+
+		$mail_error = null;
+		$sent       = $this->send_mail( $alert_to, $subject, $body, $mail_error );
+
+		if ( $sent ) {
+			return array(
+				'action' => 'sent',
+				'error'  => null,
+			);
+		}
+
+		return array(
+			'action' => 'failed',
+			'error'  => $mail_error,
+		);
+	}
+
+	/**
+	 * 件名から改行・制御文字を除く(§6: ヘッダーインジェクション対策.
+	 * `WPCV_Alert_Composer::build_subject()`と同じ理由だが、あちらはprivateの
+	 * `strip_control_chars()`のためここでは複製する ―― `send_test()`専用の
+	 * 1行だけの処理であり、公開APIを増やすほどではないと判断した).
+	 *
+	 * @param string $subject 件名.
+	 * @return string
+	 */
+	private static function strip_subject_control_chars( $subject ) {
+		return (string) preg_replace( '/[\x00-\x1F\x7F]/', '', $subject );
 	}
 
 	/**

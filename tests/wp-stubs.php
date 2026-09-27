@@ -22,6 +22,18 @@ if ( ! function_exists( 'esc_html' ) ) {
 	}
 }
 
+if ( ! function_exists( 'esc_attr' ) ) {
+	/**
+	 * Stub esc_attr(v0.5後半 §Step14d. `WPCV_Admin_Notices`が使う).
+	 *
+	 * @param string $text Text.
+	 * @return string
+	 */
+	function esc_attr( $text ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return htmlspecialchars( (string) $text, ENT_QUOTES );
+	}
+}
+
 if ( ! function_exists( '__' ) ) {
 	/**
 	 * Stub __() — 翻訳せずそのまま返す(テストは文言の内容ではなく分岐ロジックだけを
@@ -418,6 +430,48 @@ if ( ! defined( 'DAY_IN_SECONDS' ) ) {
 
 if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
 	define( 'HOUR_IN_SECONDS', 3600 );
+}
+
+if ( ! class_exists( 'WP_Screen' ) ) {
+	/**
+	 * Minimal stub of WP_Screen — `get_current_screen()`が返すオブジェクトの
+	 * `id`プロパティだけを持つ(v0.5後半 §Step14d. `WPCV_Admin_Notices`が
+	 * 画面判定に使う).
+	 */
+	class WP_Screen {
+
+		/**
+		 * 画面id(`toplevel_page_wpcv-settings`等).
+		 *
+		 * @var string
+		 */
+		public $id;
+
+		/**
+		 * コンストラクタ.
+		 *
+		 * @param string $id 画面id.
+		 */
+		public function __construct( $id ) {
+			$this->id = $id;
+		}
+	}
+}
+
+if ( ! function_exists( 'get_current_screen' ) ) {
+	/**
+	 * Stub get_current_screen() — `$GLOBALS['_wpcv_test_current_screen_id']`が
+	 * 設定されていればその`WP_Screen`を、無ければ`null`を返す(v0.5後半 §Step14d).
+	 *
+	 * @return WP_Screen|null
+	 */
+	function get_current_screen() { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		if ( ! isset( $GLOBALS['_wpcv_test_current_screen_id'] ) ) {
+			return null;
+		}
+
+		return new WP_Screen( $GLOBALS['_wpcv_test_current_screen_id'] );
+	}
 }
 
 if ( ! function_exists( 'is_multisite' ) ) {
