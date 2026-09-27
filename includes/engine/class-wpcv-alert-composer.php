@@ -316,11 +316,16 @@ class WPCV_Alert_Composer {
 	 * 上位一覧を severity 降順(high > medium > low)→ target_id → path で並べ、
 	 * 上位N件に切り詰める(§4.1).
 	 *
+	 * `WPCV_Alert_Sender`も、通知候補をバッチで読みながら上位N件だけを持ち続ける
+	 * ためにこのメソッドを使う(コードレビュー指摘4で public にした).並び順は
+	 * severity → target_id → path で必ず一意に決まるため、バッチごとに切り詰めても、
+	 * 全件を並べてから切り詰めた場合と同じN件が残る.
+	 *
 	 * @param array $items     候補.
 	 * @param int   $max_items 上位件数.
 	 * @return array
 	 */
-	private static function sort_top_items( array $items, $max_items ) {
+	public static function sort_top_items( array $items, $max_items ) {
 		usort(
 			$items,
 			static function ( $a, $b ) {

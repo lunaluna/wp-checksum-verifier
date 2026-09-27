@@ -581,6 +581,46 @@ class AlertSenderTest extends TestCase {
 	}
 
 	/**
+	 * 通知候補をバッチで読みながら上位N件だけを持つようにしても(コードレビュー
+	 * 指摘4)、後のバッチにある重要度の高いfindingが本文の先頭に載り、一覧は
+	 * 上位N件(既定20件)に収まることを確認する.
+	 *
+	 * 1バッチ目(id 1〜500)と2バッチ目の前半はすべて`low`、2バッチ目の最後
+	 * (id 601)だけ`high`にする.
+	 *
+	 * @return void
+	 */
+	public function test_top_items_keep_high_severity_from_later_batch() {
+		$wpdb                          = new WPCV_Test_Fake_WPDB();
+		$wpdb->rows['wp_wpcv_runs'][1] = $this->make_run_row( 1, array( 'findings_new' => 601 ) );
+
+		for ( $i = 1; $i <= 601; $i++ ) {
+			$wpdb->rows['wp_wpcv_findings'][ $i ] = $this->make_finding_row(
+				$i,
+				array(
+					'finding_key' => "key-{$i}",
+					'diff_state'  => WPCV_Generation_Differ::DIFF_STATE_NEW,
+					'severity'    => 601 === $i ? 'high' : 'low',
+					'path'        => 601 === $i ? 'late-high.php' : sprintf( 'low-%04d.php', $i ),
+				)
+			);
+		}
+
+		$env = $this->make_sender_environment( $wpdb );
+		WPCV_Settings::update_alert_to( 'ops@example.com' );
+
+		$this->assertSame( array( 'action' => 'sent' ), $env['sender']->send_for_run( 1, self::OWNER ) );
+
+		$body  = $GLOBALS['_wpcv_test_wp_mail_calls'][0]['message'];
+		$lines = explode( "\n", $body );
+		$head  = array_search( 'Top 20 by severity:', $lines, true );
+
+		$this->assertNotFalse( $head, '一覧は上位20件に収まる' );
+		$this->assertStringContainsString( 'late-high.php', $lines[ $head + 1 ], '2バッチ目のhighが先頭に載る' );
+		$this->assertStringContainsString( 'low-0001.php', $lines[ $head + 2 ], '残りはlowが並び順どおりに続く' );
+	}
+
+	/**
 	 * `no_recipient`だったrunの次に、宛先を設定した別のrunでは`sent`になる
 	 * ことを確認する(streak〔連続の記録〕はStep15の範囲のため見ない.
 	 * それぞれのrunの`alert_status`が正しく記録されることだけを見る).

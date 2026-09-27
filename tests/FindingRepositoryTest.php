@@ -553,4 +553,38 @@ class FindingRepositoryTest extends TestCase {
 			$repository->aggregate_diff_counts( 99 )
 		);
 	}
+
+	/**
+	 * `mark_notified_by_ids()`が`MARK_NOTIFIED_BATCH_SIZE`件ずつ区切ってUPDATEし、
+	 * すべての行に`notified_at`を書くことを確認する(コードレビュー指摘4.
+	 * 1,201件 = 500 + 500 + 201 で3回のUPDATEになる).
+	 *
+	 * @return void
+	 */
+	public function test_mark_notified_by_ids_updates_in_batches() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Finding_Repository( $wpdb );
+		$ids        = array();
+
+		for ( $i = 1; $i <= 1201; $i++ ) {
+			$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 1, 'path' => "f{$i}.php" ) ) );
+			$ids[] = $i;
+		}
+
+		$repository->mark_notified_by_ids( $ids, '2026-09-27 00:00:00' );
+
+		$updates = array_values(
+			array_filter(
+				$wpdb->query_calls,
+				static function ( $query ) {
+					return 0 === strpos( $query, 'UPDATE' );
+				}
+			)
+		);
+		$this->assertCount( 3, $updates, '500件ずつ区切るため3回のUPDATEになる' );
+
+		foreach ( $wpdb->rows['wp_wpcv_findings'] as $row ) {
+			$this->assertSame( '2026-09-27 00:00:00', $row['notified_at'] );
+		}
+	}
 }

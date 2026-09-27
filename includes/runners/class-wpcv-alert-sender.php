@@ -251,6 +251,12 @@ class WPCV_Alert_Sender {
 	 * バッチ内のfinding_keyをまとめて`find_last_notified_at_by_keys()`に照会する
 	 * (targeted lookup. Step12 §1.4と同じ考え方).
 	 *
+	 * `top_items`は本文に載せる上位N件(`WPCV_Alert_Composer::max_items()`)だけを
+	 * 持つ.バッチを読むたびに`WPCV_Alert_Composer::sort_top_items()`で切り詰める
+	 * (コードレビュー指摘4. 以前は全件を持っており、10万件で約47MBになった
+	 * 〔2026-09-27 実測〕).`notify_ids`は送信成功後に`notified_at`を書くために
+	 * 全件持つ(10万件で約2MB〔同日実測〕のため許容する).
+	 *
 	 * @param int    $run_id      対象のrunのid.
 	 * @param string $now         現在時刻(MySQL DATETIME文字列).
 	 * @param int    $resend_days 再送抑制の日数.
@@ -261,6 +267,7 @@ class WPCV_Alert_Sender {
 		$notify_ids   = array();
 		$top_items    = array();
 		$after_id     = 0;
+		$max_items    = WPCV_Alert_Composer::max_items();
 
 		while ( true ) {
 			$batch = $this->finding_repository->find_notify_candidates_batch( $run_id, $after_id, self::NOTIFY_BATCH_SIZE );
@@ -290,9 +297,6 @@ class WPCV_Alert_Sender {
 				$notify_ids[] = (int) $row['id'];
 				++$notify_count;
 
-				// 全件をメモリに集める(このrun自身のfinding数に比例するだけで、
-				// Step12で問題になった「全履歴に比例する」設計ではないため許容できる
-				// 規模と判断した. §3設計上の決定参照).
 				$top_items[] = array(
 					'severity'  => $row['severity'] ?? '',
 					'target_id' => $row['target_id'] ?? '',
@@ -300,6 +304,9 @@ class WPCV_Alert_Sender {
 					'status'    => $row['status'] ?? '',
 				);
 			}
+
+			// 1バッチ分を足したら上位N件まで切り詰める(このメソッドのdocblock参照).
+			$top_items = WPCV_Alert_Composer::sort_top_items( $top_items, $max_items );
 
 			if ( count( $batch ) < self::NOTIFY_BATCH_SIZE ) {
 				break;

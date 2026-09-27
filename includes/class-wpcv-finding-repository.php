@@ -51,6 +51,16 @@ class WPCV_Finding_Repository {
 	const SORTABLE_COLUMNS = array( 'id', 'path', 'severity', 'status', 'version' );
 
 	/**
+	 * `mark_notified_by_ids()` が1回のUPDATEで扱うidの最大件数.
+	 *
+	 * 未実測: `WPCV_Alert_Sender::NOTIFY_BATCH_SIZE`(通知候補を読む単位)と同じ値を
+	 * 流用した暫定値.1回のSQLを短く保つことが目的のため、厳密な値は求めない.
+	 *
+	 * @var int
+	 */
+	const MARK_NOTIFIED_BATCH_SIZE = 500;
+
+	/**
 	 * `$wpdb` 相当のオブジェクト(`insert()` / `delete()` / `get_results()` /
 	 * `prepare()` / `base_prefix` / `last_error` を持つもの).
 	 *
@@ -831,6 +841,12 @@ class WPCV_Finding_Repository {
 	 * メールが成功したときだけ呼ぶ(§2.4「notified_at を書くのは alert_status = sent
 	 * のときだけ」). 同じ値を何度書いても結果は変わらない(D10 のやり直しで安全).
 	 *
+	 * `MARK_NOTIFIED_BATCH_SIZE`件ずつ区切ってUPDATEする(コードレビュー指摘4).
+	 * 10万件のidを1つの`IN (...)`に入れると、SQLが長くなりすぎ、DBのパケット上限に
+	 * 当たるおそれがあるため.途中のバッチで失敗すると、前半だけ`notified_at`が
+	 * 書かれた状態で例外になる.送り直しの判定(`find_last_notified_at_by_keys()`)は
+	 * 今回のrun自身を除いて照会するため、この途中の状態が通知の漏れにはつながらない.
+	 *
 	 * @param int[]  $ids         対象の finding の id 一覧(空なら何もしない).
 	 * @param string $notified_at MySQL DATETIME(UTC).
 	 * @return void
@@ -844,19 +860,22 @@ class WPCV_Finding_Repository {
 			return;
 		}
 
-		$table        = $this->wpdb->base_prefix . 'wpcv_findings';
-		$placeholders = implode( ', ', array_fill( 0, count( $ids ), '%d' ) );
-		$sql          = "UPDATE {$table} SET notified_at = %s WHERE id IN ( {$placeholders} )";
+		$table = $this->wpdb->base_prefix . 'wpcv_findings';
 
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only, placeholder count matches $args) built above; all dynamic values are bound via prepare() below.
-		$result = $this->wpdb->query( $this->wpdb->prepare( $sql, array_merge( array( (string) $notified_at ), $ids ) ) );
+		foreach ( array_chunk( $ids, self::MARK_NOTIFIED_BATCH_SIZE ) as $chunk ) {
+			$placeholders = implode( ', ', array_fill( 0, count( $chunk ), '%d' ) );
+			$sql          = "UPDATE {$table} SET notified_at = %s WHERE id IN ( {$placeholders} )";
 
-		if ( false === $result ) {
-			throw new RuntimeException(
-				esc_html(
-					sprintf( 'WPCV_Finding_Repository::mark_notified_by_ids() の query に失敗しました: %s', (string) $this->wpdb->last_error )
-				)
-			);
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only, placeholder count matches $args) built above; all dynamic values are bound via prepare() below.
+			$result = $this->wpdb->query( $this->wpdb->prepare( $sql, array_merge( array( (string) $notified_at ), $chunk ) ) );
+
+			if ( false === $result ) {
+				throw new RuntimeException(
+					esc_html(
+						sprintf( 'WPCV_Finding_Repository::mark_notified_by_ids() の query に失敗しました: %s', (string) $this->wpdb->last_error )
+					)
+				);
+			}
 		}
 	}
 
