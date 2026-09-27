@@ -394,12 +394,16 @@ class WPCV_Chunk_Dispatcher {
 
 	/**
 	 * `WPCV_Diff_Dispatcher::dispatch_diff()` へ委譲し、結果に応じて継続予約の
-	 * 要否を判断する(v0.5後半 §Step12・§配線).
+	 * 要否を判断する(v0.5後半 §Step12・§Step14c・§配線).
 	 *
-	 * `diff_claimed`(1単位処理できた。まだ続きがある可能性が高い)は`processed`と
-	 * 同じく即座に継続予約する。`diff_not_claimable`(他プロセスがlease保持中)は
-	 * `waiting`と同じ考え方で、lease有効期間相当の遅延で再チェックする(§配線)。
-	 * `diff_finalized`/`diff_failed`は終端のため継続予約しない.
+	 * `diff_claimed`(1単位処理できた。まだ続きがある可能性が高い)・
+	 * `diff_finalized`(全target完了・`alerting`へ進んだ直後。次のdispatchで
+	 * アラート送信〔手順6〕に進むためもう1回継続予約する。Step12時点は終端として
+	 * 継続予約しない設計だったが、Step14cで送信を接続するにあたり変更した)・
+	 * `diff_alerted`(送信して`done`へ進めた直後。次のdispatchで`run_already_terminal`
+	 * を確認して自然に止まる)は、いずれも即座に継続予約する。`diff_not_claimable`
+	 * (他プロセスがlease保持中)は`waiting`と同じ考え方で、lease有効期間相当の
+	 * 遅延で再チェックする(§配線)。`diff_failed`は終端のため継続予約しない.
 	 *
 	 * @param int    $run_id       対象の run の id.
 	 * @param string $run_status   `wpcv_runs.status`(呼び出し元が既に読んでいる値.
@@ -410,7 +414,7 @@ class WPCV_Chunk_Dispatcher {
 		$result = $this->diff_dispatcher->dispatch_diff( $run_id );
 		$action = $result['action'];
 
-		if ( 'diff_claimed' === $action ) {
+		if ( in_array( $action, array( 'diff_claimed', 'diff_finalized', 'diff_alerted' ), true ) ) {
 			$this->schedule_continuation( $run_id, 0 );
 		} elseif ( 'diff_not_claimable' === $action ) {
 			$this->schedule_continuation( $run_id, WPCV_Run_Repository::DIFF_LEASE_SECONDS );

@@ -12,11 +12,14 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-generation-differ.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-alert-composer.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-finding-key.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-file-state-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-alert-sender.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-diff-dispatcher.php';
 require_once __DIR__ . '/doubles.php';
 
@@ -35,6 +38,17 @@ use PHPUnit\Framework\TestCase;
  * 正しく機能することを確認する.
  */
 class DiffMultiGenerationTest extends TestCase {
+
+	/**
+	 * 他のテストファイルが残した設定を引き継がないよう掃除する
+	 * (`DiffDispatcherTest`のsetUp()と同じ理由).
+	 *
+	 * @return void
+	 */
+	protected function setUp(): void {
+		parent::setUp();
+		unset( $GLOBALS['_wpcv_test_options'], $GLOBALS['_wpcv_test_wp_mail_calls'] );
+	}
 
 	/**
 	 * 固定の現在時刻(他の差分処理テストと同じ値).
@@ -63,6 +77,7 @@ class DiffMultiGenerationTest extends TestCase {
 		$target_run_repository = new WPCV_Target_Run_Repository( $wpdb, $now );
 		$finding_repository    = new WPCV_Finding_Repository( $wpdb );
 		$file_state_repository = new WPCV_File_State_Repository( $wpdb, $now );
+		$alert_sender          = new WPCV_Alert_Sender( $run_repository, $target_run_repository, $finding_repository, $now );
 
 		$owner_sequence = 0;
 		$dispatcher     = new WPCV_Diff_Dispatcher(
@@ -70,6 +85,7 @@ class DiffMultiGenerationTest extends TestCase {
 			$target_run_repository,
 			$finding_repository,
 			$file_state_repository,
+			$alert_sender,
 			static function () use ( &$owner_sequence ) {
 				++$owner_sequence;
 				return 'owner-' . $owner_sequence;
@@ -82,6 +98,7 @@ class DiffMultiGenerationTest extends TestCase {
 			'target_run_repository'  => $target_run_repository,
 			'finding_repository'     => $finding_repository,
 			'file_state_repository'  => $file_state_repository,
+			'alert_sender'           => $alert_sender,
 			'dispatcher'             => $dispatcher,
 		);
 	}

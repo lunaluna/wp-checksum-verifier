@@ -1347,8 +1347,13 @@ class RunRepositoryTest extends TestCase {
 		$repository->finish_run( $run_id, $this->make_summary() );
 		$repository->claim_diff( $run_id, 'owner-a' );
 		$repository->finalize_diff_chunk( $run_id, 'owner-a', null, true, array( 'new' => 0, 'resolved' => 0, 'continuing' => 0 ) );
+		// `alerting`はlease切れ相当(finalize_diff_chunk()参照)のためclaim_diff()で
+		// 再claimできる. `dispatch_diff()`が実際に行う流れと同じ.
+		$claim = $repository->claim_diff( $run_id, 'owner-b' );
 
-		$this->assertTrue( $repository->finalize_diff_alerting( $run_id ) );
+		$this->assertTrue( $claim['claimed'] );
+		$this->assertSame( 'alerting', $claim['run']['diff_status'] );
+		$this->assertTrue( $repository->finalize_diff_alerting( $run_id, 'owner-b' ) );
 		$this->assertSame( 'done', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_status'] );
 	}
 
@@ -1365,8 +1370,90 @@ class RunRepositoryTest extends TestCase {
 		$repository->mark_planning_running( $run_id );
 		$repository->finish_run( $run_id, $this->make_summary() );
 
-		$this->assertFalse( $repository->finalize_diff_alerting( $run_id ) );
+		$this->assertFalse( $repository->finalize_diff_alerting( $run_id, 'owner-a' ) );
 		$this->assertSame( 'pending', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_status'] );
+	}
+
+	/**
+	 * `finalize_diff_alerting()` は `diff_owner` が一致しない(既に別ownerに
+	 * 再claimされた)場合、fencingにより静かに無視される(falseを返すだけ)ことを
+	 * 確認する(v0.5後半 §Step14c. §3.1直下の注記「書き込みはすべてdiff_ownerを
+	 * WHEREに含める」).
+	 *
+	 * @return void
+	 */
+	public function test_finalize_diff_alerting_fencing_rejects_stale_owner() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $repository->reserve_run()['run_id'];
+		$repository->mark_planning_running( $run_id );
+		$repository->finish_run( $run_id, $this->make_summary() );
+		$repository->claim_diff( $run_id, 'owner-a' );
+		$repository->finalize_diff_chunk( $run_id, 'owner-a', null, true, array( 'new' => 0, 'resolved' => 0, 'continuing' => 0 ) );
+		$repository->claim_diff( $run_id, 'owner-b' );
+
+		$this->assertFalse( $repository->finalize_diff_alerting( $run_id, 'owner-stale' ) );
+		$this->assertSame( 'alerting', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_status'] );
+	}
+
+	/**
+	 * `alerting`をclaim中(lease有効)は、`processing`と同じく他のownerが
+	 * claimしようとしても弾かれ、`diff_status`が`alerting`のまま・`diff_owner`も
+	 * 上書きされないことを確認する(v0.5後半 §Step14c. `claim_diff()`の
+	 * ALERTING分岐の組み合わせ表のセル).
+	 *
+	 * @return void
+	 */
+	public function test_claim_diff_rejects_second_claim_of_alerting_while_lease_is_active() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $repository->reserve_run()['run_id'];
+		$repository->mark_planning_running( $run_id );
+		$repository->finish_run( $run_id, $this->make_summary() );
+		$repository->claim_diff( $run_id, 'owner-a' );
+		$repository->finalize_diff_chunk( $run_id, 'owner-a', null, true, array( 'new' => 0, 'resolved' => 0, 'continuing' => 0 ) );
+
+		// lease有効期間120秒でalertingを再claimし、以後lease有効な状態を作る.
+		$first = $repository->claim_diff( $run_id, 'owner-b', 120, 5 );
+		$this->assertTrue( $first['claimed'] );
+		$this->assertSame( 'alerting', $first['run']['diff_status'] );
+
+		$second = $repository->claim_diff( $run_id, 'owner-c', 120, 5 );
+
+		$this->assertFalse( $second['claimed'] );
+		$this->assertFalse( $second['failed'] );
+		$this->assertSame( 'alerting', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_status'] );
+		$this->assertSame( 'owner-b', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_owner'], '他ownerに上書きされてはならない' );
+	}
+
+	/**
+	 * `alerting`のlease切れ検知が試行上限を超えたら`processing`と同じく`failed`へ
+	 * 倒すことを確認する(v0.5後半 §Step14c. `claim_diff()`のALERTING分岐の
+	 * 組み合わせ表のセル. `finalize_diff_chunk()`が書く「即座にlease切れ」相当の
+	 * 値により、alertingへ入った直後の最初の再claimからこの経路に乗る ―― §14c
+	 * 実装時にユーザー承認済みの設計上のトレードオフ〔進捗メモ参照〕).
+	 *
+	 * @return void
+	 */
+	public function test_claim_diff_marks_alerting_failed_after_exceeding_max_attempts() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $repository->reserve_run()['run_id'];
+		$repository->mark_planning_running( $run_id );
+		$repository->finish_run( $run_id, $this->make_summary() );
+		$repository->claim_diff( $run_id, 'owner-a' );
+		$repository->finalize_diff_chunk( $run_id, 'owner-a', null, true, array( 'new' => 0, 'resolved' => 0, 'continuing' => 0 ) );
+
+		// 試行上限0回: alertingへ入った直後の最初の再claimで即座に上限超過になる.
+		$result = $repository->claim_diff( $run_id, 'owner-b', 120, 0 );
+
+		$this->assertFalse( $result['claimed'] );
+		$this->assertTrue( $result['failed'] );
+		$this->assertSame( 'failed', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_status'] );
+		$this->assertSame( 1, (int) $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_attempt_count'] );
 	}
 
 	// ------------------------------------------------------------------

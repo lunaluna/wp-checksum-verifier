@@ -12,11 +12,14 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-generation-differ.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-alert-composer.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-finding-key.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-file-state-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-alert-sender.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-diff-dispatcher.php';
 require_once __DIR__ . '/doubles.php';
 
@@ -34,6 +37,23 @@ class DiffDispatcherTest extends TestCase {
 	 * @var string
 	 */
 	const NOW = '2026-09-08 12:00:00';
+
+	/**
+	 * 他のテストファイルが残した設定を引き継がないよう掃除する.
+	 *
+	 * §Step14c(v0.5後半)で`dispatch_diff()`が`alerting`をclaimすると
+	 * `WPCV_Alert_Sender`経由で`WPCV_Settings::get_alert_to()`を読むように
+	 * なったため、`AlertSenderTest`等が残した`alert_to`設定を引き継がない
+	 * ようにする(`_wpcv_test_added_actions`のような「requireされた時点で1回だけ
+	 * 書き込まれる登録テーブル」ではなく、テストが明示的に書き込むだけの設定値
+	 * のため、ここで丸ごと消してよい).
+	 *
+	 * @return void
+	 */
+	protected function setUp(): void {
+		parent::setUp();
+		unset( $GLOBALS['_wpcv_test_options'], $GLOBALS['_wpcv_test_wp_mail_calls'] );
+	}
 
 	/**
 	 * このテストファイル共通の環境(Repository群・Dispatcher・`$wpdb`)を組み立てる.
@@ -54,6 +74,7 @@ class DiffDispatcherTest extends TestCase {
 		$target_run_repository  = new WPCV_Target_Run_Repository( $wpdb, $now );
 		$finding_repository     = new WPCV_Finding_Repository( $wpdb );
 		$file_state_repository  = new WPCV_File_State_Repository( $wpdb, $now );
+		$alert_sender           = new WPCV_Alert_Sender( $run_repository, $target_run_repository, $finding_repository, $now );
 
 		$owner_sequence = 0;
 		$dispatcher     = new WPCV_Diff_Dispatcher(
@@ -61,6 +82,7 @@ class DiffDispatcherTest extends TestCase {
 			$target_run_repository,
 			$finding_repository,
 			$file_state_repository,
+			$alert_sender,
 			static function () use ( &$owner_sequence ) {
 				++$owner_sequence;
 				return 'owner-' . $owner_sequence;
@@ -73,6 +95,7 @@ class DiffDispatcherTest extends TestCase {
 			'target_run_repository'  => $target_run_repository,
 			'finding_repository'     => $finding_repository,
 			'file_state_repository'  => $file_state_repository,
+			'alert_sender'           => $alert_sender,
 			'dispatcher'             => $dispatcher,
 		);
 	}
@@ -209,6 +232,46 @@ class DiffDispatcherTest extends TestCase {
 		$this->assertSame( 1, (int) $env['wpdb']->rows['wp_wpcv_runs'][ $run_id ]['findings_new'] );
 		$this->assertSame( 0, (int) $env['wpdb']->rows['wp_wpcv_runs'][ $run_id ]['findings_resolved'] );
 		$this->assertSame( 0, (int) $env['wpdb']->rows['wp_wpcv_runs'][ $run_id ]['findings_continuing'] );
+	}
+
+	/**
+	 * `alerting`まで進んだrunに対する次のdispatchが、実際に`WPCV_Alert_Sender::
+	 * send_for_run()`を呼んでアラートの結果(`alert_status`)を記録し、
+	 * `diff_status`を`done`へ進めることを確認する(v0.5後半 §Step14c.
+	 * 宛先未設定のため`no_recipient`になる ―― `WPCV_Alert_Sender`自体の
+	 * 全パターンは`AlertSenderTest`でカバー済みのため、ここでは「実際に
+	 * 呼ばれて結果が記録されること」だけを見る).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_diff_alerting_sends_alert_and_advances_to_done() {
+		$env    = $this->make_environment();
+		$run_id = $this->make_run_ready_for_diff( $env['run_repository'] );
+
+		$target_run_id = $this->insert_target_run( $env['wpdb'], $run_id, array( 'target_id' => 'core' ) );
+		$this->insert_finding(
+			$env['wpdb'],
+			array(
+				'target_run_id' => $target_run_id,
+				'run_id'        => $run_id,
+				'finding_key'   => str_repeat( 'a', 64 ),
+			)
+		);
+
+		// 1回目: firstモードを確定・newにする. 2回目: 確定へ進みalertingへ.
+		$env['dispatcher']->dispatch_diff( $run_id );
+		$env['dispatcher']->dispatch_diff( $run_id );
+
+		// 3回目: alertingをclaimしてアラート送信→done.
+		$third = $env['dispatcher']->dispatch_diff( $run_id );
+
+		$this->assertSame( 'diff_alerted', $third['action'] );
+		$this->assertSame( 'done', $env['wpdb']->rows['wp_wpcv_runs'][ $run_id ]['diff_status'] );
+		$this->assertSame( 'no_recipient', $env['wpdb']->rows['wp_wpcv_runs'][ $run_id ]['alert_status'] );
+
+		// 4回目: 既にdoneのため何もせず終わる.
+		$fourth = $env['dispatcher']->dispatch_diff( $run_id );
+		$this->assertSame( 'diff_not_claimable', $fourth['action'] );
 	}
 
 	/**

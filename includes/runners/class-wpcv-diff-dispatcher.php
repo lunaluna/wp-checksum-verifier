@@ -27,6 +27,9 @@ if ( ! defined( 'ABSPATH' ) ) {
  *    bulk modeなら1回で完了、chunkedモードなら最初のバッチだけ処理
  * 5. すべてのtargetの`diff_mode`が確定していれば、target_removed(アンインストール)
  *    掃除・stat targetの`wpcv_file_states`掃除・件数集計を行い`alerting`へ進める
+ * 6. `claim_diff()`が`alerting`をclaimした(=5が既に済んでいる)場合は、
+ *    `WPCV_Alert_Sender::send_for_run()`を呼んでから`done`へ進める(v0.5後半
+ *    §Step14c.`dispatch_diff()`のdocblock参照)
  *
  * 3・4の結果は必ず`finalize_diff_chunk(..., completed:false, $cursor_json)`で
  * `pending`へ手放す(1 targetの処理が完全に終わっても、他のtargetがまだ残って
@@ -81,6 +84,13 @@ class WPCV_Diff_Dispatcher {
 	private $file_state_repository;
 
 	/**
+	 * アラート送信本体(v0.5後半 §Step14c. `alerting`をclaimしたときに呼ぶ).
+	 *
+	 * @var WPCV_Alert_Sender
+	 */
+	private $alert_sender;
+
+	/**
 	 * `claim_diff()`に渡す一意なowner文字列を生成するcallable.
 	 *
 	 * @var callable
@@ -94,6 +104,7 @@ class WPCV_Diff_Dispatcher {
 	 * @param WPCV_Target_Run_Repository $target_run_repository  `wpcv_target_runs`の永続化層.
 	 * @param WPCV_Finding_Repository    $finding_repository      `wpcv_findings`の永続化層.
 	 * @param WPCV_File_State_Repository $file_state_repository   `wpcv_file_states`の永続化層.
+	 * @param WPCV_Alert_Sender          $alert_sender           アラート送信本体(v0.5後半 §Step14c).
 	 * @param callable|null              $lease_owner_factory     省略時は `uniqid( 'wpcv_diff_', true )`.
 	 */
 	public function __construct(
@@ -101,12 +112,14 @@ class WPCV_Diff_Dispatcher {
 		WPCV_Target_Run_Repository $target_run_repository,
 		WPCV_Finding_Repository $finding_repository,
 		WPCV_File_State_Repository $file_state_repository,
+		WPCV_Alert_Sender $alert_sender,
 		?callable $lease_owner_factory = null
 	) {
 		$this->run_repository        = $run_repository;
 		$this->target_run_repository = $target_run_repository;
 		$this->finding_repository    = $finding_repository;
 		$this->file_state_repository = $file_state_repository;
+		$this->alert_sender          = $alert_sender;
 
 		$this->lease_owner_factory = $lease_owner_factory ?? static function () {
 			return uniqid( 'wpcv_diff_', true );
@@ -116,10 +129,17 @@ class WPCV_Diff_Dispatcher {
 	/**
 	 * 1回分の差分処理dispatchを行う(クラス docblock参照).
 	 *
+	 * 6. `claim_diff()`が`alerting`をclaimした場合(手順5で全target完了済み)は、
+	 * `WPCV_Alert_Sender::send_for_run()`を呼んでから`finalize_diff_alerting()`で
+	 * `done`へ進める(v0.5後半 §Step14c).送信中に例外が起きてもここでは捕捉
+	 * しない(クラスdocblock「個別target・batchの処理中に例外が起きた場合は
+	 * ここで捕捉しない」と同じ方針. Action Schedulerが吸収し、lease切れ後に
+	 * 別ownerが再claimして送り直す=D10「少なくとも1回」).
+	 *
 	 * @param int $run_id 対象の run の id.
 	 * @return array{action: string} 少なくとも `action` キーを持つ結果
-	 *         (`diff_failed`|`diff_not_claimable`|`diff_claimed`|`diff_finalized`。
-	 *         テスト・観測用).
+	 *         (`diff_failed`|`diff_not_claimable`|`diff_claimed`|`diff_finalized`|
+	 *         `diff_alerted`。テスト・観測用).
 	 */
 	public function dispatch_diff( $run_id ) {
 		$run_id = (int) $run_id;
@@ -134,7 +154,15 @@ class WPCV_Diff_Dispatcher {
 			return array( 'action' => 'diff_not_claimable' );
 		}
 
-		$run    = $claim['run'];
+		$run = $claim['run'];
+
+		if ( WPCV_Diff_Status::ALERTING === ( $run['diff_status'] ?? null ) ) {
+			$this->alert_sender->send_for_run( $run_id );
+			$this->run_repository->finalize_diff_alerting( $run_id, $owner );
+
+			return array( 'action' => 'diff_alerted' );
+		}
+
 		$cursor = self::decode_cursor( $run['diff_cursor'] ?? null );
 
 		if ( null !== $cursor ) {

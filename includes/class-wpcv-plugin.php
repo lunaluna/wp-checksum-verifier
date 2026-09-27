@@ -265,7 +265,8 @@ class WPCV_Plugin {
 				self::run_repository(),
 				self::target_run_repository(),
 				self::finding_repository(),
-				self::file_state_repository()
+				self::file_state_repository(),
+				self::alert_sender()
 			);
 		}
 
