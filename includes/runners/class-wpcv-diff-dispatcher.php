@@ -157,7 +157,7 @@ class WPCV_Diff_Dispatcher {
 		$run = $claim['run'];
 
 		if ( WPCV_Diff_Status::ALERTING === ( $run['diff_status'] ?? null ) ) {
-			$this->alert_sender->send_for_run( $run_id );
+			$this->alert_sender->send_for_run( $run_id, $owner );
 			$this->run_repository->finalize_diff_alerting( $run_id, $owner );
 
 			return array( 'action' => 'diff_alerted' );

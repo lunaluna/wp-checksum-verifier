@@ -96,11 +96,16 @@ class WPCV_Alert_Sender {
 	/**
 	 * 指定runのアラートを判定・送信する(§2.4・§2.5・§4.2・§4.3).
 	 *
-	 * @param int $run_id 対象のrunのid.
+	 * `$owner`は結果の記録(`WPCV_Run_Repository::record_alert_result()`)の
+	 * fencingに使う.lease切れ後に別ownerが再claimしていた場合、このプロセスの
+	 * 結果は記録されない(送信自体は行われうる.D10「少なくとも1回」).
+	 *
+	 * @param int    $run_id 対象のrunのid.
+	 * @param string $owner  `claim_diff()`が`alerting`のclaimで割り当てたowner.
 	 * @return array{action: string} `action`は`run_not_found`/`not_needed`/
 	 *                                `no_recipient`/`sent`/`failed`のいずれか.
 	 */
-	public function send_for_run( $run_id ) {
+	public function send_for_run( $run_id, $owner ) {
 		$run_id = (int) $run_id;
 		$run    = $this->run_repository->find_by_id( $run_id );
 
@@ -115,7 +120,7 @@ class WPCV_Alert_Sender {
 		$resolved_count = (int) ( $run['findings_resolved'] ?? 0 );
 
 		if ( ! WPCV_Generation_Differ::should_send_alert( $candidates['notify_count'], $resolved_count, false ) ) {
-			$this->run_repository->record_alert_result( $run_id, 'not_needed', null, null, false );
+			$this->run_repository->record_alert_result( $run_id, $owner, 'not_needed', null, null, false );
 
 			return array( 'action' => 'not_needed' );
 		}
@@ -125,7 +130,7 @@ class WPCV_Alert_Sender {
 		if ( empty( $alert_to ) ) {
 			// 宛先未設定のあいだはメール・追加チャネルのどちらも実行しない
 			// (§4.3「no_recipientのときは実行しない」. U1).
-			$this->run_repository->record_alert_result( $run_id, 'no_recipient', null, null, true );
+			$this->run_repository->record_alert_result( $run_id, $owner, 'no_recipient', null, null, true );
 
 			return array( 'action' => 'no_recipient' );
 		}
@@ -167,12 +172,12 @@ class WPCV_Alert_Sender {
 		if ( $sent ) {
 			// notified_atを書くのはalert_status=sentのときだけ(§2.4).
 			$this->finding_repository->mark_notified_by_ids( $candidates['notify_ids'], $now );
-			$this->run_repository->record_alert_result( $run_id, 'sent', null, $channel_failures );
+			$this->run_repository->record_alert_result( $run_id, $owner, 'sent', null, $channel_failures );
 
 			return array( 'action' => 'sent' );
 		}
 
-		$this->run_repository->record_alert_result( $run_id, 'failed', $mail_error, $channel_failures );
+		$this->run_repository->record_alert_result( $run_id, $owner, 'failed', $mail_error, $channel_failures );
 
 		return array( 'action' => 'failed' );
 	}

@@ -1398,6 +1398,68 @@ class RunRepositoryTest extends TestCase {
 	}
 
 	/**
+	 * `record_alert_result()`は、`alerting`をclaim中の正しいownerからの書き込み
+	 * だけを反映することを確認する(コードレビュー指摘3で追加したfencing).
+	 *
+	 * @return void
+	 */
+	public function test_record_alert_result_writes_only_for_current_owner() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $repository->reserve_run()['run_id'];
+		$repository->mark_planning_running( $run_id );
+		$repository->finish_run( $run_id, $this->make_summary() );
+		$repository->claim_diff( $run_id, 'owner-a' );
+		$repository->finalize_diff_chunk( $run_id, 'owner-a', null, true, array( 'new' => 0, 'resolved' => 0, 'continuing' => 0 ) );
+		$repository->claim_diff( $run_id, 'owner-b' );
+
+		$this->assertFalse( $repository->record_alert_result( $run_id, 'owner-stale', 'failed', 'boom' ) );
+		$this->assertNull( $wpdb->rows['wp_wpcv_runs'][ $run_id ]['alert_status'] ?? null, '別ownerの結果は記録されない' );
+
+		$this->assertTrue( $repository->record_alert_result( $run_id, 'owner-b', 'sent' ) );
+		$this->assertSame( 'sent', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['alert_status'] );
+		$this->assertSame( '2026-09-08 12:00:00', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['alert_attempted_at'] );
+	}
+
+	/**
+	 * レビューで指摘された順序の再現: Aの送信中にlease切れ → Bが再claimして
+	 * `sent`を記録し`done`へ進める → 遅れてAが`failed`を書こうとする.
+	 * Aの書き込みは弾かれ、`alert_status`は`sent`のまま残ることを確認する
+	 * (修正前は`failed`で上書きされ、管理画面に誤った失敗通知が出ていた).
+	 *
+	 * @return void
+	 */
+	public function test_record_alert_result_stale_owner_cannot_overwrite_after_done() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $repository->reserve_run()['run_id'];
+		$repository->mark_planning_running( $run_id );
+		$repository->finish_run( $run_id, $this->make_summary() );
+		$repository->claim_diff( $run_id, 'owner-x' );
+		$repository->finalize_diff_chunk( $run_id, 'owner-x', null, true, array( 'new' => 0, 'resolved' => 0, 'continuing' => 0 ) );
+
+		// Aがclaimした後、lease切れの状態を作る(Aはまだ送信中という想定).
+		$this->assertTrue( $repository->claim_diff( $run_id, 'owner-a' )['claimed'] );
+		$wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_lease_expires_at'] = '2026-09-08 11:00:00';
+
+		// Bが再claimして送信成功・doneへ.
+		$this->assertTrue( $repository->claim_diff( $run_id, 'owner-b' )['claimed'] );
+		$this->assertTrue( $repository->record_alert_result( $run_id, 'owner-b', 'sent' ) );
+		$this->assertTrue( $repository->finalize_diff_alerting( $run_id, 'owner-b' ) );
+
+		// 遅れてAが失敗を記録しようとする.
+		$this->assertFalse( $repository->record_alert_result( $run_id, 'owner-a', 'failed', 'timeout' ) );
+		$this->assertFalse( $repository->finalize_diff_alerting( $run_id, 'owner-a' ) );
+
+		$row = $wpdb->rows['wp_wpcv_runs'][ $run_id ];
+		$this->assertSame( 'done', $row['diff_status'] );
+		$this->assertSame( 'sent', $row['alert_status'] );
+		$this->assertNull( $row['alert_error'] );
+	}
+
+	/**
 	 * `alerting`をclaim中(lease有効)は、`processing`と同じく他のownerが
 	 * claimしようとしても弾かれ、`diff_status`が`alerting`のまま・`diff_owner`も
 	 * 上書きされないことを確認する(v0.5後半 §Step14c. `claim_diff()`の

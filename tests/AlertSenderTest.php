@@ -12,6 +12,7 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.p
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-finding-key.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-generation-differ.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-alert-composer.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
@@ -38,6 +39,14 @@ class AlertSenderTest extends TestCase {
 	 * @var string
 	 */
 	const NOW = '2026-01-15 00:00:00';
+
+	/**
+	 * このテストでrunを`alerting`としてclaimしているowner
+	 * (`record_alert_result()`のfencingに使う).
+	 *
+	 * @var string
+	 */
+	const OWNER = 'owner-test';
 
 	/**
 	 * 各テストの前に前回の残骸を掃除する.
@@ -80,6 +89,9 @@ class AlertSenderTest extends TestCase {
 				'findings_new'           => 0,
 				'findings_resolved'      => 0,
 				'findings_continuing'    => 0,
+				// `record_alert_result()`がfencingに使う.`alerting`をclaim済みの状態を模す.
+				'diff_status'            => 'alerting',
+				'diff_owner'             => self::OWNER,
 				'alert_status'           => null,
 				'alert_attempted_at'     => null,
 				'alert_error'            => null,
@@ -158,7 +170,7 @@ class AlertSenderTest extends TestCase {
 		$wpdb = new WPCV_Test_Fake_WPDB();
 		$env  = $this->make_sender_environment( $wpdb );
 
-		$result = $env['sender']->send_for_run( 999 );
+		$result = $env['sender']->send_for_run( 999, self::OWNER );
 
 		$this->assertSame( array( 'action' => 'run_not_found' ), $result );
 		$this->assertSame( array(), $wpdb->rows );
@@ -182,7 +194,7 @@ class AlertSenderTest extends TestCase {
 
 		WPCV_Settings::update_alert_to( 'ops@example.com' );
 
-		$result = $env['sender']->send_for_run( 1 );
+		$result = $env['sender']->send_for_run( 1, self::OWNER );
 
 		$this->assertSame( array( 'action' => 'not_needed' ), $result );
 		$this->assertSame( 'not_needed', $wpdb->rows['wp_wpcv_runs'][1]['alert_status'] );
@@ -211,7 +223,7 @@ class AlertSenderTest extends TestCase {
 
 		WPCV_Settings::update_alert_to( 'ops@example.com' );
 
-		$result = $env['sender']->send_for_run( 1 );
+		$result = $env['sender']->send_for_run( 1, self::OWNER );
 
 		$this->assertSame( array( 'action' => 'not_needed' ), $result );
 	}
@@ -241,7 +253,7 @@ class AlertSenderTest extends TestCase {
 			return $channels;
 		};
 
-		$result = $env['sender']->send_for_run( 1 );
+		$result = $env['sender']->send_for_run( 1, self::OWNER );
 
 		$this->assertSame( array( 'action' => 'no_recipient' ), $result );
 		$this->assertSame( 'no_recipient', $wpdb->rows['wp_wpcv_runs'][1]['alert_status'] );
@@ -345,7 +357,7 @@ class AlertSenderTest extends TestCase {
 		$env = $this->make_sender_environment( $wpdb );
 		WPCV_Settings::update_alert_to( 'ops@example.com' );
 
-		$result = $env['sender']->send_for_run( 1 );
+		$result = $env['sender']->send_for_run( 1, self::OWNER );
 
 		$this->assertSame( array( 'action' => 'sent' ), $result );
 
@@ -386,7 +398,7 @@ class AlertSenderTest extends TestCase {
 		WPCV_Settings::update_alert_to( 'ops@example.com' );
 		$GLOBALS['_wpcv_test_wp_mail_return'] = false;
 
-		$result = $env['sender']->send_for_run( 1 );
+		$result = $env['sender']->send_for_run( 1, self::OWNER );
 
 		$this->assertSame( array( 'action' => 'failed' ), $result );
 		$this->assertSame( 'failed', $wpdb->rows['wp_wpcv_runs'][1]['alert_status'] );
@@ -417,7 +429,7 @@ class AlertSenderTest extends TestCase {
 		$GLOBALS['_wpcv_test_wp_mail_return']         = true;
 		$GLOBALS['_wpcv_test_wp_mail_trigger_failed'] = new WP_Error( 'wp_mail_failed', 'SMTP connect() failed', array( 'phpmailer_exception_code' => 2 ) );
 
-		$result = $env['sender']->send_for_run( 1 );
+		$result = $env['sender']->send_for_run( 1, self::OWNER );
 
 		$this->assertSame( array( 'action' => 'failed' ), $result );
 		$this->assertSame( 'SMTP connect() failed', $wpdb->rows['wp_wpcv_runs'][1]['alert_error'] );
@@ -473,7 +485,7 @@ class AlertSenderTest extends TestCase {
 			);
 		};
 
-		$result = $env['sender']->send_for_run( 1 );
+		$result = $env['sender']->send_for_run( 1, self::OWNER );
 
 		$this->assertSame( array( 'action' => 'sent' ), $result );
 		$this->assertSame( 'bad, boom', $wpdb->rows['wp_wpcv_runs'][1]['alert_channel_failures'] );
@@ -521,7 +533,7 @@ class AlertSenderTest extends TestCase {
 			);
 		};
 
-		$result = $env['sender']->send_for_run( 1 );
+		$result = $env['sender']->send_for_run( 1, self::OWNER );
 
 		$this->assertSame( array( 'action' => 'failed' ), $result );
 		$this->assertTrue( $channel_invoked );
@@ -552,7 +564,7 @@ class AlertSenderTest extends TestCase {
 		$env = $this->make_sender_environment( $wpdb );
 		WPCV_Settings::update_alert_to( 'ops@example.com' );
 
-		$result = $env['sender']->send_for_run( 1 );
+		$result = $env['sender']->send_for_run( 1, self::OWNER );
 
 		$this->assertSame( array( 'action' => 'sent' ), $result );
 
@@ -596,13 +608,13 @@ class AlertSenderTest extends TestCase {
 		);
 		$env = $this->make_sender_environment( $wpdb );
 
-		$first = $env['sender']->send_for_run( 1 );
+		$first = $env['sender']->send_for_run( 1, self::OWNER );
 		$this->assertSame( array( 'action' => 'no_recipient' ), $first );
 		$this->assertSame( 'no_recipient', $wpdb->rows['wp_wpcv_runs'][1]['alert_status'] );
 
 		WPCV_Settings::update_alert_to( 'ops@example.com' );
 
-		$second = $env['sender']->send_for_run( 2 );
+		$second = $env['sender']->send_for_run( 2, self::OWNER );
 		$this->assertSame( array( 'action' => 'sent' ), $second );
 		$this->assertSame( 'sent', $wpdb->rows['wp_wpcv_runs'][2]['alert_status'] );
 	}

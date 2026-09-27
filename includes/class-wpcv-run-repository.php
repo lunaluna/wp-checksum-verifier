@@ -842,15 +842,21 @@ class WPCV_Run_Repository {
 	/**
 	 * アラート送信(v0.5後半 §Step14. `WPCV_Alert_Sender`)の結果をrun行に記録する.
 	 *
-	 * Step14cでの再検討の結論: **あえてfencingを持たせない.** `alert_status`等は
-	 * 「直近の試行結果」を記録するものであり、D10(通知は少なくとも1回.正確に
-	 * 1回は保証しない)により、lease切れ後に別ownerが再claimして送り直した場合、
-	 * 後から書かれた結果が正でよい(古いプロセスの結果を弾く必要はない).
-	 * runを`done`へ進める`finalize_diff_alerting()`のほうにfencingを掛けてあり、
-	 * そちらで「doneへの遷移は正しいownerの1回だけ」が保証される(このメソッドが
-	 * 二重に呼ばれても実害は無い).
+	 * `finalize_diff_alerting()`と同じく、`diff_status = alerting`と
+	 * `diff_owner = $owner`をWHEREに含めてfencingする(コードレビュー指摘で修正).
+	 * Step14cでは「後から書かれた結果が正でよい」としてfencingを持たせていなかったが、
+	 * 次の順序で誤った結果が残ることが分かった:
+	 *
+	 * 1. Aがメール送信中にlease切れ
+	 * 2. Bが再claimして送信に成功し、`sent`を記録して`done`へ進める
+	 * 3. 遅れてAが失敗し、`failed`で上書きする(`done`への遷移はfencingで弾かれるが、
+	 *    `alert_status`は`failed`のまま残る)
+	 *
+	 * 管理画面には実際には成功した送信の失敗通知が出てしまう.fencingを掛けると、
+	 * 3のAの書き込みは(`diff_owner`がBのもの、または`done`で状態が違うため)0件になる.
 	 *
 	 * @param int         $run_id                 対象の run の id.
+	 * @param string      $owner                  `claim_diff()`が`alerting`のclaimで割り当てた owner.
 	 * @param string      $alert_status           `no_recipient`/`sent`/`failed`/`not_needed`
 	 *                                            のいずれか(§2.5).
 	 * @param string|null $alert_error            `WP_Error::get_error_message()`のみ
@@ -861,10 +867,10 @@ class WPCV_Run_Repository {
 	 * @param bool        $mark_attempted         `true`なら`alert_attempted_at`も書く
 	 *                                            (`not_needed`のときは呼び出し元が`false`を渡す
 	 *                                            ―― 送信を試みていないため).
-	 * @return bool `$wpdb->update()`の戻り値(0件一致でも`false`にはならない.
-	 *              呼び出し元は対象runが存在する前提で呼ぶ).
+	 * @return bool 1件以上更新できたら true(false はfencing失敗 ―― 既に別ownerが
+	 *              再claimしたか、`done`へ進んでいる.呼び出し元は諦めてよい).
 	 */
-	public function record_alert_result( $run_id, $alert_status, $alert_error = null, $alert_channel_failures = null, $mark_attempted = true ) {
+	public function record_alert_result( $run_id, $owner, $alert_status, $alert_error = null, $alert_channel_failures = null, $mark_attempted = true ) {
 		$table = $this->wpdb->base_prefix . 'wpcv_runs';
 
 		$data   = array( 'alert_status' => (string) $alert_status );
@@ -881,7 +887,19 @@ class WPCV_Run_Repository {
 		$data['alert_channel_failures'] = null === $alert_channel_failures ? null : substr( (string) $alert_channel_failures, 0, 500 );
 		$format[]                       = '%s';
 
-		return false !== $this->wpdb->update( $table, $data, array( 'id' => (int) $run_id ), $format, array( '%d' ) );
+		$updated = $this->wpdb->update(
+			$table,
+			$data,
+			array(
+				'id'          => (int) $run_id,
+				'diff_status' => WPCV_Diff_Status::ALERTING,
+				'diff_owner'  => (string) $owner,
+			),
+			$format,
+			array( '%d', '%s', '%s' )
+		);
+
+		return $updated > 0;
 	}
 
 	/**
@@ -891,8 +909,7 @@ class WPCV_Run_Repository {
 	 * `diff_owner` を条件に含める(§3.1直下の注記「書き込みはすべて`diff_owner`を
 	 * WHEREに含める」).lease切れ後に別ownerが再claimして送り直した場合、遅れて
 	 * 戻った古いプロセスがこの呼び出しで誤って`done`にしてしまわないようにする
-	 * ため(`record_alert_result()`とは異なり、こちらは状態機械の終端遷移その
-	 * ものであり、正しいownerの1回だけに限定する必要がある).
+	 * ため(`record_alert_result()`も同じ条件でfencingする.コードレビュー指摘3).
 	 *
 	 * @param int    $run_id 対象の run の id.
 	 * @param string $owner  `claim_diff()` がこの呼び出しに割り当てた owner.
