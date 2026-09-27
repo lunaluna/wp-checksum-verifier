@@ -578,6 +578,17 @@ class WPCV_Run_Repository {
 	 * (`finalize_diff_chunk()` 等)は、あらためて `diff_owner = $owner` も
 	 * WHEREに含めてfencingする(この時点では非NULLの具体的な値のため安全).
 	 *
+	 * Lease切れの経路(`failed`化・`alerting`の再claim・`processing`の`pending`への
+	 * 差し戻し)は、`diff_status`に加えて読み取り時点の`diff_lease_expires_at`も
+	 * WHEREに含める(コードレビュー指摘で修正).`diff_status`だけでは、
+	 * `alerting`→`alerting`のように状態が変わらない遷移や、差し戻し後にすぐ
+	 * 再claimされて`processing`に戻った行に、同じ行を読んだ別workerのUPDATEも
+	 * 一致してしまい、2つのworkerが両方とも`claimed: true`を受け取る(二重送信・
+	 * 二重処理になる).lease切れと判定された行の`diff_lease_expires_at`は必ず
+	 * NULL以外の値(`is_past()`は空文字列を「期限切れ」と判定しない)のため、
+	 * `$wpdb->update()`のWHEREで安全に等価比較できる.claimに成功した側は
+	 * leaseを新しい値(未来の時刻)に書き換えるので、遅れた側のUPDATEは0件になる.
+	 *
 	 * @param int    $run_id        対象の run の id.
 	 * @param string $owner         この呼び出しを識別する一意な文字列
 	 *                              (`WPCV_Diff_Dispatcher` が呼び出しごとに生成する).
@@ -628,6 +639,10 @@ class WPCV_Run_Repository {
 		// `insert_run_row()` が明示的に書かない値でも安全に読めるよう `??` で補う.
 		$next_attempt_count = (int) ( $run['diff_attempt_count'] ?? 0 ) + 1;
 
+		// 読み取り時点のlease値. 以降のUPDATEのWHEREに含め、同じ行を読んだ
+		// 別workerとの競合を防ぐ(このメソッドのdocblock参照).
+		$expected_lease = (string) $run['diff_lease_expires_at'];
+
 		if ( $next_attempt_count > (int) $max_attempts ) {
 			$updated = $this->wpdb->update(
 				$table,
@@ -638,11 +653,12 @@ class WPCV_Run_Repository {
 					'diff_attempt_count'    => $next_attempt_count,
 				),
 				array(
-					'id'          => (int) $run_id,
-					'diff_status' => $current_status,
+					'id'                    => (int) $run_id,
+					'diff_status'           => $current_status,
+					'diff_lease_expires_at' => $expected_lease,
 				),
 				array( '%s', '%s', '%s', '%d' ),
-				array( '%d', '%s' )
+				array( '%d', '%s', '%s' )
 			);
 
 			return array(
@@ -660,7 +676,7 @@ class WPCV_Run_Repository {
 			// `processing`のlease切れと同じ扱いで消費する ―― 一度もclaimされて
 			// いない初回〔`finalize_diff_chunk()`がlease切れ相当の値を書いた直後〕も
 			// この経路に乗るため1回分だけ余分に消費するが、実害は小さいと判断した).
-			return $this->cas_claim_diff( $table, $run_id, WPCV_Diff_Status::ALERTING, WPCV_Diff_Status::ALERTING, $owner, $lease_seconds, $next_attempt_count );
+			return $this->cas_claim_diff( $table, $run_id, WPCV_Diff_Status::ALERTING, WPCV_Diff_Status::ALERTING, $owner, $lease_seconds, $next_attempt_count, $expected_lease );
 		}
 
 		// Lease切れ・試行上限内(processing): いったん pending へ戻してから、
@@ -674,11 +690,12 @@ class WPCV_Run_Repository {
 				'diff_attempt_count'    => $next_attempt_count,
 			),
 			array(
-				'id'          => (int) $run_id,
-				'diff_status' => $current_status,
+				'id'                    => (int) $run_id,
+				'diff_status'           => $current_status,
+				'diff_lease_expires_at' => $expected_lease,
 			),
 			array( '%s', '%s', '%s', '%d' ),
-			array( '%d', '%s' )
+			array( '%d', '%s', '%s' )
 		);
 
 		if ( $reverted <= 0 ) {
@@ -699,17 +716,22 @@ class WPCV_Run_Repository {
 	 * lease切れ再claim〔`pending`経由〕・`alerting`のlease切れ再claim〔状態を
 	 * 保ったまま〕の3通りで共有する).
 	 *
-	 * @param string   $table         `wpcv_runs` テーブル名.
-	 * @param int      $run_id        対象の run の id.
-	 * @param string   $expected_from CASの `WHERE diff_status = ?` に使う、読み取り時点の値.
-	 * @param string   $to_status     遷移先の `diff_status`.
-	 * @param string   $owner         claim した worker を識別する一意な文字列.
-	 * @param int      $lease_seconds lease有効期間(秒).
-	 * @param int|null $attempt_count 書き込む`diff_attempt_count`(省略時は変更しない.
-	 *                                `alerting`のlease切れ再claim時にのみ渡す).
+	 * @param string      $table          `wpcv_runs` テーブル名.
+	 * @param int         $run_id         対象の run の id.
+	 * @param string      $expected_from  CASの `WHERE diff_status = ?` に使う、読み取り時点の値.
+	 * @param string      $to_status      遷移先の `diff_status`.
+	 * @param string      $owner          claim した worker を識別する一意な文字列.
+	 * @param int         $lease_seconds  lease有効期間(秒).
+	 * @param int|null    $attempt_count  書き込む`diff_attempt_count`(省略時は変更しない.
+	 *                                    `alerting`のlease切れ再claim時にのみ渡す).
+	 * @param string|null $expected_lease CASのWHEREに加える、読み取り時点の
+	 *                                    `diff_lease_expires_at`(省略時は条件に加えない.
+	 *                                    `alerting`→`alerting`のように状態が変わらない
+	 *                                    遷移で二重claimを防ぐために渡す.`claim_diff()`の
+	 *                                    docblock参照).
 	 * @return array{claimed: bool, run: array|null, failed: bool}
 	 */
-	private function cas_claim_diff( $table, $run_id, $expected_from, $to_status, $owner, $lease_seconds, $attempt_count = null ) {
+	private function cas_claim_diff( $table, $run_id, $expected_from, $to_status, $owner, $lease_seconds, $attempt_count = null, $expected_lease = null ) {
 		$lease_expires_at = gmdate( 'Y-m-d H:i:s', strtotime( call_user_func( $this->now ) ) + (int) $lease_seconds );
 
 		$data   = array(
@@ -724,16 +746,18 @@ class WPCV_Run_Repository {
 			$format[]                   = '%d';
 		}
 
-		$updated = $this->wpdb->update(
-			$table,
-			$data,
-			array(
-				'id'          => (int) $run_id,
-				'diff_status' => $expected_from,
-			),
-			$format,
-			array( '%d', '%s' )
+		$where        = array(
+			'id'          => (int) $run_id,
+			'diff_status' => $expected_from,
 		);
+		$where_format = array( '%d', '%s' );
+
+		if ( null !== $expected_lease ) {
+			$where['diff_lease_expires_at'] = $expected_lease;
+			$where_format[]                 = '%s';
+		}
+
+		$updated = $this->wpdb->update( $table, $data, $where, $format, $where_format );
 
 		if ( $updated <= 0 ) {
 			return array(

@@ -1456,6 +1456,81 @@ class RunRepositoryTest extends TestCase {
 		$this->assertSame( 1, (int) $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_attempt_count'] );
 	}
 
+	/**
+	 * Lease切れの`alerting`を2つのworkerが同時に読んだとき、先にclaimした側だけが
+	 * `claimed: true`になり、遅れた側は弾かれることを確認する(コードレビュー指摘で
+	 * 修正. 修正前は`alerting`→`alerting`のCASが`diff_status`しか見ておらず、
+	 * 両方が`claimed: true`を受け取ってメールを二重送信できた).
+	 *
+	 * Worker Bが行を読んだ後・UPDATEする前に、Worker Aのclaimを割り込ませて
+	 * 競合を再現する(`WPCV_Test_Fake_WPDB_With_Interleave`参照).
+	 *
+	 * @return void
+	 */
+	public function test_claim_diff_prevents_double_claim_of_expired_alerting() {
+		$wpdb       = new WPCV_Test_Fake_WPDB_With_Interleave();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $repository->reserve_run()['run_id'];
+		$repository->mark_planning_running( $run_id );
+		$repository->finish_run( $run_id, $this->make_summary() );
+		$repository->claim_diff( $run_id, 'owner-x' );
+		$repository->finalize_diff_chunk( $run_id, 'owner-x', null, true, array( 'new' => 0, 'resolved' => 0, 'continuing' => 0 ) );
+
+		$claim_a            = null;
+		$wpdb->before_update = function () use ( $repository, $run_id, &$claim_a ) {
+			$claim_a = $repository->claim_diff( $run_id, 'owner-a', 120, 5 );
+		};
+
+		$claim_b = $repository->claim_diff( $run_id, 'owner-b', 120, 5 );
+
+		$this->assertTrue( $claim_a['claimed'], '先に割り込んだAはclaimできる' );
+		$this->assertFalse( $claim_b['claimed'], '同じ行を先に読んでいたBは弾かれる' );
+		$this->assertSame( 'alerting', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_status'] );
+		$this->assertSame( 'owner-a', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_owner'] );
+	}
+
+	/**
+	 * Lease切れの`processing`を2つのworkerが同時に読んだとき、先に差し戻し+
+	 * 再claimした側の`processing`を、遅れた側の差し戻しUPDATEが上書きしない
+	 * ことを確認する(コードレビュー指摘2に関連して見つけた同種の競合. 修正前は
+	 * 差し戻しのWHEREが`diff_status = processing`だけで、Aが再claimした直後の
+	 * 行にBのUPDATEが一致し、AとBが同時に同じrunを処理できた).
+	 *
+	 * @return void
+	 */
+	public function test_claim_diff_prevents_double_claim_of_expired_processing() {
+		$wpdb       = new WPCV_Test_Fake_WPDB_With_Interleave();
+		$repository = $this->make_repository( $wpdb );
+
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'status'                => 'success',
+				'run_trigger'           => 'cron',
+				'runner'                => 'sync',
+				'diff_status'           => 'processing',
+				'diff_owner'            => 'owner-dead',
+				'diff_lease_expires_at' => '2026-09-08 11:00:00',
+				'diff_attempt_count'    => 0,
+			)
+		);
+		$run_id = 1;
+
+		$claim_a            = null;
+		$wpdb->before_update = function () use ( $repository, $run_id, &$claim_a ) {
+			$claim_a = $repository->claim_diff( $run_id, 'owner-a', 120, 5 );
+		};
+
+		$claim_b = $repository->claim_diff( $run_id, 'owner-b', 120, 5 );
+
+		$this->assertTrue( $claim_a['claimed'], '先に割り込んだAはclaimできる' );
+		$this->assertFalse( $claim_b['claimed'], '同じ行を先に読んでいたBは弾かれる' );
+		$this->assertSame( 'processing', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_status'] );
+		$this->assertSame( 'owner-a', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_owner'], 'Aのclaimが上書きされてはならない' );
+		$this->assertSame( 1, (int) $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_attempt_count'], '試行回数はAの1回分だけ消費される' );
+	}
+
 	// ------------------------------------------------------------------
 	// v0.5後半 §Step12: `find_stale_diff_run()`(取りこぼしの回収)
 	// ------------------------------------------------------------------
@@ -1513,5 +1588,43 @@ class RunRepositoryTest extends TestCase {
 			'targets_failed'       => 0,
 			'findings_total'       => 0,
 		);
+	}
+}
+
+/**
+ * 最初の`update()`の直前に、1回だけコールバックを実行するフェイク(`claim_diff()`の
+ * 競合テスト専用).
+ *
+ * 「Worker Bが行を読んだ後・UPDATEする前に、Worker Aが同じ行を更新した」という
+ * 並行実行の順序を、1スレッドのテストで再現するために使う.コールバックは
+ * 実行前に解除するため、コールバック内のupdate()では再度呼ばれない.
+ */
+class WPCV_Test_Fake_WPDB_With_Interleave extends WPCV_Test_Fake_WPDB {
+
+	/**
+	 * 次の`update()`の直前に1回だけ呼ぶcallable(呼んだら`null`に戻す).
+	 *
+	 * @var callable|null
+	 */
+	public $before_update = null;
+
+	/**
+	 * `before_update`があれば先に呼んでから、通常の`update()`を行う.
+	 *
+	 * @param string     $table        テーブル名.
+	 * @param array      $data         更新するカラム => 値.
+	 * @param array      $where        カラム => 値.
+	 * @param array|null $format       無視する.
+	 * @param array|null $where_format 無視する.
+	 * @return int|false
+	 */
+	public function update( $table, $data, $where, $format = null, $where_format = null ) {
+		if ( null !== $this->before_update ) {
+			$callback            = $this->before_update;
+			$this->before_update = null;
+			$callback();
+		}
+
+		return parent::update( $table, $data, $where, $format, $where_format );
 	}
 }
