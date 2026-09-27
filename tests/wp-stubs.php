@@ -972,3 +972,89 @@ if ( ! class_exists( 'WP_CLI' ) ) {
 		}
 	}
 }
+
+if ( ! function_exists( 'remove_action' ) ) {
+	/**
+	 * Stub remove_action() — `add_action()`スタブが
+	 * `$GLOBALS['_wpcv_test_added_actions'][$hook]`に積んだ登録から、`$callback`
+	 * (`===`一致. クロージャは同一変数を渡す前提)と`$priority`が一致するものを
+	 * unsetする(v0.5後半 §Step14. `WPCV_Alert_Sender`のwp_mail_failedハンドラ解除用).
+	 *
+	 * @param string   $hook     Hook name.
+	 * @param callable $callback Callback.
+	 * @param int      $priority Priority.
+	 * @return true
+	 */
+	function remove_action( $hook, $callback, $priority = 10 ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		if ( empty( $GLOBALS['_wpcv_test_added_actions'][ $hook ] ) ) {
+			return true;
+		}
+
+		foreach ( $GLOBALS['_wpcv_test_added_actions'][ $hook ] as $index => $registration ) {
+			if ( $registration[0] === $callback && (int) $registration[1] === (int) $priority ) {
+				unset( $GLOBALS['_wpcv_test_added_actions'][ $hook ][ $index ] );
+			}
+		}
+
+		return true;
+	}
+}
+
+if ( ! function_exists( 'wp_mail' ) ) {
+	/**
+	 * Stub wp_mail() — 呼び出しを$GLOBALS['_wpcv_test_wp_mail_calls'][]に記録する.
+	 * `$GLOBALS['_wpcv_test_wp_mail_trigger_failed']`が(nullでなく)設定されていれば、
+	 * 返す前に`do_action( 'wp_mail_failed', ... )`を呼ぶ(実際のwp_mail()が
+	 * PHPMailerの例外時に`wp_mail_failed`を発火する挙動を模す).戻り値は
+	 * `$GLOBALS['_wpcv_test_wp_mail_return']`(既定true. v0.5後半 §Step14).
+	 *
+	 * @param string|string[] $to          宛先.
+	 * @param string          $subject     件名.
+	 * @param string          $message     本文.
+	 * @param string|string[] $headers     ヘッダー.
+	 * @param string|string[] $attachments 添付.
+	 * @return bool
+	 */
+	function wp_mail( $to, $subject, $message, $headers = '', $attachments = array() ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_wp_mail_calls'][] = array(
+			'to'          => $to,
+			'subject'     => $subject,
+			'message'     => $message,
+			'headers'     => $headers,
+			'attachments' => $attachments,
+		);
+
+		if ( array_key_exists( '_wpcv_test_wp_mail_trigger_failed', $GLOBALS ) && null !== $GLOBALS['_wpcv_test_wp_mail_trigger_failed'] ) {
+			do_action( 'wp_mail_failed', $GLOBALS['_wpcv_test_wp_mail_trigger_failed'] );
+		}
+
+		return array_key_exists( '_wpcv_test_wp_mail_return', $GLOBALS ) ? $GLOBALS['_wpcv_test_wp_mail_return'] : true;
+	}
+}
+
+if ( ! function_exists( 'admin_url' ) ) {
+	/**
+	 * Stub admin_url() — 固定の `http://example.com/wp-admin/` + $path を返す
+	 * (v0.5後半 §Step14. 実際のURLの形は問わない).
+	 *
+	 * @param string $path 相対パス.
+	 * @return string
+	 */
+	function admin_url( $path = '' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return 'http://example.com/wp-admin/' . ltrim( $path, '/' );
+	}
+}
+
+if ( ! function_exists( 'network_admin_url' ) ) {
+	/**
+	 * Stub network_admin_url() — 固定の `http://example.com/wp-admin/network/` + $path
+	 * を返す(v0.5後半 §Step14. マルチサイト分岐の確認は`is_multisite()`スタブの
+	 * 切り替えで行う).
+	 *
+	 * @param string $path 相対パス.
+	 * @return string
+	 */
+	function network_admin_url( $path = '' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return 'http://example.com/wp-admin/network/' . ltrim( $path, '/' );
+	}
+}

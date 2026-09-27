@@ -125,6 +125,15 @@ class WPCV_Plugin {
 	private static $sync_dispatcher = null;
 
 	/**
+	 * 組み立て済みの `WPCV_Alert_Sender`(1リクエスト内で使い回す。
+	 * v0.5後半 §Step14で追加. この時点ではまだどこからも呼ばれない ―― 配線は
+	 * Step14cで`alerting`段階から行う).
+	 *
+	 * @var WPCV_Alert_Sender|null
+	 */
+	private static $alert_sender = null;
+
+	/**
 	 * 本番用に配線された `WPCV_Run_Coordinator` を返す.
 	 *
 	 * @return WPCV_Run_Coordinator
@@ -282,6 +291,23 @@ class WPCV_Plugin {
 		}
 
 		return self::$sync_dispatcher;
+	}
+
+	/**
+	 * 本番用に配線された `WPCV_Alert_Sender` を返す(v0.5後半 §Step14).
+	 *
+	 * @return WPCV_Alert_Sender
+	 */
+	public static function alert_sender() {
+		if ( null === self::$alert_sender ) {
+			self::$alert_sender = new WPCV_Alert_Sender(
+				self::run_repository(),
+				self::target_run_repository(),
+				self::finding_repository()
+			);
+		}
+
+		return self::$alert_sender;
 	}
 
 	/**

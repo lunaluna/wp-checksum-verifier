@@ -727,6 +727,259 @@ class WPCV_Finding_Repository {
 	}
 
 	/**
+	 * 指定 run の「通知の候補」(`diff_state` が new/continuing/event の finding)を
+	 * `id` 昇順で K 件バッチ取得する(v0.5後半 §Step14. `WPCV_Alert_Sender`用).
+	 *
+	 * 抑制済みの finding は差分処理で`diff_state`がNULLのまま残るため(§2.2)、
+	 * この条件だけで候補から外れる(§2.4「NULL(抑制)→通知しない」).
+	 *
+	 * `FORCE INDEX (idx_run_id)`は、InnoDB のセカンダリindexが主キー(id)を暗黙に
+	 * 含み`(run_id, id)`の順に読めるため(schema v5 の`idx_target_run_id_seq`と
+	 * 同じ理由. optimizer に任せると`ORDER BY id`を PRIMARY で満たそうとする.
+	 * 1万・10万件での実測は Step14c で行う).
+	 *
+	 * @param int $run_id   対象の run の id.
+	 * @param int $after_id この id より大きい行だけを対象にする(初回は 0).
+	 * @param int $limit    最大取得件数.
+	 * @return array<int, array> `id` 昇順. 件数が `$limit` 未満なら読み切ったことを意味する.
+	 */
+	public function find_notify_candidates_batch( $run_id, $after_id, $limit ) {
+		$table  = $this->wpdb->base_prefix . 'wpcv_findings';
+		$states = array(
+			WPCV_Generation_Differ::DIFF_STATE_NEW,
+			WPCV_Generation_Differ::DIFF_STATE_CONTINUING,
+			WPCV_Generation_Differ::DIFF_STATE_EVENT,
+		);
+		$sql    = "SELECT * FROM {$table} FORCE INDEX (idx_run_id) WHERE run_id = %d AND id > %d AND diff_state IN ( %s, %s, %s ) ORDER BY id ASC LIMIT %d";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via prepare() below.
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, array_merge( array( (int) $run_id, (int) $after_id ), $states, array( (int) $limit ) ) ), ARRAY_A );
+		$rows = is_array( $rows ) ? $rows : array();
+
+		return self::filter_sort_and_limit(
+			$rows,
+			static function ( $row ) use ( $run_id, $after_id, $states ) {
+				return (int) $row['run_id'] === (int) $run_id
+					&& (int) $row['id'] > (int) $after_id
+					&& in_array( $row['diff_state'], $states, true );
+			},
+			(int) $limit
+		);
+	}
+
+	/**
+	 * 指定した `finding_key` ごとに、過去の run での直近の `notified_at` を返す
+	 * (v0.5後半 §Step14・§2.4「同じ finding_key の過去の notified_at」).
+	 *
+	 * `$exclude_run_id`(今回の run)の行は見ない. 送信のあと`notified_at`を
+	 * 書いている途中でプロセスが止まり、やり直したとき(D10)に、今回すでに
+	 * 書いた行を「過去の通知」と誤認して通知対象から外さないようにするため
+	 * (やり直しでも同じ集合を送り直す).
+	 *
+	 * `idx_key_notified(finding_key, notified_at)`を使う. テストダブルは GROUP BY を
+	 * 解釈せず全行を返すため、PHP 側でもキー・NULL・run を絞り直して最大値を取る.
+	 *
+	 * @param string[] $keys           照会する `finding_key`.
+	 * @param int      $exclude_run_id 対象から外す run の id.
+	 * @return array<string, string> `finding_key` => 直近の `notified_at`(一度も通知して
+	 *                               いないキーは含まない).
+	 */
+	public function find_last_notified_at_by_keys( array $keys, $exclude_run_id ) {
+		$keys = array_values( array_unique( array_map( 'strval', $keys ) ) );
+
+		if ( empty( $keys ) ) {
+			return array();
+		}
+
+		$table        = $this->wpdb->base_prefix . 'wpcv_findings';
+		$placeholders = implode( ', ', array_fill( 0, count( $keys ), '%s' ) );
+		$sql          = "SELECT finding_key, MAX( notified_at ) AS notified_at FROM {$table}
+			WHERE finding_key IN ( {$placeholders} ) AND notified_at IS NOT NULL AND run_id <> %d
+			GROUP BY finding_key";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only, placeholder count matches $args) built above; all dynamic values are bound via prepare() below.
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, array_merge( $keys, array( (int) $exclude_run_id ) ) ), ARRAY_A );
+		$rows = is_array( $rows ) ? $rows : array();
+
+		$wanted = array_flip( $keys );
+		$latest = array();
+
+		foreach ( $rows as $row ) {
+			$key = (string) ( $row['finding_key'] ?? '' );
+
+			if ( ! isset( $wanted[ $key ] ) || empty( $row['notified_at'] ) ) {
+				continue;
+			}
+
+			// 本番の GROUP BY 結果には run_id 列が無い(SQL 側で除外済み). テストダブルの
+			// 生の行にだけある.
+			if ( isset( $row['run_id'] ) && (int) $row['run_id'] === (int) $exclude_run_id ) {
+				continue;
+			}
+
+			if ( ! isset( $latest[ $key ] ) || (string) $row['notified_at'] > $latest[ $key ] ) {
+				$latest[ $key ] = (string) $row['notified_at'];
+			}
+		}
+
+		return $latest;
+	}
+
+	/**
+	 * 指定 id 群の finding に `notified_at` を書く(v0.5後半 §Step14).
+	 *
+	 * メールが成功したときだけ呼ぶ(§2.4「notified_at を書くのは alert_status = sent
+	 * のときだけ」). 同じ値を何度書いても結果は変わらない(D10 のやり直しで安全).
+	 *
+	 * @param int[]  $ids         対象の finding の id 一覧(空なら何もしない).
+	 * @param string $notified_at MySQL DATETIME(UTC).
+	 * @return void
+	 *
+	 * @throws RuntimeException `$wpdb->query()` がSQLエラーで `false` を返した場合.
+	 */
+	public function mark_notified_by_ids( array $ids, $notified_at ) {
+		$ids = array_values( array_unique( array_map( 'intval', $ids ) ) );
+
+		if ( empty( $ids ) ) {
+			return;
+		}
+
+		$table        = $this->wpdb->base_prefix . 'wpcv_findings';
+		$placeholders = implode( ', ', array_fill( 0, count( $ids ), '%d' ) );
+		$sql          = "UPDATE {$table} SET notified_at = %s WHERE id IN ( {$placeholders} )";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only, placeholder count matches $args) built above; all dynamic values are bound via prepare() below.
+		$result = $this->wpdb->query( $this->wpdb->prepare( $sql, array_merge( array( (string) $notified_at ), $ids ) ) );
+
+		if ( false === $result ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf( 'WPCV_Finding_Repository::mark_notified_by_ids() の query に失敗しました: %s', (string) $this->wpdb->last_error )
+				)
+			);
+		}
+	}
+
+	/**
+	 * 指定 run の通知対象(`diff_state` が new/continuing/event)を target_id・
+	 * status ごとに数える(v0.5後半 §Step14・§4.1「By target:」・§3.2「SQLの
+	 * GROUP BY で取る」).
+	 *
+	 * @param int $run_id 対象の run の id.
+	 * @return array<int, array{target_id: string, status: string, count: int}>
+	 */
+	public function count_by_target_and_status( $run_id ) {
+		$table  = $this->wpdb->base_prefix . 'wpcv_findings';
+		$states = array(
+			WPCV_Generation_Differ::DIFF_STATE_NEW,
+			WPCV_Generation_Differ::DIFF_STATE_CONTINUING,
+			WPCV_Generation_Differ::DIFF_STATE_EVENT,
+		);
+		$sql    = "SELECT target_id, status, COUNT(*) AS count FROM {$table}
+			WHERE run_id = %d AND diff_state IN ( %s, %s, %s )
+			GROUP BY target_id, status";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via prepare() below.
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, array_merge( array( (int) $run_id ), $states ) ), ARRAY_A );
+		$rows = is_array( $rows ) ? $rows : array();
+
+		// テストダブル(`WPCV_Test_Fake_WPDB::get_results()`)は GROUP BY を解釈せず
+		// テーブル全件(`diff_state`列込みの生の行)を返す。本番の集計結果には
+		// `diff_state`列が無く`count`列がある(逆に生の行には`count`列が無い)ため、
+		// この2つを区別してから集計し直す(`WPCV_Finding_Repository` の他メソッドと
+		// 同じ「SQLで絞り、PHP側でも同じ条件で絞り直す」設計方針).
+		$counted = array();
+
+		foreach ( $rows as $row ) {
+			if ( array_key_exists( 'count', $row ) && ! array_key_exists( 'diff_state', $row ) ) {
+				$target_id = (string) $row['target_id'];
+				$status    = (string) $row['status'];
+				$count     = (int) $row['count'];
+			} else {
+				if ( (int) ( $row['run_id'] ?? 0 ) !== (int) $run_id || ! in_array( $row['diff_state'] ?? null, $states, true ) ) {
+					continue;
+				}
+
+				$target_id = (string) $row['target_id'];
+				$status    = (string) $row['status'];
+				$count     = 1;
+			}
+
+			$key = $target_id . "\0" . $status;
+
+			$counted[ $key ] = array(
+				'target_id' => $target_id,
+				'status'    => $status,
+				'count'     => ( $counted[ $key ]['count'] ?? 0 ) + $count,
+			);
+		}
+
+		return array_values( $counted );
+	}
+
+	/**
+	 * 指定 run で解消した(`end_reason = resolved`)finding を、本文の一覧用に
+	 * target_id → path の順で最大 N 件返す(v0.5後半 §Step14・§4.1「Resolved:」).
+	 *
+	 * @param int $run_id 対象の run の id(`ended_in_run_id` で絞る).
+	 * @param int $limit  最大件数.
+	 * @return array<int, array>
+	 */
+	public function find_resolved_items( $run_id, $limit ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_findings';
+		$sql   = "SELECT * FROM {$table} WHERE ended_in_run_id = %d AND end_reason = %s ORDER BY target_id ASC, path ASC LIMIT %d";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via prepare() below.
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (int) $run_id, WPCV_Generation_Differ::END_REASON_RESOLVED, (int) $limit ), ARRAY_A );
+		$rows = is_array( $rows ) ? $rows : array();
+
+		$rows = array_values(
+			array_filter(
+				$rows,
+				static function ( $row ) use ( $run_id ) {
+					return (int) ( $row['ended_in_run_id'] ?? 0 ) === (int) $run_id
+						&& WPCV_Generation_Differ::END_REASON_RESOLVED === ( $row['end_reason'] ?? null );
+				}
+			)
+		);
+
+		usort(
+			$rows,
+			static function ( $a, $b ) {
+				return array( (string) $a['target_id'], (string) $a['path'] ) <=> array( (string) $b['target_id'], (string) $b['path'] );
+			}
+		);
+
+		return array_slice( $rows, 0, (int) $limit );
+	}
+
+	/**
+	 * 指定 run で「今回のrunに現れなかった(アンインストールされた)」として
+	 * 終わった target の数を返す(v0.5後半 §Step14・§4.1「Removed targets:」).
+	 *
+	 * @param int $run_id 対象の run の id.
+	 * @return int
+	 */
+	public function count_removed_targets( $run_id ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_findings';
+		$sql   = "SELECT DISTINCT target_id, ended_in_run_id, end_reason FROM {$table} WHERE ended_in_run_id = %d AND end_reason = %s";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via prepare() below.
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (int) $run_id, WPCV_Generation_Differ::END_REASON_TARGET_REMOVED ), ARRAY_A );
+		$rows = is_array( $rows ) ? $rows : array();
+
+		$target_ids = array();
+
+		foreach ( $rows as $row ) {
+			if ( (int) ( $row['ended_in_run_id'] ?? 0 ) === (int) $run_id && WPCV_Generation_Differ::END_REASON_TARGET_REMOVED === ( $row['end_reason'] ?? null ) ) {
+				$target_ids[ (string) $row['target_id'] ] = true;
+			}
+		}
+
+		return count( $target_ids );
+	}
+
+	/**
 	 * 1件の finding 行が、Pass 1/Pass 2 の「比較対象として扱ってよい」条件
 	 * (`finding_key` 有り・抑制なし・未終了)を満たすかどうかを判定する
 	 * (`find_baseline_batch()`・`find_matching_keys( $only_comparable = true )` 共通).

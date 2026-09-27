@@ -790,6 +790,48 @@ class WPCV_Run_Repository {
 	}
 
 	/**
+	 * アラート送信(v0.5後半 §Step14. `WPCV_Alert_Sender`)の結果をrun行に記録する.
+	 *
+	 * Fencingは持たない(`finalize_diff_alerting()`と同じ理由. §3.3「alertingは
+	 * この1遷移のみ」に相当する終端記録であり、`WPCV_Alert_Sender::send_for_run()`が
+	 * 1回のdispatch呼び出しの中で完結して呼ぶ設計のため。Step14cで`alerting`の
+	 * claim・leaseを導入する際、fencingが必要かどうかはそちらで再検討する).
+	 *
+	 * @param int         $run_id                 対象の run の id.
+	 * @param string      $alert_status           `no_recipient`/`sent`/`failed`/`not_needed`
+	 *                                            のいずれか(§2.5).
+	 * @param string|null $alert_error            `WP_Error::get_error_message()`のみ
+	 *                                            (§6: `get_error_data()`は保存しない).
+	 *                                            500文字を超える分は切り捨てる.
+	 * @param string|null $alert_channel_failures 失敗した追加チャネルの`name`をカンマ区切りで
+	 *                                            (§4.3). 500文字を超える分は切り捨てる.
+	 * @param bool        $mark_attempted         `true`なら`alert_attempted_at`も書く
+	 *                                            (`not_needed`のときは呼び出し元が`false`を渡す
+	 *                                            ―― 送信を試みていないため).
+	 * @return bool `$wpdb->update()`の戻り値(0件一致でも`false`にはならない.
+	 *              呼び出し元は対象runが存在する前提で呼ぶ).
+	 */
+	public function record_alert_result( $run_id, $alert_status, $alert_error = null, $alert_channel_failures = null, $mark_attempted = true ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+
+		$data   = array( 'alert_status' => (string) $alert_status );
+		$format = array( '%s' );
+
+		if ( $mark_attempted ) {
+			$data['alert_attempted_at'] = call_user_func( $this->now );
+			$format[]                   = '%s';
+		}
+
+		$data['alert_error'] = null === $alert_error ? null : substr( (string) $alert_error, 0, 500 );
+		$format[]            = '%s';
+
+		$data['alert_channel_failures'] = null === $alert_channel_failures ? null : substr( (string) $alert_channel_failures, 0, 500 );
+		$format[]                       = '%s';
+
+		return false !== $this->wpdb->update( $table, $data, array( 'id' => (int) $run_id ), $format, array( '%d' ) );
+	}
+
+	/**
 	 * `alerting` を `done` へ進める(v0.5後半 §Step12時点では実際の送信を行わず
 	 * 即座に `done` にする.§3.3「アラートの段階は何もせず done にする」).
 	 *

@@ -243,6 +243,15 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-chunk-di
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-diff-dispatcher.php';
 
 /**
+ * アラートの送信(v0.5後半 §Step14). `WPCV_Alert_Composer`(本文組み立て)・
+ * `WPCV_Generation_Differ`(通知要否の判定)・`WPCV_Run_Repository`/
+ * `WPCV_Target_Run_Repository`/`WPCV_Finding_Repository`に依存するため、
+ * いずれもそれより後に読み込む必要がある. このStep時点ではまだどこからも
+ * 呼ばれない(配線はStep14cで`alerting`段階から行う).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-alert-sender.php';
+
+/**
  * Run開始時の「列挙(plan)→保存」を失敗時の後始末込みで行う共通処理
  * (v0.4.0 §Step5)。`WPCV_Run_Coordinator`・`WPCV_Runner_Async` の両方が使う.
  */
