@@ -587,4 +587,55 @@ class FindingRepositoryTest extends TestCase {
 			$this->assertSame( '2026-09-27 00:00:00', $row['notified_at'] );
 		}
 	}
+
+	/**
+	 * `query()` の並べ替えで同じ値どうしは id 昇順になり(降順を指定しても同じ)、
+	 * 総件数は絞り込み後・ページ分け前の件数になることを確認する(コードレビュー
+	 * 指摘5で並べ替えを `ORDER BY {列} {方向}, id ASC` のSQLにしたため).
+	 *
+	 * @return void
+	 */
+	public function test_query_orders_ties_by_id_and_counts_filtered_total() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'path' => 'b.php', 'status' => 'modified' ) ) ); // id 1.
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'path' => 'a.php', 'status' => 'modified' ) ) ); // id 2.
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'path' => 'b.php', 'status' => 'modified' ) ) ); // id 3.
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'path' => 'c.php', 'status' => 'added' ) ) );    // id 4(絞り込みで除外).
+
+		$result = $repository->query(
+			array(
+				'run_id'   => 1,
+				'status'   => array( 'modified' ),
+				'sort'     => 'path',
+				'order'    => 'desc',
+				'per_page' => 2,
+			)
+		);
+
+		$this->assertSame( 3, $result['total'], '総件数は絞り込み後・ページ分け前の件数' );
+		$this->assertSame( array( 1, 3 ), array_map( 'intval', array_column( $result['rows'], 'id' ) ), '同じpathどうしは降順指定でもid昇順' );
+	}
+
+	/**
+	 * `query()` が1 run分のfindingを全件読まず、SQLのLIMIT/OFFSETで1ページ分だけを
+	 * 読むことを確認する(コードレビュー指摘5. 以前は1 run分を全件読んでPHPで
+	 * ページ分けしていた).
+	 *
+	 * @return void
+	 */
+	public function test_query_reads_only_one_page_via_limit() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		for ( $i = 1; $i <= 5; $i++ ) {
+			$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'path' => "f{$i}.php" ) ) );
+		}
+
+		$repository->query( array( 'run_id' => 1, 'per_page' => 2, 'page' => 2 ) );
+
+		$this->assertCount( 1, $wpdb->get_results_calls );
+		$this->assertStringContainsString( 'LIMIT 2 OFFSET 2', $wpdb->get_results_calls[0] );
+	}
 }

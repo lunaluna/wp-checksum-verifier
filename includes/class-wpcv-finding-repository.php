@@ -221,12 +221,18 @@ class WPCV_Finding_Repository {
 	 * `WPCV_Rest_Findings_Controller` から使う。クラス docblock「あえて別実装に
 	 * している」参照)。
 	 *
-	 * `run_id` は実SQLの `WHERE` にも含めるが(本番環境での効率のため)、
-	 * それ以外のfilter(dimension/status/severity/suppressed/closed)・sort・
-	 * paginationはPHP側で行う(`WPCV_Target_Run_Repository::claim_next()` 等
-	 * 既存Repository群と同じ理由: テストダブル `WPCV_Test_Fake_WPDB::get_results()`
-	 * がWHERE句を解釈しないため、production/テスト両方で正しく動く設計にするには
-	 * PHP側での確定的なフィルタリングが必要).
+	 * 絞り込み・並べ替え・paginationはすべてSQLで行い、総件数は同じWHEREの
+	 * `COUNT(*)` で取る(コードレビュー指摘5. 以前は1 run分のfindingを全件読んで
+	 * PHPで絞り込んでおり、1 runに10万件あれば1ページ表示するたびに10万件を読んでいた).
+	 *
+	 * - 抑制・クローズの除外は `IS NULL` で判定する.以前のPHPの `empty()` と同じ結果に
+	 *   なることを確認済み(書き込み側はNULLか実際の値しか書かない.test-armfu.localの
+	 *   実データ511件でも空文字・0は0件だった.2026-09-27 確認)
+	 * - 並べ替えは `ORDER BY {列} {方向}, id ASC`(同じ値どうしは id 昇順.以前の
+	 *   安定ソートと同じ).文字列の並びはMySQLの照合順序に従う(以前はPHPの`strcmp`.
+	 *   大文字・小文字が混ざると並びが変わりうることはユーザー承認済み)
+	 * - severity は文字列の辞書順であり、重要度の順位(high > medium > low)には
+	 *   対応しない(以前と同じ.必要になれば `FIELD()` 等で順位を付けること)
 	 *
 	 * @param array $args {
 	 *     絞り込み・sort・pagination条件.
@@ -265,68 +271,55 @@ class WPCV_Finding_Repository {
 			)
 		);
 
-		$table = $this->wpdb->base_prefix . 'wpcv_findings';
-		$sql   = "SELECT * FROM {$table} WHERE run_id = %d";
+		$table  = $this->wpdb->base_prefix . 'wpcv_findings';
+		$where  = array( 'run_id = %d' );
+		$values = array( (int) $args['run_id'] );
 
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built on the line above; the sniff cannot trace it through prepare() on a separate line, but the run_id value is bound via %d below.
-		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (int) $args['run_id'] ), ARRAY_A );
-		$rows = is_array( $rows ) ? $rows : array();
+		// dimension/status/severity は値の一覧で絞り込む(空なら絞り込まない).
+		foreach ( array( 'dimension', 'status', 'severity' ) as $column ) {
+			$list = array_values( array_map( 'strval', (array) $args[ $column ] ) );
 
-		$filtered = array_values(
-			array_filter(
-				$rows,
-				static function ( $row ) use ( $args ) {
-					return WPCV_Finding_Repository::matches( $row, $args );
-				}
-			)
-		);
+			if ( empty( $list ) ) {
+				continue;
+			}
 
-		usort( $filtered, self::comparator( (string) $args['sort'], (string) $args['order'] ) );
+			$where[] = $column . ' IN ( ' . implode( ', ', array_fill( 0, count( $list ), '%s' ) ) . ' )';
+			$values  = array_merge( $values, $list );
+		}
 
-		$total    = count( $filtered );
+		if ( ! $args['include_suppressed'] ) {
+			$where[] = 'suppressed_by IS NULL';
+			$where[] = 'suppression_id IS NULL';
+		}
+
+		if ( ! $args['include_closed'] ) {
+			$where[] = 'closed_at IS NULL';
+		}
+
+		// 列名・方向はallowlistで確定させてからSQLへ埋め込む(値ではないため
+		// prepare()では束縛できない).
+		$column    = in_array( (string) $args['sort'], self::SORTABLE_COLUMNS, true ) ? (string) $args['sort'] : 'id';
+		$direction = 'desc' === (string) $args['order'] ? 'DESC' : 'ASC';
+		$order_by  = 'id' === $column ? "id {$direction}" : "{$column} {$direction}, id ASC";
+
 		$per_page = min( self::MAX_PER_PAGE, max( 1, (int) $args['per_page'] ) );
 		$page     = max( 1, (int) $args['page'] );
 		$offset   = ( $page - 1 ) * $per_page;
 
+		$where_sql = implode( ' AND ', $where );
+		$count_sql = "SELECT COUNT(*) FROM {$table} WHERE {$where_sql}";
+		$rows_sql  = "SELECT * FROM {$table} WHERE {$where_sql} ORDER BY {$order_by} LIMIT %d OFFSET %d";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- $count_sql is built above from the table name, fixed column names and placeholders only; all values are bound via prepare().
+		$total = (int) $this->wpdb->get_var( $this->wpdb->prepare( $count_sql, $values ) );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- $rows_sql is built above from the table name, allowlisted column names and placeholders only; all values are bound via prepare().
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $rows_sql, array_merge( $values, array( $per_page, $offset ) ) ), ARRAY_A );
+
 		return array(
-			'rows'  => array_slice( $filtered, $offset, $per_page ),
+			'rows'  => is_array( $rows ) ? $rows : array(),
 			'total' => $total,
 		);
-	}
-
-	/**
-	 * 1件のfinding行が `query()` の絞り込み条件をすべて満たすかどうかを判定する.
-	 *
-	 * @param array $row  finding行.
-	 * @param array $args `query()` に渡された(既定適用済みの)引数.
-	 * @return bool
-	 */
-	private static function matches( array $row, array $args ) {
-		if ( (int) $row['run_id'] !== (int) $args['run_id'] ) {
-			return false;
-		}
-
-		if ( ! empty( $args['dimension'] ) && ! in_array( $row['dimension'], $args['dimension'], true ) ) {
-			return false;
-		}
-
-		if ( ! empty( $args['status'] ) && ! in_array( $row['status'], $args['status'], true ) ) {
-			return false;
-		}
-
-		if ( ! empty( $args['severity'] ) && ! in_array( $row['severity'], $args['severity'], true ) ) {
-			return false;
-		}
-
-		if ( ! $args['include_suppressed'] && ( ! empty( $row['suppressed_by'] ) || ! empty( $row['suppression_id'] ) ) ) {
-			return false;
-		}
-
-		if ( ! $args['include_closed'] && ! empty( $row['closed_at'] ) ) {
-			return false;
-		}
-
-		return true;
 	}
 
 	/**
@@ -397,15 +390,8 @@ class WPCV_Finding_Repository {
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via %d below.
 		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (int) $target_run_id, (int) $after_id, (int) $limit ), ARRAY_A );
-		$rows = is_array( $rows ) ? $rows : array();
 
-		return self::filter_sort_and_limit(
-			$rows,
-			static function ( $row ) use ( $target_run_id, $after_id ) {
-				return (int) $row['target_run_id'] === (int) $target_run_id && (int) $row['id'] > (int) $after_id;
-			},
-			(int) $limit
-		);
+		return is_array( $rows ) ? $rows : array();
 	}
 
 	/**
@@ -430,17 +416,8 @@ class WPCV_Finding_Repository {
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via %d below.
 		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (int) $target_run_id, (int) $after_id, (int) $limit ), ARRAY_A );
-		$rows = is_array( $rows ) ? $rows : array();
 
-		return self::filter_sort_and_limit(
-			$rows,
-			static function ( $row ) use ( $target_run_id, $after_id ) {
-				return (int) $row['target_run_id'] === (int) $target_run_id
-					&& (int) $row['id'] > (int) $after_id
-					&& self::is_comparable( $row );
-			},
-			(int) $limit
-		);
+		return is_array( $rows ) ? $rows : array();
 	}
 
 	/**
@@ -764,17 +741,8 @@ class WPCV_Finding_Repository {
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via prepare() below.
 		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, array_merge( array( (int) $run_id, (int) $after_id ), $states, array( (int) $limit ) ) ), ARRAY_A );
-		$rows = is_array( $rows ) ? $rows : array();
 
-		return self::filter_sort_and_limit(
-			$rows,
-			static function ( $row ) use ( $run_id, $after_id, $states ) {
-				return (int) $row['run_id'] === (int) $run_id
-					&& (int) $row['id'] > (int) $after_id
-					&& in_array( $row['diff_state'], $states, true );
-			},
-			(int) $limit
-		);
+		return is_array( $rows ) ? $rows : array();
 	}
 
 	/**
@@ -905,8 +873,9 @@ class WPCV_Finding_Repository {
 		// テストダブル(`WPCV_Test_Fake_WPDB::get_results()`)は GROUP BY を解釈せず
 		// テーブル全件(`diff_state`列込みの生の行)を返す。本番の集計結果には
 		// `diff_state`列が無く`count`列がある(逆に生の行には`count`列が無い)ため、
-		// この2つを区別してから集計し直す(`WPCV_Finding_Repository` の他メソッドと
-		// 同じ「SQLで絞り、PHP側でも同じ条件で絞り直す」設計方針).
+		// この2つを区別してから集計し直す(テストダブルが単純なSELECTを解釈するように
+		// なった後も〔コードレビュー指摘5〕、GROUP BYは解釈しないため、この形の
+		// メソッドだけはPHP側での集計し直しが残る).
 		$counted = array();
 
 		foreach ( $rows as $row ) {
@@ -950,26 +919,8 @@ class WPCV_Finding_Repository {
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via prepare() below.
 		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (int) $run_id, WPCV_Generation_Differ::END_REASON_RESOLVED, (int) $limit ), ARRAY_A );
-		$rows = is_array( $rows ) ? $rows : array();
 
-		$rows = array_values(
-			array_filter(
-				$rows,
-				static function ( $row ) use ( $run_id ) {
-					return (int) ( $row['ended_in_run_id'] ?? 0 ) === (int) $run_id
-						&& WPCV_Generation_Differ::END_REASON_RESOLVED === ( $row['end_reason'] ?? null );
-				}
-			)
-		);
-
-		usort(
-			$rows,
-			static function ( $a, $b ) {
-				return array( (string) $a['target_id'], (string) $a['path'] ) <=> array( (string) $b['target_id'], (string) $b['path'] );
-			}
-		);
-
-		return array_slice( $rows, 0, (int) $limit );
+		return is_array( $rows ) ? $rows : array();
 	}
 
 	/**
@@ -1011,55 +962,5 @@ class WPCV_Finding_Repository {
 			&& empty( $row['suppressed_by'] )
 			&& empty( $row['suppression_id'] )
 			&& empty( $row['ended_in_run_id'] );
-	}
-
-	/**
-	 * テストダブルがWHERE句・ORDER BY・LIMITを解釈しないための、PHP側での
-	 * 絞り込み・id昇順ソート・件数制限をまとめたヘルパー(`find_batch_by_target_run()`・
-	 * `find_baseline_batch()` 共通. 本番の実SQLは既に絞り込み・ソート・LIMIT済みだが、
-	 * テストダブル経由では全件が返るため、ここで確定的に同じ結果になるようにする).
-	 *
-	 * @param array<int, array> $rows      `get_results()` の戻り値.
-	 * @param callable          $predicate `function( array $row ): bool`.
-	 * @param int               $limit     最大件数.
-	 * @return array<int, array>
-	 */
-	private static function filter_sort_and_limit( array $rows, callable $predicate, $limit ) {
-		$filtered = array_values( array_filter( $rows, $predicate ) );
-
-		usort(
-			$filtered,
-			static function ( $a, $b ) {
-				return (int) $a['id'] <=> (int) $b['id'];
-			}
-		);
-
-		return array_slice( $filtered, 0, $limit );
-	}
-
-	/**
-	 * `usort()` に渡す比較関数を組み立てる.
-	 *
-	 * `$sort` が `SORTABLE_COLUMNS` に無ければ `id` にフォールバックする(呼び出し元
-	 * `WPCV_Rest_Findings_Controller` は事前にallowlist検証して`400`を返す設計だが、
-	 * このメソッド単体で呼ばれても安全に振る舞うための防御).severityの並びは
-	 * 文字列の辞書順であり、重要度としての順位(high > medium > low)には対応しない
-	 * (未実装. 必要になれば専用の順位マップを導入すること).
-	 *
-	 * @param string $sort  ソート列.
-	 * @param string $order 'asc'|'desc'.
-	 * @return callable
-	 */
-	private static function comparator( $sort, $order ) {
-		$column    = in_array( $sort, self::SORTABLE_COLUMNS, true ) ? $sort : 'id';
-		$direction = ( 'desc' === $order ) ? -1 : 1;
-
-		return static function ( $a, $b ) use ( $column, $direction ) {
-			if ( 'id' === $column ) {
-				return $direction * ( (int) $a[ $column ] <=> (int) $b[ $column ] );
-			}
-
-			return $direction * strcmp( (string) $a[ $column ], (string) $b[ $column ] );
-		};
 	}
 }

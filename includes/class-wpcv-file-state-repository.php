@@ -14,12 +14,19 @@ if ( ! defined( 'ABSPATH' ) ) {
  *
  * Stat差分検知(層1)のベースライン(path単位のsize/ctime/mtime)を保持する。
  * このテーブルは1 targetあたり数百〜数万行になりうる(プラグイン30個・8万
- * ファイル規模を想定. rev.3 §3.3)ため、`WPCV_Suppression_Repository`/
- * `WPCV_Target_Run_Repository::all_rows()` のような「テーブル全体を読んで
- * PHP側で絞り込む」方式は採らない。代わりに `WPCV_Finding_Repository::query()`
- * が既に採用しているパターン(SQLの`WHERE`句で本番の効率を確保しつつ、
- * テストダブル`WPCV_Test_Fake_WPDB::get_results()`がWHERE句を解釈しないため
- * PHP側でも同じ条件を再フィルタする)を踏襲する。
+ * ファイル規模を想定. rev.3 §3.3)ため、「テーブル全体を読んでPHP側で絞り込む」
+ * 方式は採らず、SQLの`WHERE`句で絞り込む.
+ *
+ * テストダブル`WPCV_Test_Fake_WPDB::get_results()`は、コードレビュー指摘5以降、
+ * 単純な形のSELECT(`=`・`IN`・比較演算子をANDで結んだもの等)なら解釈する.
+ * そのため`stale_rows()`はSQLの結果をそのまま使う.次の2つだけはPHP側でも同じ
+ * 条件で絞り直す:
+ *
+ * - `has_rows_with_other_baseline_version()`: `OR`・括弧・`<>`を使うため、
+ *   テストダブルが解釈できない(全行を返す)
+ * - `find_by_state_keys()`: `state_key`が生バイト列のため、値の中に偶然
+ *   ` AND `/` OR `に当たるバイト列が現れると、テストダブルの簡易的な解析が
+ *   誤りうる(テストが不定に失敗しないよう、PHP側の絞り込みを残す)
  *
  * `upsert_many()` だけは「N行を1クエリのON DUPLICATE KEY UPDATEにまとめる」
  * ことがrev.3 §3.5で明示的に要求されており、全件取得方式はそもそも成立しない
@@ -124,8 +131,7 @@ class WPCV_File_State_Repository {
 		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, $state_keys ), ARRAY_A );
 		$rows = is_array( $rows ) ? $rows : array();
 
-		// クラスdocblock参照: テストダブルはWHERE句を解釈しないため、本番・
-		// テスト両方で正しく動くようPHP側でも同じ条件を再フィルタする.
+		// クラスdocblock参照: state_keyが生バイト列のため、PHP側でも同じ条件で絞り直す.
 		return array_values(
 			array_filter(
 				$rows,
@@ -422,7 +428,7 @@ class WPCV_File_State_Repository {
 		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, $args ), ARRAY_A );
 		$rows = is_array( $rows ) ? $rows : array();
 
-		// クラスdocblock参照: テストダブルはWHERE句を解釈しないため PHP 側でも同じ条件で絞る.
+		// クラスdocblock参照: OR・括弧・<> をテストダブルが解釈できないため PHP 側でも同じ条件で絞る.
 		$expected = '' === $version ? null : $version;
 
 		foreach ( $rows as $row ) {
@@ -469,18 +475,8 @@ class WPCV_File_State_Repository {
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; values are bound via prepare() here.
 		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (string) $target_id, (int) $current_run_id ), ARRAY_A );
-		$rows = is_array( $rows ) ? $rows : array();
 
-		// クラスdocblock参照: テストダブルはWHERE句を解釈しないため、本番・
-		// テスト両方で正しく動くようPHP側でも同じ条件を再フィルタする.
-		return array_values(
-			array_filter(
-				$rows,
-				static function ( $row ) use ( $target_id, $current_run_id ) {
-					return (string) $row['target_id'] === (string) $target_id && (int) $row['last_seen_run_id'] < (int) $current_run_id;
-				}
-			)
-		);
+		return is_array( $rows ) ? $rows : array();
 	}
 
 	/**

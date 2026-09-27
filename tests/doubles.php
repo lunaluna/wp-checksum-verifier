@@ -368,9 +368,9 @@ class WPCV_Test_Fake_WPDB {
 	 * (`select_simple()`. コードレビュー指摘5で追加.本番のRepositoryが全件取得を
 	 * やめてSQLで絞り込めるようにするため):
 	 *
-	 *     SELECT * | 列名, ... FROM {table}
+	 *     SELECT * | 列名, ... FROM {table} [FORCE INDEX (...)]
 	 *       [WHERE 条件 AND 条件 ...]
-	 *       [ORDER BY 列 ASC|DESC]
+	 *       [ORDER BY 列 ASC|DESC [, 列 ASC|DESC ...]]
 	 *       [LIMIT n [OFFSET m]]
 	 *
 	 * 条件は `parse_where_conditions_strict()` が扱える形のみ.それ以外の形
@@ -439,9 +439,10 @@ class WPCV_Test_Fake_WPDB {
 	 * @return array<int, array>|null
 	 */
 	private function select_simple( $query ) {
-		$pattern = '/^\s*SELECT\s+(\*|\w+(?:\s*,\s*\w+)*)\s+FROM\s+(\S+)'
+		// `FORCE INDEX (...)` は本番のoptimizer向けのヒントのため、読み飛ばす.
+		$pattern = '/^\s*SELECT\s+(\*|\w+(?:\s*,\s*\w+)*)\s+FROM\s+(\S+)(?:\s+FORCE\s+INDEX\s*\(\s*\w+\s*\))?'
 			. '(?:\s+WHERE\s+(.+?))?'
-			. '(?:\s+ORDER\s+BY\s+(\w+)\s+(ASC|DESC))?'
+			. '(?:\s+ORDER\s+BY\s+(\w+\s+(?:ASC|DESC)(?:\s*,\s*\w+\s+(?:ASC|DESC))*))?'
 			. '(?:\s+LIMIT\s+(\d+)(?:\s+OFFSET\s+(\d+))?)?\s*$/is';
 
 		if ( 1 !== preg_match( $pattern, $query, $matches ) ) {
@@ -458,22 +459,33 @@ class WPCV_Test_Fake_WPDB {
 		$rows = $this->filter_rows( $matches[2], $conditions );
 
 		if ( ! empty( $matches[4] ) ) {
-			$column     = $matches[4];
-			$descending = 0 === strcasecmp( $matches[5], 'DESC' );
+			// `列 ASC|DESC, 列 ASC|DESC, ...` を左から順に比べる.
+			$order_by = array();
+
+			foreach ( explode( ',', $matches[4] ) as $piece ) {
+				$parts      = preg_split( '/\s+/', trim( $piece ) );
+				$order_by[] = array( $parts[0], 0 === strcasecmp( $parts[1], 'DESC' ) );
+			}
 
 			usort(
 				$rows,
-				static function ( $a, $b ) use ( $column, $descending ) {
-					$cmp = ( $a[ $column ] ?? null ) <=> ( $b[ $column ] ?? null );
+				static function ( $a, $b ) use ( $order_by ) {
+					foreach ( $order_by as list( $column, $descending ) ) {
+						$cmp = ( $a[ $column ] ?? null ) <=> ( $b[ $column ] ?? null );
 
-					return $descending ? -$cmp : $cmp;
+						if ( 0 !== $cmp ) {
+							return $descending ? -$cmp : $cmp;
+						}
+					}
+
+					return 0;
 				}
 			);
 		}
 
-		if ( isset( $matches[6] ) && '' !== $matches[6] ) {
-			$offset = isset( $matches[7] ) && '' !== $matches[7] ? (int) $matches[7] : 0;
-			$rows   = array_slice( $rows, $offset, (int) $matches[6] );
+		if ( isset( $matches[5] ) && '' !== $matches[5] ) {
+			$offset = isset( $matches[6] ) && '' !== $matches[6] ? (int) $matches[6] : 0;
+			$rows   = array_slice( $rows, $offset, (int) $matches[5] );
 		}
 
 		return $rows;
@@ -505,7 +517,8 @@ class WPCV_Test_Fake_WPDB {
 	 * `get_var()` 専用.
 	 *
 	 * `parse_where_conditions()` が扱う3種(`=`・`IN (...)`・`IS NULL`)に加えて、
-	 * 比較演算子(`<`・`<=`・`>`・`>=`)も扱う(日時文字列の範囲指定用).
+	 * `IS NOT NULL` と比較演算子(`<`・`<=`・`>`・`>=`)も扱う(日時文字列の範囲指定・
+	 * idのカーソル用).
 	 * `OR`・括弧のネストは扱わない.
 	 *
 	 * @param string $where_str `WHERE` 句.
@@ -521,6 +534,11 @@ class WPCV_Test_Fake_WPDB {
 
 		foreach ( preg_split( '/\s+AND\s+/i', trim( $where_str ) ) as $piece ) {
 			$piece = trim( $piece );
+
+			if ( 1 === preg_match( '/^(\w+)\s+IS\s+NOT\s+NULL$/i', $piece, $matches ) ) {
+				$conditions[] = array( 'is_not_null', $matches[1] );
+				continue;
+			}
 
 			if ( 1 === preg_match( '/^(\w+)\s*(<=|>=|<|>)\s*(.+)$/s', $piece, $matches ) ) {
 				$conditions[] = array( 'cmp', $matches[1], $this->parse_sql_value_literal( trim( $matches[3] ) ), $matches[2] );
@@ -680,6 +698,11 @@ class WPCV_Test_Fake_WPDB {
 			$value  = array_key_exists( $column, $row ) ? $row[ $column ] : null;
 
 			if ( 'is_null' === $type && null !== $value ) {
+				return false;
+			}
+
+			// `parse_where_conditions_strict()` のみが作る.
+			if ( 'is_not_null' === $type && null === $value ) {
 				return false;
 			}
 
