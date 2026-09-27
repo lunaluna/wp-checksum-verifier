@@ -36,6 +36,8 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-chunk-result-repository.
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-context-builder.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-generation-differ.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-alert-composer.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-alert-sender.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-diff-dispatcher.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
 
