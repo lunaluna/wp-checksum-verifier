@@ -27,11 +27,43 @@ All notable changes to this project will be documented in this file.
   `status=stat_changed` support in `GET /findings`.
 - `wp wpcv bench-stat` command that measures `lstat()` throughput on a
   directory (read-only), used to size the stat-scan budget.
+- **Diff detection and email alerts.** Every run is now compared against
+  each target's own baseline (its own most recently verified run) and
+  findings are classified `new`, `continuing`, or `resolved`; stat-based
+  findings are always `event`. An email summary is sent when new findings
+  appear, findings resolve, a target has been unverifiable for several
+  runs in a row, or the run itself has failed/aborted several times in a
+  row (all thresholds unmeasured defaults, adjustable via new
+  `wpcv_alert_max_items`, `wpcv_alert_resend_days`,
+  `wpcv_alert_unverifiable_streak`, and `wpcv_alert_run_failure_streak`
+  filters). New `wpcv_alert_channels` filter for registering additional
+  delivery channels beyond email, and a new `wpcv_run_terminated` action
+  fired whenever a run reaches a terminal status.
+- Settings screen: alert recipients field and a "Send test alert" button.
+  Admin notices (shown on this plugin's own screens, the dashboard, and the
+  plugin list) when no recipients are configured or the last alert email
+  failed to send.
+- Findings screen: a **Diff** column and `diff_state` filter
+  (`new`/`continuing`/`event`); `GET /findings` gained a matching
+  `diff_state` query parameter.
+- Run History screen: **Diff** and **Alert** summary columns on the list;
+  the run detail view gained diff/alert state, alert error/failed-channel
+  fields (admin-only), a **Diff mode** column per target, and a
+  "Findings ended in this run" section. `GET /status` gained matching
+  `diff_status`, `findings_new`, `findings_resolved`, `findings_continuing`,
+  `alert_status`, and `alert_attempted_at` fields (internal fields such as
+  `alert_error` are intentionally not exposed over REST).
 
 ### Changed
 
-- Database schema version is now 3 (new `wpcv_file_states` table and
-  `wpcv_findings.detail` column).
+- Database schema version is now 5 (v4: diff/alert tracking columns on
+  `wpcv_runs`/`wpcv_target_runs`/`wpcv_findings` plus `finding_key`; v5:
+  supporting indexes added after load testing with 100k+ findings).
+- Core verification no longer reports a `missing` finding for files under
+  `wp-content/` (an unmodified WordPress core install does not ship
+  anything there; a `modified` finding is still reported as before).
+- Stat baseline rows for a plugin that has been uninstalled (or newly
+  excluded) are now deleted instead of being left behind indefinitely.
 - Run totals now include the stat targets that were actually scanned.
   Stat targets skipped as `checksum_covered` are left out of the totals and
   of the success/partial decision, so a site with only wordpress.org
