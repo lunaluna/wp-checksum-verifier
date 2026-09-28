@@ -445,6 +445,35 @@ class DiffDispatcherTest extends TestCase {
 	}
 
 	/**
+	 * version を持たない target(`core:_scan` / `muplugin:_scan`.§16前提バグ修正)。
+	 * 基準・今回とも `version` が NULL のとき、`(string)` キャストで NULL→`''` に
+	 * なる今回側と NULL のままの基準側が食い違い、常に `version_changed` に
+	 * なっていた(compared になるべきところ).両方 NULL のまま比べれば
+	 * `compared` になり、基準の finding が正しく continuing になることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_diff_compared_mode_with_null_version() {
+		$env = $this->make_environment();
+
+		$baseline_run_id = $this->make_run_ready_for_diff( $env['run_repository'] );
+		$baseline_tr_id  = $this->insert_target_run( $env['wpdb'], $baseline_run_id, array( 'target_id' => 'core:_scan', 'version' => null ) );
+		$baseline_continuing_id = $this->insert_finding( $env['wpdb'], array( 'target_run_id' => $baseline_tr_id, 'run_id' => $baseline_run_id, 'target_id' => 'core:_scan', 'finding_key' => 'key-continuing' ) );
+
+		$run_id        = $this->make_run_ready_for_diff( $env['run_repository'] );
+		$target_run_id = $this->insert_target_run( $env['wpdb'], $run_id, array( 'target_id' => 'core:_scan', 'version' => null ) );
+		$current_continuing_id = $this->insert_finding( $env['wpdb'], array( 'target_run_id' => $target_run_id, 'run_id' => $run_id, 'target_id' => 'core:_scan', 'finding_key' => 'key-continuing' ) );
+
+		$env['dispatcher']->dispatch_diff( $run_id ); // mode確定 + pass1 cursor.
+		$env['dispatcher']->dispatch_diff( $run_id ); // pass1本体.
+		$env['dispatcher']->dispatch_diff( $run_id ); // pass2本体(基準側).
+
+		$this->assertSame( WPCV_Generation_Differ::DIFF_MODE_COMPARED, $env['wpdb']->rows['wp_wpcv_target_runs'][ $target_run_id ]['diff_mode'] );
+		$this->assertSame( WPCV_Generation_Differ::DIFF_STATE_CONTINUING, $env['wpdb']->rows['wp_wpcv_findings'][ $current_continuing_id ]['diff_state'] );
+		$this->assertNull( $env['wpdb']->rows['wp_wpcv_findings'][ $baseline_continuing_id ]['ended_in_run_id'], 'continuingは終わらせない' );
+	}
+
+	/**
 	 * `not_verified`モード: pass 1のみ行い(基準側をresolvedにしない)、
 	 * 途中失敗前に記録された部分的なfindingのcontinuing/new判定だけを行うことを
 	 * 確認する(§1.4).

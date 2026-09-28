@@ -94,7 +94,12 @@ class WPCV_Generation_Differ {
 	 * @param string      $status              今回の target_run の status
 	 *                                         (`WPCV_Target_Status` の定数).
 	 * @param string|null $error_code          今回の target_run の error_code.
-	 * @param string      $current_version     今回の target_run の version.
+	 * @param string|null $current_version     今回の target_run の version.
+	 *                                         version を持たない target(`_scan`)
+	 *                                         では NULL(v0.5後半 §16 前提バグ修正.
+	 *                                         基準側〔`$baseline_target_run['version']`〕
+	 *                                         も NULL のままなので、両方 NULL なら
+	 *                                         `null === null` で `compared` になる).
 	 * @param array|null  $baseline_target_run 基準の target_run(無ければ null).
 	 *                                         `version`(string|null)と `usable`
 	 *                                         (bool.§1.4: 基準の target_run に

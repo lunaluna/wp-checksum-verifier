@@ -276,7 +276,7 @@ class WPCV_Diff_Dispatcher {
 		$mode = WPCV_Generation_Differ::determine_diff_mode(
 			(string) $target_run['status'],
 			$target_run['error_code'] ?? null,
-			(string) $target_run['version'],
+			$target_run['version'],
 			$baseline_for_mode
 		);
 
