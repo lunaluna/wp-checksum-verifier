@@ -51,6 +51,21 @@ class WPCV_Finding_Repository {
 	const SORTABLE_COLUMNS = array( 'id', 'path', 'severity', 'status', 'version' );
 
 	/**
+	 * `query_ended_by_run()` の並び順(v0.5後半 §16・§1.3: 運用者が見たい
+	 * 「解消した」を先に出し、件数の多くなる version_changed / target_removed を
+	 * 後ろにする).
+	 *
+	 * @var string[]
+	 */
+	const ENDED_BY_RUN_REASON_ORDER = array(
+		WPCV_Generation_Differ::END_REASON_RESOLVED,
+		WPCV_Generation_Differ::END_REASON_SUPPRESSED,
+		WPCV_Generation_Differ::END_REASON_EXCLUDED,
+		WPCV_Generation_Differ::END_REASON_VERSION_CHANGED,
+		WPCV_Generation_Differ::END_REASON_TARGET_REMOVED,
+	);
+
+	/**
 	 * `mark_notified_by_ids()` が1回のUPDATEで扱うidの最大件数.
 	 *
 	 * 未実測: `WPCV_Alert_Sender::NOTIFY_BATCH_SIZE`(通知候補を読む単位)と同じ値を
@@ -242,6 +257,9 @@ class WPCV_Finding_Repository {
 	 *                                         (空なら絞り込まない).
 	 *     @type string[] $status              finding.statusの値の一覧.
 	 *     @type string[] $severity            finding.severityの値の一覧.
+	 *     @type string[] $diff_state          finding.diff_stateの値の一覧(v0.5後半 §16.
+	 *                                         空なら絞り込まない. `run_id`と組み合わせて
+	 *                                         `idx_run_diff (run_id, diff_state)` が効く).
 	 *     @type bool     $include_suppressed  既定false(`suppressed_by`/`suppression_id`が
 	 *                                         設定済みのfindingを除外する).
 	 *     @type bool     $include_closed      既定false(`closed_at`が設定済みのfindingを除外する).
@@ -262,6 +280,7 @@ class WPCV_Finding_Repository {
 				'dimension'          => array(),
 				'status'             => array(),
 				'severity'           => array(),
+				'diff_state'         => array(),
 				'include_suppressed' => false,
 				'include_closed'     => false,
 				'sort'               => 'id',
@@ -275,8 +294,8 @@ class WPCV_Finding_Repository {
 		$where  = array( 'run_id = %d' );
 		$values = array( (int) $args['run_id'] );
 
-		// dimension/status/severity は値の一覧で絞り込む(空なら絞り込まない).
-		foreach ( array( 'dimension', 'status', 'severity' ) as $column ) {
+		// dimension/status/severity/diff_state は値の一覧で絞り込む(空なら絞り込まない).
+		foreach ( array( 'dimension', 'status', 'severity', 'diff_state' ) as $column ) {
 			$list = array_values( array_map( 'strval', (array) $args[ $column ] ) );
 
 			if ( empty( $list ) ) {
@@ -921,6 +940,81 @@ class WPCV_Finding_Repository {
 		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (int) $run_id, WPCV_Generation_Differ::END_REASON_RESOLVED, (int) $limit ), ARRAY_A );
 
 		return is_array( $rows ) ? $rows : array();
+	}
+
+	/**
+	 * 指定 run で終わった(`ended_in_run_id` が一致する)finding を、実行履歴の詳細
+	 * 「Findings ended in this run」節用に、理由(`ENDED_BY_RUN_REASON_ORDER`)→
+	 * target_id → path → id の順でpagination付きで返す(v0.5後半 §16・§1.3).
+	 *
+	 * `end_reason`優先度(`resolved`→…→`target_removed`)での並べ替えは
+	 * `ORDER BY FIELD(...)` の1クエリでは書かない ―― テストダブルの単純SELECT
+	 * 解釈(`tests/doubles.php::select_simple()`)は`FIELD()`を扱えず、その場合
+	 * テーブルの全行(WHERE・ORDER BY・LIMIT無視)を返してしまうため、本番の
+	 * SQLがLIMIT/OFFSETで絞った1ページ分に対してPHP側で更にoffsetを適用する
+	 * ことになり二重にずれる.代わりに`ENDED_BY_RUN_REASON_ORDER`の理由ごとに
+	 * 独立した(`WHERE ended_in_run_id = %d AND end_reason = %s`の)COUNT/SELECTを
+	 * 発行し、理由ごとの件数の累積でページの開始位置がどの理由に属するかを
+	 * PHP側で計算する.各クエリ自体は単純なAND条件+`ORDER BY 列 ASC`のみなので
+	 * テストダブルでも正しく解釈され、本番でも「必要な理由の範囲だけ」を
+	 * 読むため10万件のrunでも1ページ分しか読まない要件を保つ.
+	 *
+	 * @param int $run_id   対象の run の id(`ended_in_run_id` で絞る).
+	 * @param int $page     ページ番号(1始まり.1未満は1にclampする).
+	 * @param int $per_page 1ページあたりの件数(1〜`MAX_PER_PAGE`にclampする).
+	 * @return array{rows: array, total: int} `total` はpagination前の全件数.
+	 */
+	public function query_ended_by_run( $run_id, $page, $per_page ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_findings';
+
+		$per_page = min( self::MAX_PER_PAGE, max( 1, (int) $per_page ) );
+		$page     = max( 1, (int) $page );
+		$offset   = ( $page - 1 ) * $per_page;
+
+		$counts_by_reason = array();
+		$total            = 0;
+
+		foreach ( self::ENDED_BY_RUN_REASON_ORDER as $reason ) {
+			$count_sql = "SELECT COUNT(*) FROM {$table} WHERE ended_in_run_id = %d AND end_reason = %s";
+
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- $count_sql is built above from the table name and placeholders only; all values are bound via prepare().
+			$count = (int) $this->wpdb->get_var( $this->wpdb->prepare( $count_sql, (int) $run_id, $reason ) );
+
+			$counts_by_reason[ $reason ] = $count;
+			$total                      += $count;
+		}
+
+		$rows             = array();
+		$remaining_offset = $offset;
+		$remaining_limit  = $per_page;
+
+		foreach ( self::ENDED_BY_RUN_REASON_ORDER as $reason ) {
+			if ( $remaining_limit <= 0 ) {
+				break;
+			}
+
+			$reason_count = $counts_by_reason[ $reason ];
+
+			if ( $remaining_offset >= $reason_count ) {
+				$remaining_offset -= $reason_count;
+				continue;
+			}
+
+			$rows_sql = "SELECT id, target_id, path, status, run_id, end_reason FROM {$table} WHERE ended_in_run_id = %d AND end_reason = %s ORDER BY target_id ASC, path ASC, id ASC LIMIT %d OFFSET %d";
+
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- $rows_sql is built above from the table name, fixed column names and placeholders only; all values are bound via prepare().
+			$reason_rows = $this->wpdb->get_results( $this->wpdb->prepare( $rows_sql, (int) $run_id, $reason, $remaining_limit, $remaining_offset ), ARRAY_A );
+			$reason_rows = is_array( $reason_rows ) ? $reason_rows : array();
+
+			$rows             = array_merge( $rows, $reason_rows );
+			$remaining_limit -= count( $reason_rows );
+			$remaining_offset = 0;
+		}
+
+		return array(
+			'rows'  => $rows,
+			'total' => $total,
+		);
 	}
 
 	/**

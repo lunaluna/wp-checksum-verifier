@@ -229,4 +229,44 @@ class PageFindingsTest extends TestCase {
 		$this->assertSame( '', WPCV_Page_Findings::format_detail( array( 'detail' => null ) ) );
 		$this->assertSame( '', WPCV_Page_Findings::format_detail( array() ) );
 	}
+
+	/**
+	 * `format_diff_state()` が §1.1 の表の全行どおりに表示文字列を組み立てることを
+	 * 確認する(v0.5後半 §16).
+	 *
+	 * @return void
+	 */
+	public function test_format_diff_state_covers_all_table_rows() {
+		// new / notified_at無し.
+		$this->assertSame( 'new', WPCV_Page_Findings::format_diff_state( array( 'diff_state' => 'new', 'notified_at' => null ) ) );
+
+		// new / notified_atあり.
+		$this->assertSame(
+			'new (emailed 2026-09-28 00:00:00)',
+			WPCV_Page_Findings::format_diff_state( array( 'diff_state' => 'new', 'notified_at' => '2026-09-28 00:00:00' ) )
+		);
+
+		// continuing / notified_at無し.
+		$this->assertSame( 'continuing', WPCV_Page_Findings::format_diff_state( array( 'diff_state' => 'continuing', 'notified_at' => null ) ) );
+
+		// continuing / notified_atあり(前回の送信失敗により今回送り直した行).
+		$this->assertSame(
+			'continuing (emailed 2026-09-28 00:00:00)',
+			WPCV_Page_Findings::format_diff_state( array( 'diff_state' => 'continuing', 'notified_at' => '2026-09-28 00:00:00' ) )
+		);
+
+		// event / notified_at無し・あり.
+		$this->assertSame( 'event', WPCV_Page_Findings::format_diff_state( array( 'diff_state' => 'event', 'notified_at' => null ) ) );
+		$this->assertSame(
+			'event (emailed 2026-09-28 00:00:00)',
+			WPCV_Page_Findings::format_diff_state( array( 'diff_state' => 'event', 'notified_at' => '2026-09-28 00:00:00' ) )
+		);
+
+		// diff_stateが無い(NULL. 差分処理がまだの run・失敗した run・v4より前の run・抑制).
+		$this->assertSame( '—', WPCV_Page_Findings::format_diff_state( array( 'diff_state' => null, 'notified_at' => null ) ) );
+		$this->assertSame( '—', WPCV_Page_Findings::format_diff_state( array() ) );
+
+		// 未知の値はそのまま出す(target_run_reason_label()と同じ方針).
+		$this->assertSame( 'some_future_state', WPCV_Page_Findings::format_diff_state( array( 'diff_state' => 'some_future_state', 'notified_at' => null ) ) );
+	}
 }

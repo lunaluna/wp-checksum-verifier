@@ -7,6 +7,8 @@
 
 require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-settings.php';
+require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-run-history.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
 
 use PHPUnit\Framework\TestCase;
 
@@ -77,11 +79,16 @@ class PageSettingsTest extends TestCase {
 	 */
 	public function test_format_run_summary_includes_run_details() {
 		$run = array(
-			'run_id'           => 37,
-			'status'           => 'partial',
-			'findings_total'   => 7,
-			'last_activity_at' => '2026-09-11 12:00:00',
-			'targets'          => array(
+			'run_id'              => 37,
+			'status'              => 'partial',
+			'findings_total'      => 7,
+			'last_activity_at'    => '2026-09-11 12:00:00',
+			'diff_status'         => WPCV_Diff_Status::ALERTING,
+			'findings_new'        => 5,
+			'findings_resolved'   => 0,
+			'findings_continuing' => 1,
+			'alert_status'        => 'sent',
+			'targets'             => array(
 				'queued'       => 2,
 				'retry'        => 1,
 				'running'      => 0,
@@ -102,6 +109,10 @@ class PageSettingsTest extends TestCase {
 		$this->assertStringContainsString( 'retry: 1', $summary );
 		$this->assertStringContainsString( 'findings: 7', $summary );
 		$this->assertStringContainsString( '2026-09-11 12:00:00', $summary );
+		// v0.5後半 §16・§1.4: 差分・アラートの表示(WPCV_Page_Run_Historyの
+		// format_diff_summary()/format_alert_status()を再利用していることの確認).
+		$this->assertStringContainsString( 'diff: +5 / −0 / =1', $summary );
+		$this->assertStringContainsString( 'alert: sent', $summary );
 	}
 
 	/**
@@ -128,5 +139,9 @@ class PageSettingsTest extends TestCase {
 		$summary = WPCV_Page_Settings::format_run_summary( $run );
 
 		$this->assertStringContainsString( '—', $summary );
+		// v0.5後半 §16・§1.4: current_run(検証中)は diff_status が無いため
+		// diff: —・alert: — になることの確認.
+		$this->assertStringContainsString( 'diff: —', $summary );
+		$this->assertStringContainsString( 'alert: —', $summary );
 	}
 }

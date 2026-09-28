@@ -625,6 +625,12 @@ class WPCV_Page_Settings {
 	 * が返す`current_run`/`last_run`の形)を1行の表示文字列へ整形する
 	 * (`render()`から分離してテスト可能にする).
 	 *
+	 * 末尾に差分・アラートを足した(v0.5後半 §16・§1.4).`describe_run()`が返す
+	 * 連想配列は`diff_status`/`findings_new`等を`WPCV_Run_Repository`の行と
+	 * 同じキー名で持つため、`WPCV_Page_Run_History::format_diff_summary()`/
+	 * `format_alert_status()`をそのまま再利用できる(同じ表を2か所に持たない).
+	 * `current_run`(検証中のrun)は`diff_status`がNULLのため必ず「—」になる.
+	 *
 	 * @param array|null $run `null`・`current_run`・`last_run`のいずれか.
 	 * @return string
 	 */
@@ -636,14 +642,16 @@ class WPCV_Page_Settings {
 		$targets = $run['targets'];
 
 		return sprintf(
-			/* translators: 1: run id, 2: status, 3: pending (queued) target count, 4: retry target count, 5: findings count, 6: last activity timestamp or dash. */
-			__( '#%1$d (%2$s) — pending: %3$d, retry: %4$d, findings: %5$d, last activity: %6$s', 'wp-checksum-verifier' ),
+			/* translators: 1: run id, 2: status, 3: pending (queued) target count, 4: retry target count, 5: findings count, 6: last activity timestamp or dash, 7: diff summary, 8: alert status. */
+			__( '#%1$d (%2$s) — pending: %3$d, retry: %4$d, findings: %5$d, last activity: %6$s — diff: %7$s, alert: %8$s', 'wp-checksum-verifier' ),
 			(int) $run['run_id'],
 			(string) $run['status'],
 			(int) $targets['queued'],
 			(int) $targets['retry'],
 			(int) $run['findings_total'],
-			null === $run['last_activity_at'] ? '—' : (string) $run['last_activity_at']
+			null === $run['last_activity_at'] ? '—' : (string) $run['last_activity_at'],
+			WPCV_Page_Run_History::format_diff_summary( $run ),
+			WPCV_Page_Run_History::format_alert_status( $run )
 		);
 	}
 

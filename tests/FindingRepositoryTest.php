@@ -179,6 +179,30 @@ class FindingRepositoryTest extends TestCase {
 	}
 
 	/**
+	 * `query()` が `diff_state` の allowlist フィルタを適用することを確認する
+	 * (v0.5後半 §16・Q1).
+	 *
+	 * @return void
+	 */
+	public function test_query_filters_by_diff_state() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 1, 'path' => 'new.php', 'diff_state' => WPCV_Generation_Differ::DIFF_STATE_NEW ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 1, 'path' => 'continuing.php', 'diff_state' => WPCV_Generation_Differ::DIFF_STATE_CONTINUING ) ) );
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$this->assertSame(
+			array( 'new.php' ),
+			array_column( $repository->query( array( 'run_id' => 1, 'diff_state' => array( 'new' ) ) )['rows'], 'path' )
+		);
+		$this->assertSame(
+			array( 'new.php', 'continuing.php' ),
+			array_column( $repository->query( array( 'run_id' => 1 ) )['rows'], 'path' ),
+			'diff_state を渡さなければ絞り込まない'
+		);
+	}
+
+	/**
 	 * `query()` が既定で suppressed/closed の finding を除外し、
 	 * `include_suppressed`/`include_closed` で含められることを確認する.
 	 *
@@ -637,5 +661,101 @@ class FindingRepositoryTest extends TestCase {
 
 		$this->assertCount( 1, $wpdb->get_results_calls );
 		$this->assertStringContainsString( 'LIMIT 2 OFFSET 2', $wpdb->get_results_calls[0] );
+	}
+
+	/**
+	 * `query_ended_by_run()` が `ended_in_run_id` で絞り込み、他のrunで終わった
+	 * finding・まだ終わっていないfindingを含めないことを確認する(v0.5後半 §16・§1.3).
+	 *
+	 * @return void
+	 */
+	public function test_query_ended_by_run_filters_by_ended_in_run_id() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'path' => 'ended-in-93.php', 'ended_in_run_id' => 93, 'end_reason' => WPCV_Generation_Differ::END_REASON_RESOLVED ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'path' => 'ended-in-94.php', 'ended_in_run_id' => 94, 'end_reason' => WPCV_Generation_Differ::END_REASON_RESOLVED ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'path' => 'still-open.php', 'ended_in_run_id' => null ) ) );
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+		$result     = $repository->query_ended_by_run( 93, 1, 20 );
+
+		$this->assertSame( 1, $result['total'] );
+		$this->assertSame( array( 'ended-in-93.php' ), array_column( $result['rows'], 'path' ) );
+	}
+
+	/**
+	 * `query_ended_by_run()` が理由(`ENDED_BY_RUN_REASON_ORDER`.resolved →
+	 * suppressed → excluded → version_changed → target_removed)→target_id→path→id
+	 * の順で並べることを確認する(v0.5後半 §16・§1.3).
+	 *
+	 * @return void
+	 */
+	public function test_query_ended_by_run_orders_by_reason_then_target_then_path() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		// 挿入順はあえて優先順位・並び順と逆にする.
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_id' => 'plugin:b', 'path' => 'b.php', 'ended_in_run_id' => 10, 'end_reason' => WPCV_Generation_Differ::END_REASON_TARGET_REMOVED ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_id' => 'plugin:a', 'path' => 'z.php', 'ended_in_run_id' => 10, 'end_reason' => WPCV_Generation_Differ::END_REASON_VERSION_CHANGED ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_id' => 'plugin:a', 'path' => 'b.php', 'ended_in_run_id' => 10, 'end_reason' => WPCV_Generation_Differ::END_REASON_RESOLVED ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_id' => 'plugin:a', 'path' => 'a.php', 'ended_in_run_id' => 10, 'end_reason' => WPCV_Generation_Differ::END_REASON_RESOLVED ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_id' => 'plugin:a', 'path' => 'c.php', 'ended_in_run_id' => 10, 'end_reason' => WPCV_Generation_Differ::END_REASON_SUPPRESSED ) ) );
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+		$result     = $repository->query_ended_by_run( 10, 1, 20 );
+
+		$this->assertSame( 5, $result['total'] );
+		$this->assertSame(
+			array( 'a.php', 'b.php', 'c.php', 'z.php', 'b.php' ),
+			array_column( $result['rows'], 'path' )
+		);
+		$this->assertSame(
+			array(
+				WPCV_Generation_Differ::END_REASON_RESOLVED,
+				WPCV_Generation_Differ::END_REASON_RESOLVED,
+				WPCV_Generation_Differ::END_REASON_SUPPRESSED,
+				WPCV_Generation_Differ::END_REASON_VERSION_CHANGED,
+				WPCV_Generation_Differ::END_REASON_TARGET_REMOVED,
+			),
+			array_column( $result['rows'], 'end_reason' )
+		);
+	}
+
+	/**
+	 * `query_ended_by_run()` が理由の境界をまたいでもpagination(`page`/`per_page`)を
+	 * 正しく適用することを確認する(v0.5後半 §16・§1.3。resolvedが2件・
+	 * suppressedが2件のときpage=1,per_page=3で「resolved 2件+suppressed 1件」、
+	 * page=2,per_page=3で「suppressed 1件」になることを確かめる).
+	 *
+	 * @return void
+	 */
+	public function test_query_ended_by_run_paginates_across_reason_boundary() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_id' => 'plugin:a', 'path' => 'r1.php', 'ended_in_run_id' => 10, 'end_reason' => WPCV_Generation_Differ::END_REASON_RESOLVED ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_id' => 'plugin:a', 'path' => 'r2.php', 'ended_in_run_id' => 10, 'end_reason' => WPCV_Generation_Differ::END_REASON_RESOLVED ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_id' => 'plugin:a', 'path' => 's1.php', 'ended_in_run_id' => 10, 'end_reason' => WPCV_Generation_Differ::END_REASON_SUPPRESSED ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'target_id' => 'plugin:a', 'path' => 's2.php', 'ended_in_run_id' => 10, 'end_reason' => WPCV_Generation_Differ::END_REASON_SUPPRESSED ) ) );
+
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$page1 = $repository->query_ended_by_run( 10, 1, 3 );
+		$this->assertSame( 4, $page1['total'] );
+		$this->assertSame( array( 'r1.php', 'r2.php', 's1.php' ), array_column( $page1['rows'], 'path' ) );
+
+		$page2 = $repository->query_ended_by_run( 10, 2, 3 );
+		$this->assertSame( 4, $page2['total'] );
+		$this->assertSame( array( 's2.php' ), array_column( $page2['rows'], 'path' ) );
+	}
+
+	/**
+	 * `query_ended_by_run()` が0件のrunに対して空配列・total 0を返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_query_ended_by_run_returns_empty_when_nothing_ended() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Finding_Repository( $wpdb );
+
+		$result = $repository->query_ended_by_run( 999, 1, 20 );
+
+		$this->assertSame( array(), $result['rows'] );
+		$this->assertSame( 0, $result['total'] );
 	}
 }

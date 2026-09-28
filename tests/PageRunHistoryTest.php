@@ -7,6 +7,7 @@
 
 require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-error-code.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-run-history.php';
 
 use PHPUnit\Framework\TestCase;
@@ -104,5 +105,91 @@ class PageRunHistoryTest extends TestCase {
 	 */
 	public function test_total_pages_returns_at_least_one() {
 		$this->assertSame( 1, WPCV_Page_Run_History::total_pages( 0, 20 ) );
+	}
+
+	/**
+	 * `format_diff_summary()` が §1.2 の表の全行どおりに表示文字列を組み立てることを
+	 * 確認する(v0.5後半 §16).
+	 *
+	 * @return void
+	 */
+	public function test_format_diff_summary_covers_all_table_rows() {
+		// NULL(v4より前のrun・failed/abortedは本来skippedを書く設計だが実データではNULL).
+		$this->assertSame( '—', WPCV_Page_Run_History::format_diff_summary( array( 'diff_status' => null ) ) );
+		$this->assertSame( '—', WPCV_Page_Run_History::format_diff_summary( array() ) );
+
+		// skipped.
+		$this->assertSame( '—', WPCV_Page_Run_History::format_diff_summary( array( 'diff_status' => WPCV_Diff_Status::SKIPPED ) ) );
+
+		// pending / processing はdiff_statusの値をそのまま.
+		$this->assertSame( WPCV_Diff_Status::PENDING, WPCV_Page_Run_History::format_diff_summary( array( 'diff_status' => WPCV_Diff_Status::PENDING ) ) );
+		$this->assertSame( WPCV_Diff_Status::PROCESSING, WPCV_Page_Run_History::format_diff_summary( array( 'diff_status' => WPCV_Diff_Status::PROCESSING ) ) );
+
+		// alerting / done は件数の表記(+new / −resolved / =continuing).
+		$run = array(
+			'diff_status'         => WPCV_Diff_Status::ALERTING,
+			'findings_new'        => 5,
+			'findings_resolved'   => 2,
+			'findings_continuing' => 1,
+		);
+		$this->assertSame( '+5 / −2 / =1', WPCV_Page_Run_History::format_diff_summary( $run ) );
+
+		$run['diff_status'] = WPCV_Diff_Status::DONE;
+		$this->assertSame( '+5 / −2 / =1', WPCV_Page_Run_History::format_diff_summary( $run ) );
+
+		// alerting/doneでも件数がNULLなら0とせず「—」.
+		$this->assertSame(
+			'+— / −— / =—',
+			WPCV_Page_Run_History::format_diff_summary(
+				array(
+					'diff_status'         => WPCV_Diff_Status::DONE,
+					'findings_new'        => null,
+					'findings_resolved'   => null,
+					'findings_continuing' => null,
+				)
+			)
+		);
+
+		// failed.
+		$this->assertSame( WPCV_Diff_Status::FAILED, WPCV_Page_Run_History::format_diff_summary( array( 'diff_status' => WPCV_Diff_Status::FAILED ) ) );
+
+		// 上記以外(未知の値)はそのまま出す.
+		$this->assertSame( 'some_future_status', WPCV_Page_Run_History::format_diff_summary( array( 'diff_status' => 'some_future_status' ) ) );
+	}
+
+	/**
+	 * `format_alert_status()` が `alert_status` の値をそのまま返し、NULL・未設定は
+	 * 「—」になることを確認する(v0.5後半 §16・§1.2).
+	 *
+	 * @return void
+	 */
+	public function test_format_alert_status() {
+		$this->assertSame( 'sent', WPCV_Page_Run_History::format_alert_status( array( 'alert_status' => 'sent' ) ) );
+		$this->assertSame( 'not_needed', WPCV_Page_Run_History::format_alert_status( array( 'alert_status' => 'not_needed' ) ) );
+		$this->assertSame( 'no_recipient', WPCV_Page_Run_History::format_alert_status( array( 'alert_status' => 'no_recipient' ) ) );
+		$this->assertSame( 'failed', WPCV_Page_Run_History::format_alert_status( array( 'alert_status' => 'failed' ) ) );
+		$this->assertSame( '—', WPCV_Page_Run_History::format_alert_status( array( 'alert_status' => null ) ) );
+		$this->assertSame( '—', WPCV_Page_Run_History::format_alert_status( array() ) );
+	}
+
+	/**
+	 * `format_diff_counts()` が `diff_status` に関わらず3つの件数(NULLは「—」)を
+	 * そのまま並べることを確認する(v0.5後半 §16・§1.3の実行履歴詳細行).
+	 *
+	 * @return void
+	 */
+	public function test_format_diff_counts() {
+		$this->assertSame(
+			'5 / 2 / 1',
+			WPCV_Page_Run_History::format_diff_counts(
+				array(
+					'findings_new'        => 5,
+					'findings_resolved'   => 2,
+					'findings_continuing' => 1,
+				)
+			)
+		);
+
+		$this->assertSame( '— / — / —', WPCV_Page_Run_History::format_diff_counts( array() ) );
 	}
 }

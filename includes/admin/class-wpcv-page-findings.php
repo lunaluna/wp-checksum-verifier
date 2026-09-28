@@ -65,6 +65,14 @@ class WPCV_Page_Findings {
 	const VALID_SEVERITIES = array( 'high', 'medium', 'low' );
 
 	/**
+	 * `diff_state`絞り込みのallowlist(`WPCV_Rest_Findings_Controller::VALID_DIFF_STATES`と
+	 * 同じ一覧.複製の理由は`VALID_STATUSES`と同じ.v0.5後半 §16・Q1).
+	 *
+	 * @var string[]
+	 */
+	const VALID_DIFF_STATES = array( 'new', 'continuing', 'event' );
+
+	/**
 	 * `allowlist_hash`の対象になるfinding.statusの一覧(v0.4.0 §Step8の設計判断:
 	 * `actual_hash`を持つ`added`/`modified`のみが対象).
 	 *
@@ -160,6 +168,17 @@ class WPCV_Page_Findings {
 					</select>
 				</label>
 				<label>
+					<?php echo esc_html__( 'Diff', 'wp-checksum-verifier' ); ?>
+					<select name="diff_state">
+						<option value=""><?php echo esc_html__( 'All', 'wp-checksum-verifier' ); ?></option>
+						<?php foreach ( self::VALID_DIFF_STATES as $diff_state ) : ?>
+							<option value="<?php echo esc_attr( $diff_state ); ?>" <?php selected( $filters['diff_state'], $diff_state ); ?>>
+								<?php echo esc_html( $diff_state ); ?>
+							</option>
+						<?php endforeach; ?>
+					</select>
+				</label>
+				<label>
 					<input type="checkbox" name="include_suppressed" value="1" <?php checked( $filters['include_suppressed'] ); ?> />
 					<?php echo esc_html__( 'Show suppressed', 'wp-checksum-verifier' ); ?>
 				</label>
@@ -190,6 +209,7 @@ class WPCV_Page_Findings {
 				'dimension'          => '' === $filters['dimension'] ? array() : array( $filters['dimension'] ),
 				'status'             => '' === $filters['status'] ? array() : array( $filters['status'] ),
 				'severity'           => '' === $filters['severity'] ? array() : array( $filters['severity'] ),
+				'diff_state'         => '' === $filters['diff_state'] ? array() : array( $filters['diff_state'] ),
 				'include_suppressed' => $filters['include_suppressed'],
 				'include_closed'     => $filters['include_closed'],
 				'page'               => $page,
@@ -212,6 +232,7 @@ class WPCV_Page_Findings {
 					<th><?php echo esc_html__( 'Details', 'wp-checksum-verifier' ); ?></th>
 					<th><?php echo esc_html__( 'Severity', 'wp-checksum-verifier' ); ?></th>
 					<th><?php echo esc_html__( 'Version', 'wp-checksum-verifier' ); ?></th>
+					<th><?php echo esc_html__( 'Diff', 'wp-checksum-verifier' ); ?></th>
 					<th><?php echo esc_html__( 'Suppressed', 'wp-checksum-verifier' ); ?></th>
 					<th><?php echo esc_html__( 'Actions', 'wp-checksum-verifier' ); ?></th>
 				</tr>
@@ -225,6 +246,7 @@ class WPCV_Page_Findings {
 						<td><?php echo esc_html( self::format_detail( $finding ) ); ?></td>
 						<td><?php echo esc_html( $finding['severity'] ); ?></td>
 						<td><?php echo esc_html( (string) $finding['version'] ); ?></td>
+						<td><?php echo esc_html( self::format_diff_state( $finding ) ); ?></td>
 						<td><?php echo esc_html( self::suppressed_label( $finding ) ); ?></td>
 						<td><?php self::render_finding_actions( $finding ); ?></td>
 					</tr>
@@ -286,6 +308,41 @@ class WPCV_Page_Findings {
 		}
 
 		return implode( ' / ', $parts );
+	}
+
+	/**
+	 * 「Diff」列の表示文字列を組み立てる(v0.5後半 §16・§1.1).
+	 *
+	 * `diff_state`が無い(NULL. 差分処理がまだの run・失敗した run・v4より前の
+	 * run)場合と抑制されている場合は「—」にまとめる(区別するにはrunの
+	 * `diff_status`を見る必要があり、1行ごとの判定が複雑になるため.runの状態は
+	 * 実行履歴画面で分かる).`notified_at`があれば送信済みの日時を添える
+	 * (continuingで`notified_at`があるのは、前回の送信に失敗して今回送り直した
+	 * 行). 未知の`diff_state`の値は`target_run_reason_label()`と同じ方針で
+	 * そのまま出す.
+	 *
+	 * @param array $finding `WPCV_Finding_Repository::query()`の1行.
+	 * @return string
+	 */
+	public static function format_diff_state( array $finding ) {
+		$diff_state = isset( $finding['diff_state'] ) ? (string) $finding['diff_state'] : '';
+
+		if ( '' === $diff_state ) {
+			return '—';
+		}
+
+		$notified_at = empty( $finding['notified_at'] ) ? '' : (string) $finding['notified_at'];
+
+		if ( '' === $notified_at ) {
+			return $diff_state;
+		}
+
+		return sprintf(
+			/* translators: 1: diff state (new/continuing/event), 2: notified_at timestamp. */
+			__( '%1$s (emailed %2$s)', 'wp-checksum-verifier' ),
+			$diff_state,
+			$notified_at
+		);
 	}
 
 	/**
@@ -351,21 +408,23 @@ class WPCV_Page_Findings {
 	 * の両方から使う共通処理).allowlist外の値は「絞り込み無し」に読み替える
 	 * (クラスdocblock参照).
 	 *
-	 * @return array{dimension: string, status: string, severity: string, include_suppressed: bool, include_closed: bool}
+	 * @return array{dimension: string, status: string, severity: string, diff_state: string, include_suppressed: bool, include_closed: bool}
 	 */
 	private static function filters_from_request() {
 		// 読み取り専用のクエリ引数のみを扱うため nonce 検証を要求しない
 		// (`WPCV_Page_Run_History::render()` と同じ理由。allowlist外の値は
 		// `resolve_filter()` が「絞り込み無し」へ読み替えるため、サニタイズ不足による
 		// 実害も無い).
-		$dimension_raw = isset( $_GET['dimension'] ) ? sanitize_text_field( wp_unslash( $_GET['dimension'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-		$status_raw    = isset( $_GET['status'] ) ? sanitize_text_field( wp_unslash( $_GET['status'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-		$severity_raw  = isset( $_GET['severity'] ) ? sanitize_text_field( wp_unslash( $_GET['severity'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$dimension_raw  = isset( $_GET['dimension'] ) ? sanitize_text_field( wp_unslash( $_GET['dimension'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$status_raw     = isset( $_GET['status'] ) ? sanitize_text_field( wp_unslash( $_GET['status'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$severity_raw   = isset( $_GET['severity'] ) ? sanitize_text_field( wp_unslash( $_GET['severity'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$diff_state_raw = isset( $_GET['diff_state'] ) ? sanitize_text_field( wp_unslash( $_GET['diff_state'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 
 		return array(
 			'dimension'          => self::resolve_filter( $dimension_raw, WPCV_Target_Resolver::DIMENSIONS ),
 			'status'             => self::resolve_filter( $status_raw, self::VALID_STATUSES ),
 			'severity'           => self::resolve_filter( $severity_raw, self::VALID_SEVERITIES ),
+			'diff_state'         => self::resolve_filter( $diff_state_raw, self::VALID_DIFF_STATES ),
 			'include_suppressed' => ! empty( $_GET['include_suppressed'] ), // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 			'include_closed'     => ! empty( $_GET['include_closed'] ), // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 		);
