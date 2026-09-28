@@ -716,6 +716,162 @@ class AlertSenderTest extends TestCase {
 	}
 
 	// ------------------------------------------------------------------
+	// v0.5後半 §Step15b: 連続unverifiable(`send_for_run()`への組み込み)
+	// ------------------------------------------------------------------
+
+	/**
+	 * 連続unverifiableが閾値に達すると、通知対象のfindingが0件でも送ることを
+	 * 確認する(§2.5「新しく連続unverifiableの閾値に達したtargetがある→する」).
+	 * 本文に「Unverifiable N times in a row:」の節とtarget_idが出ることも確認する.
+	 *
+	 * @return void
+	 */
+	public function test_unverifiable_streak_triggers_alert_even_without_findings() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->rows['wp_wpcv_runs'][1] = array(
+			'id'           => 1,
+			'status'       => 'success',
+			'run_trigger'  => 'cron',
+			'runner'       => 'sync',
+			'alert_status' => null,
+		);
+		$wpdb->rows['wp_wpcv_target_runs'][1] = $this->make_target_run_row(
+			1,
+			array(
+				'run_id'     => 1,
+				'target_id'  => 'plugin:foo',
+				'status'     => 'unverifiable',
+				'error_code' => 'http_error',
+			)
+		);
+
+		$wpdb->rows['wp_wpcv_runs'][2]         = $this->make_run_row( 2 );
+		$wpdb->rows['wp_wpcv_target_runs'][2] = $this->make_target_run_row(
+			2,
+			array(
+				'run_id'     => 2,
+				'target_id'  => 'plugin:foo',
+				'status'     => 'unverifiable',
+				'error_code' => 'http_error',
+			)
+		);
+
+		$env = $this->make_sender_environment( $wpdb );
+
+		WPCV_Settings::update_alert_to( 'ops@example.com' );
+		$GLOBALS['_wpcv_test_filters']['wpcv_alert_unverifiable_streak'][] = static function () {
+			return 2;
+		};
+
+		$result = $env['sender']->send_for_run( 2, self::OWNER );
+
+		$this->assertSame( array( 'action' => 'sent' ), $result );
+		$this->assertSame( 'sent', $wpdb->rows['wp_wpcv_runs'][2]['alert_status'] );
+		$this->assertCount( 1, $GLOBALS['_wpcv_test_wp_mail_calls'] );
+		$body = $GLOBALS['_wpcv_test_wp_mail_calls'][0]['message'];
+		$this->assertStringContainsString( 'Unverifiable 2 times in a row:', $body );
+		$this->assertStringContainsString( 'plugin:foo', $body );
+	}
+
+	/**
+	 * 連続が閾値未満のときは送らないことを確認する(§2.5.通知対象の
+	 * findingも無いケース).
+	 *
+	 * @return void
+	 */
+	public function test_unverifiable_streak_below_threshold_does_not_trigger_alert() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->rows['wp_wpcv_runs'][1]         = $this->make_run_row( 1 );
+		$wpdb->rows['wp_wpcv_target_runs'][1] = $this->make_target_run_row(
+			1,
+			array(
+				'run_id'     => 1,
+				'target_id'  => 'plugin:foo',
+				'status'     => 'unverifiable',
+				'error_code' => 'http_error',
+			)
+		);
+
+		$env = $this->make_sender_environment( $wpdb );
+
+		WPCV_Settings::update_alert_to( 'ops@example.com' );
+		$GLOBALS['_wpcv_test_filters']['wpcv_alert_unverifiable_streak'][] = static function () {
+			return 2;
+		};
+
+		$result = $env['sender']->send_for_run( 1, self::OWNER );
+
+		$this->assertSame( array( 'action' => 'not_needed' ), $result );
+	}
+
+	/**
+	 * 既にその連続で通知済み(閾値の位置以降に`alert_status = sent`のrunが
+	 * ある)なら、連続がまだ続いていても再送しないことを確認する(§2.2の
+	 * 「通知済み」判定).
+	 *
+	 * @return void
+	 */
+	public function test_unverifiable_streak_not_resent_once_already_notified() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->rows['wp_wpcv_runs'][1] = array(
+			'id'           => 1,
+			'status'       => 'success',
+			'run_trigger'  => 'cron',
+			'runner'       => 'sync',
+			'alert_status' => null,
+		);
+		$wpdb->rows['wp_wpcv_target_runs'][1] = $this->make_target_run_row(
+			1,
+			array(
+				'run_id'     => 1,
+				'target_id'  => 'plugin:foo',
+				'status'     => 'unverifiable',
+				'error_code' => 'http_error',
+			)
+		);
+
+		// 位置2(閾値ちょうどで最初に送ったrun): 送信成功済み.
+		$wpdb->rows['wp_wpcv_runs'][2] = array(
+			'id'           => 2,
+			'status'       => 'success',
+			'run_trigger'  => 'cron',
+			'runner'       => 'sync',
+			'alert_status' => 'sent',
+		);
+		$wpdb->rows['wp_wpcv_target_runs'][2] = $this->make_target_run_row(
+			2,
+			array(
+				'run_id'     => 2,
+				'target_id'  => 'plugin:foo',
+				'status'     => 'unverifiable',
+				'error_code' => 'http_error',
+			)
+		);
+
+		$wpdb->rows['wp_wpcv_runs'][3]         = $this->make_run_row( 3 );
+		$wpdb->rows['wp_wpcv_target_runs'][3] = $this->make_target_run_row(
+			3,
+			array(
+				'run_id'     => 3,
+				'target_id'  => 'plugin:foo',
+				'status'     => 'unverifiable',
+				'error_code' => 'http_error',
+			)
+		);
+
+		$env = $this->make_sender_environment( $wpdb );
+
+		WPCV_Settings::update_alert_to( 'ops@example.com' );
+		$GLOBALS['_wpcv_test_filters']['wpcv_alert_unverifiable_streak'][] = static function () {
+			return 2;
+		};
+
+		$result = $env['sender']->send_for_run( 3, self::OWNER );
+
+		$this->assertSame( array( 'action' => 'not_needed' ), $result );
+	}
+
+	// ------------------------------------------------------------------
 	// v0.5後半 §Step15a: run の連続失敗アラート(`send_run_failure()`)
 	// ------------------------------------------------------------------
 

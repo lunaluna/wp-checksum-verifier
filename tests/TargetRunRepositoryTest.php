@@ -8,6 +8,8 @@
 require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-error-code.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-generation-differ.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once __DIR__ . '/doubles.php';
 
@@ -1067,6 +1069,222 @@ class TargetRunRepositoryTest extends TestCase {
 
 		foreach ( $wpdb->get_results_calls as $query ) {
 			if ( false === strpos( $query, 'wp_wpcv_target_runs' ) || false !== stripos( $query, 'SELECT DISTINCT' ) ) {
+				continue;
+			}
+
+			$this->assertMatchesRegularExpression( '/\\s(WHERE|LIMIT)\\s/i', $query, "全件取得のSELECTが発行された: {$query}" );
+		}
+	}
+
+	// ------------------------------------------------------------------
+	// v0.5後半 §Step15b: 連続unverifiable(`find_streak_for_target()`)
+	// ------------------------------------------------------------------
+
+	/**
+	 * `wpcv_runs`の1行分を直接insertするヘルパー(`RunRepositoryTest`と同じ形.
+	 * §Step15bのテスト専用).
+	 *
+	 * @param WPCV_Test_Fake_WPDB $wpdb      フェイクwpdb.
+	 * @param array               $overrides 上書きするフィールド(`status`は必須).
+	 * @return int insertした行のid.
+	 */
+	private function insert_run_for_streak( WPCV_Test_Fake_WPDB $wpdb, array $overrides ) {
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array_merge(
+				array(
+					'run_trigger'  => 'cron',
+					'runner'       => 'sync',
+					'alert_status' => null,
+				),
+				$overrides
+			)
+		);
+
+		return $wpdb->insert_id;
+	}
+
+	/**
+	 * `wpcv_target_runs`の1行分を、指定runに属するものとして直接insertする
+	 * ヘルパー(§Step15bのテスト専用).
+	 *
+	 * @param WPCV_Test_Fake_WPDB $wpdb      フェイクwpdb.
+	 * @param int                 $run_id    所属するrunのid.
+	 * @param array               $overrides 上書きするフィールド(`target_id`/`status`は必須).
+	 * @return int insertした行のid.
+	 */
+	private function insert_target_run_for_streak( WPCV_Test_Fake_WPDB $wpdb, $run_id, array $overrides ) {
+		$wpdb->insert(
+			'wp_wpcv_target_runs',
+			array_merge(
+				array(
+					'run_id'     => $run_id,
+					'error_code' => null,
+				),
+				$overrides
+			)
+		);
+
+		return $wpdb->insert_id;
+	}
+
+	/**
+	 * 連続が閾値ちょうどのとき`length`が閾値と一致し、まだ誰も通知していない
+	 * ため`notified = false`になることを確認する(§2.2).
+	 *
+	 * @return void
+	 */
+	public function test_find_streak_for_target_counts_until_success_breaks_it() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$run1 = $this->insert_run_for_streak( $wpdb, array( 'status' => 'success' ) );
+		$this->insert_target_run_for_streak( $wpdb, $run1, array( 'target_id' => 'plugin:foo', 'status' => 'success' ) );
+
+		$run2 = $this->insert_run_for_streak( $wpdb, array( 'status' => 'success' ) );
+		$this->insert_target_run_for_streak( $wpdb, $run2, array( 'target_id' => 'plugin:foo', 'status' => 'unverifiable', 'error_code' => 'http_error' ) );
+
+		$run3 = $this->insert_run_for_streak( $wpdb, array( 'status' => 'partial' ) );
+		$this->insert_target_run_for_streak( $wpdb, $run3, array( 'target_id' => 'plugin:foo', 'status' => 'unverifiable', 'error_code' => 'http_error' ) );
+
+		$result = $repository->find_streak_for_target( 'plugin:foo', $run3, 2 );
+
+		$this->assertSame( 2, $result['length'] );
+		$this->assertFalse( $result['notified'] );
+	}
+
+	/**
+	 * 所属するrunがfailed/abortedのtarget_runは数えないし途切れさせもしない
+	 * (§2.1「見ない」)ことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_find_streak_for_target_skips_target_run_of_failed_run_without_breaking() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$run1 = $this->insert_run_for_streak( $wpdb, array( 'status' => 'success' ) );
+		$this->insert_target_run_for_streak( $wpdb, $run1, array( 'target_id' => 'plugin:foo', 'status' => 'unverifiable', 'error_code' => 'http_error' ) );
+
+		// run自体が失敗した(target_runは列挙済みだが未検証のまま残っている想定).
+		$run2 = $this->insert_run_for_streak( $wpdb, array( 'status' => 'failed' ) );
+		$this->insert_target_run_for_streak( $wpdb, $run2, array( 'target_id' => 'plugin:foo', 'status' => 'running' ) );
+
+		$run3 = $this->insert_run_for_streak( $wpdb, array( 'status' => 'success' ) );
+		$this->insert_target_run_for_streak( $wpdb, $run3, array( 'target_id' => 'plugin:foo', 'status' => 'unverifiable', 'error_code' => 'http_error' ) );
+
+		$result = $repository->find_streak_for_target( 'plugin:foo', $run3, 2 );
+
+		$this->assertSame( 2, $result['length'], 'run2は見ないので、run1とrun3の2件だけ数える' );
+	}
+
+	/**
+	 * そのtargetのtarget_runが存在しないrun(アンインストール等のgap)は、
+	 * 全runを列挙しなくても自然に読み飛ばされ、途切れさせないことを確認する
+	 * (§2.1「評価しない」).
+	 *
+	 * @return void
+	 */
+	public function test_find_streak_for_target_skips_run_with_no_target_run_for_target() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$run1 = $this->insert_run_for_streak( $wpdb, array( 'status' => 'success' ) );
+		$this->insert_target_run_for_streak( $wpdb, $run1, array( 'target_id' => 'plugin:foo', 'status' => 'unverifiable', 'error_code' => 'http_error' ) );
+
+		// run2ではplugin:fooのtarget_run自体が無い(一時的にアンインストールされていた等).
+		$this->insert_run_for_streak( $wpdb, array( 'status' => 'success' ) );
+
+		$run3 = $this->insert_run_for_streak( $wpdb, array( 'status' => 'success' ) );
+		$this->insert_target_run_for_streak( $wpdb, $run3, array( 'target_id' => 'plugin:foo', 'status' => 'unverifiable', 'error_code' => 'http_error' ) );
+
+		$result = $repository->find_streak_for_target( 'plugin:foo', $run3, 2 );
+
+		$this->assertSame( 2, $result['length'] );
+	}
+
+	/**
+	 * coreの`manifest_not_found`を数えることを確認する(§2.1.Q2. 統合レベルでの
+	 * 確認. 純粋関数自体の全パターンは`GenerationDifferTest`で検証済み).
+	 *
+	 * @return void
+	 */
+	public function test_find_streak_for_target_counts_core_manifest_not_found() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$run1 = $this->insert_run_for_streak( $wpdb, array( 'status' => 'success' ) );
+		$this->insert_target_run_for_streak( $wpdb, $run1, array( 'target_id' => 'core', 'status' => 'success' ) );
+
+		$run2 = $this->insert_run_for_streak( $wpdb, array( 'status' => 'success' ) );
+		$this->insert_target_run_for_streak( $wpdb, $run2, array( 'target_id' => 'core', 'status' => 'unverifiable', 'error_code' => 'manifest_not_found' ) );
+
+		$result = $repository->find_streak_for_target( 'core', $run2, 1 );
+
+		$this->assertSame( 1, $result['length'] );
+	}
+
+	/**
+	 * 連続の中で、先頭からN番目以降(今回を除く)に`alert_status = sent`のrunが
+	 * あれば`notified = true`になることを確認する(§2.2.
+	 * `WPCV_Run_Repository::find_failure_streak()`と同じ式).
+	 *
+	 * @return void
+	 */
+	public function test_find_streak_for_target_detects_already_notified_run() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$run0 = $this->insert_run_for_streak( $wpdb, array( 'status' => 'success' ) );
+		$this->insert_target_run_for_streak( $wpdb, $run0, array( 'target_id' => 'plugin:foo', 'status' => 'success' ) );
+
+		$run1 = $this->insert_run_for_streak( $wpdb, array( 'status' => 'success' ) ); // 位置1.
+		$this->insert_target_run_for_streak( $wpdb, $run1, array( 'target_id' => 'plugin:foo', 'status' => 'unverifiable', 'error_code' => 'http_error' ) );
+
+		$run2 = $this->insert_run_for_streak( $wpdb, array( 'status' => 'success' ) ); // 位置2.
+		$this->insert_target_run_for_streak( $wpdb, $run2, array( 'target_id' => 'plugin:foo', 'status' => 'unverifiable', 'error_code' => 'http_error' ) );
+
+		// 位置3(閾値ちょうどで最初に送ったrun): 送信成功済み.
+		$run3 = $this->insert_run_for_streak(
+			$wpdb,
+			array(
+				'status'       => 'success',
+				'alert_status' => 'sent',
+			)
+		);
+		$this->insert_target_run_for_streak( $wpdb, $run3, array( 'target_id' => 'plugin:foo', 'status' => 'unverifiable', 'error_code' => 'http_error' ) );
+
+		$run4 = $this->insert_run_for_streak( $wpdb, array( 'status' => 'success' ) ); // 位置4.
+		$this->insert_target_run_for_streak( $wpdb, $run4, array( 'target_id' => 'plugin:foo', 'status' => 'unverifiable', 'error_code' => 'http_error' ) );
+
+		$run5 = $this->insert_run_for_streak( $wpdb, array( 'status' => 'success' ) ); // 位置5(今回).
+		$this->insert_target_run_for_streak( $wpdb, $run5, array( 'target_id' => 'plugin:foo', 'status' => 'unverifiable', 'error_code' => 'http_error' ) );
+
+		$result = $repository->find_streak_for_target( 'plugin:foo', $run5, 3 );
+
+		$this->assertSame( 5, $result['length'] );
+		$this->assertTrue( $result['notified'] );
+	}
+
+	/**
+	 * `find_streak_for_target()`が`wp_wpcv_target_runs`/`wp_wpcv_runs`の全件取得を
+	 * 発行しないことを確認する(コードレビュー指摘5と同じ方針).
+	 *
+	 * @return void
+	 */
+	public function test_find_streak_for_target_does_not_select_whole_tables() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$run1 = $this->insert_run_for_streak( $wpdb, array( 'status' => 'success' ) );
+		$this->insert_target_run_for_streak( $wpdb, $run1, array( 'target_id' => 'plugin:foo', 'status' => 'unverifiable', 'error_code' => 'http_error' ) );
+
+		$repository->find_streak_for_target( 'plugin:foo', $run1, 3 );
+
+		$this->assertNotEmpty( $wpdb->get_results_calls );
+
+		foreach ( $wpdb->get_results_calls as $query ) {
+			if ( false === strpos( $query, 'wp_wpcv_target_runs' ) && false === strpos( $query, 'wp_wpcv_runs' ) ) {
 				continue;
 			}
 

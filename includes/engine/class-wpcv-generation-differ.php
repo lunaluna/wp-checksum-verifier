@@ -293,6 +293,46 @@ class WPCV_Generation_Differ {
 	}
 
 	/**
+	 * 連続unverifiable(v0.5後半 §Step15b設計§2.1)で、1つのtarget_runを
+	 * 「数える」か「途切れさせる」かを判定する.
+	 *
+	 * 呼び出し元(`WPCV_Target_Run_Repository::find_streak_for_target()`)が
+	 * 「所属するrunがsuccess/partialである」ことを保証した上で渡す前提
+	 * (runがfailed/abortedのときの「見ない」判定はDBの`wpcv_runs.status`を
+	 * 見る必要があるため、このクラスの外〔呼び出し元〕が行う.クラスdocblock
+	 * 「DBに一切触れない」の方針どおり).
+	 *
+	 * @param array $target_run 判定対象のtarget_run(`target_id`/`status`/`error_code`).
+	 * @return bool `true`なら数える(連続を継続する).`false`なら途切れさせる.
+	 */
+	public static function is_unverifiable_streak_member( array $target_run ) {
+		$status     = (string) ( $target_run['status'] ?? '' );
+		$error_code = $target_run['error_code'] ?? null;
+
+		if ( WPCV_Target_Status::FAILED === $status ) {
+			return true;
+		}
+
+		if ( WPCV_Target_Status::UNVERIFIABLE !== $status ) {
+			// success/skipped(baseline_rebuilt・checksum_covered等を含む). 障害ではない.
+			return false;
+		}
+
+		if ( in_array( $error_code, array( WPCV_Error_Code::HTTP_ERROR, WPCV_Error_Code::RATE_LIMITED, WPCV_Error_Code::TIMEOUT ), true ) ) {
+			return true;
+		}
+
+		if ( WPCV_Error_Code::MANIFEST_NOT_FOUND === $error_code ) {
+			// core以外のmanifest_not_foundは独自プラグインの恒常状態のため途切れさせる.
+			// coreのmanifest_not_foundはHTTPエラーでもこのコードになるため数える(Q2).
+			return 'core' === (string) ( $target_run['target_id'] ?? '' );
+		}
+
+		// unknown_source/target_missing/その他: 一時障害ではない.
+		return false;
+	}
+
+	/**
 	 * `finding_key` で今回と基準を突き合わせ、今回の `diff_state`
 	 * (`continuing`/`new`)と、基準側で終わらせる行(`$end_unmatched_as_resolved`
 	 * が true のときだけ、基準にあって今回に無いキー)を決定する

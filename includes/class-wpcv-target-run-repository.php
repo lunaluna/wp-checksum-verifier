@@ -79,6 +79,17 @@ class WPCV_Target_Run_Repository {
 	const DEFAULT_BACKOFF_MAX_SECONDS = 3600;
 
 	/**
+	 * `find_streak_for_target()` が1回に読む target_run の件数(v0.5後半
+	 * §Step15b設計§3.1「1回に読む件数は未実測の暫定値を置き、コメントに
+	 * 『未実測』と書く」).`WPCV_Run_Repository::FAILURE_STREAK_BATCH_SIZE`と
+	 * 同じ値を流用する(通常は最初の1バッチで途切れる〔success等に遭遇する〕
+	 * ため、ほとんどの呼び出しは1回のクエリで終わる).
+	 *
+	 * @var int
+	 */
+	const UNVERIFIABLE_STREAK_BATCH_SIZE = 50;
+
+	/**
 	 * `$wpdb` 相当のオブジェクト(`insert()` / `update()` / `get_results()` / `query()` /
 	 * `base_prefix` / `insert_id` / `last_error` を持つもの).
 	 *
@@ -852,6 +863,166 @@ class WPCV_Target_Run_Repository {
 			'id'      => (int) $rows[0]['id'],
 			'version' => $rows[0]['version'],
 		);
+	}
+
+	/**
+	 * 連続unverifiable(v0.5後半 §Step15b設計§2.1・§2.2)を、指定targetについて
+	 * `$current_run_id`から遡って求める.`WPCV_Alert_Sender::send_for_run()`が、
+	 * 今回の run で「数える」に該当したtarget_runについてのみ呼ぶ想定
+	 * (設計書§3.2「今回のtarget_runのうち『数える』に当たるものについて呼び」).
+	 *
+	 * `WPCV_Run_Repository::find_failure_streak()`と同じ考え方(そちらの
+	 * docblock参照)だが、次の点が異なる:
+	 *
+	 * - 「数える/途切れさせる」の分類対象はrunではなくtarget_run(§2.1の表)。
+	 *   分類そのものはDBに触れない`WPCV_Generation_Differ::
+	 *   is_unverifiable_streak_member()`に委ねる.
+	 * - 「見ない」経路が2つある: (1) 所属するrunがfailed/abortedのとき(この
+	 *   メソッドがrunのstatusを見て判定する)、(2) その target のtarget_runが
+	 *   対象のrunにそもそも存在しないとき(アンインストール等)。こちらは、
+	 *   このtarget_idで絞り込んだ`wpcv_target_runs`のクエリにその run の行が
+	 *   現れないだけで自然に実現される ―― 全runを列挙する必要は無い.
+	 *
+	 * 読み方: 無制限の全件取得はしない.新しい順に
+	 * `UNVERIFIABLE_STREAK_BATCH_SIZE`件ずつ読み、途切れる行が出るか、
+	 * それ以上のtarget_runが無くなるまで続ける.「属するrun」の行
+	 * (status/alert_status)は、target_runとJOINせず別クエリで`id IN (...)`
+	 * により一括で読む(テストダブルがJOINを解釈しないため.設計書§3.1
+	 * 「target_runを読む→属するrunをid IN(...)で読む」).
+	 *
+	 * 「通知済み」の判定は`WPCV_Run_Repository::find_failure_streak()`と全く
+	 * 同じ式(そちらのdocblock参照.連続の長さL・閾値Nに対し、今回を除く
+	 * 2件目〜`L - N + 1`件目のいずれかに`alert_status = sent`があれば通知済み).
+	 *
+	 * @param string $target_id      対象のtarget_id.
+	 * @param int    $current_run_id 起点のrun(今回のrun)のid.
+	 * @param int    $threshold      閾値N(`wpcv_alert_unverifiable_streak`.
+	 *                               下限1は呼び出し元が適用済みの前提だが、
+	 *                               念のためここでも適用する).
+	 * @return array{length: int, notified: bool} `length`は数えた件数(今回を含む).
+	 */
+	public function find_streak_for_target( $target_id, $current_run_id, $threshold ) {
+		$target_id      = (string) $target_id;
+		$current_run_id = (int) $current_run_id;
+		$threshold      = max( 1, (int) $threshold );
+
+		$counted   = array();
+		$before_id = $current_run_id + 1;
+
+		while ( true ) {
+			$batch = $this->fetch_target_run_streak_batch( $target_id, $before_id );
+
+			if ( empty( $batch ) ) {
+				break; // これ以上遡るtarget_runが無い(連続はここで終わる).
+			}
+
+			$runs_by_id = $this->fetch_runs_by_id( array_column( $batch, 'run_id' ) );
+			$broke      = false;
+
+			foreach ( $batch as $target_run ) {
+				$run_id = (int) $target_run['run_id'];
+
+				if ( $run_id >= $before_id ) {
+					// テストダブルがWHEREを解釈せず全件を返した場合の保険.
+					continue;
+				}
+
+				$run = $runs_by_id[ $run_id ] ?? null;
+
+				if ( null === $run ) {
+					// 属するrunが見つからない(通常起こらない). 安全側で見ない.
+					continue;
+				}
+
+				if ( in_array( (string) ( $run['status'] ?? '' ), array( WPCV_Run_Status::FAILED, WPCV_Run_Status::ABORTED ), true ) ) {
+					continue; // §2.1: runがfailed/abortedなら見ない.
+				}
+
+				if ( ! WPCV_Generation_Differ::is_unverifiable_streak_member( $target_run ) ) {
+					$broke = true;
+					break;
+				}
+
+				$counted[] = array( 'alert_status' => $run['alert_status'] ?? null );
+			}
+
+			if ( $broke ) {
+				break;
+			}
+
+			$before_id = (int) $batch[ count( $batch ) - 1 ]['run_id'];
+
+			if ( count( $batch ) < self::UNVERIFIABLE_STREAK_BATCH_SIZE ) {
+				break; // このtargetのtarget_run履歴を読み切った.
+			}
+		}
+
+		$length   = count( $counted );
+		$notified = false;
+
+		for ( $i = 1; $i <= $length - $threshold; $i++ ) {
+			if ( 'sent' === (string) ( $counted[ $i ]['alert_status'] ?? '' ) ) {
+				$notified = true;
+				break;
+			}
+		}
+
+		return array(
+			'length'   => $length,
+			'notified' => $notified,
+		);
+	}
+
+	/**
+	 * `find_streak_for_target()`が1バッチ分のtarget_run(`run_id`/`target_id`/
+	 * `status`/`error_code`)を読む.
+	 *
+	 * @param string $target_id 対象のtarget_id.
+	 * @param int    $before_id この値未満の`run_id`だけを対象にする.
+	 * @return array<int, array>
+	 */
+	private function fetch_target_run_streak_batch( $target_id, $before_id ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
+
+		return $this->select_rows(
+			$this->wpdb->prepare(
+				"SELECT run_id, target_id, status, error_code FROM {$table} WHERE target_id = %s AND run_id < %d ORDER BY run_id DESC LIMIT %d", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name only.
+				(string) $target_id,
+				(int) $before_id,
+				self::UNVERIFIABLE_STREAK_BATCH_SIZE
+			)
+		);
+	}
+
+	/**
+	 * `run_id`の一覧から、対応する`wpcv_runs`の行(`id`/`status`/`alert_status`)を
+	 * まとめて読む(`find_streak_for_target()`専用.クラスdocblock相当の理由で
+	 * JOINせず別クエリにする).
+	 *
+	 * @param array $run_ids 読み取る run の id 一覧(空なら空配列を返す).
+	 * @return array<int, array> `id` => 行.
+	 */
+	private function fetch_runs_by_id( array $run_ids ) {
+		$run_ids = array_values( array_unique( array_map( 'intval', $run_ids ) ) );
+
+		if ( empty( $run_ids ) ) {
+			return array();
+		}
+
+		$table        = $this->wpdb->base_prefix . 'wpcv_runs';
+		$placeholders = implode( ', ', array_fill( 0, count( $run_ids ), '%d' ) );
+		$sql          = "SELECT id, status, alert_status FROM {$table} WHERE id IN ( {$placeholders} )";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name + placeholder count matches $run_ids) built above; all values are bound via prepare().
+		$rows = $this->select_rows( $this->wpdb->prepare( $sql, $run_ids ) );
+
+		$by_id = array();
+
+		foreach ( $rows as $row ) {
+			$by_id[ (int) $row['id'] ] = $row;
+		}
+
+		return $by_id;
 	}
 
 	/**

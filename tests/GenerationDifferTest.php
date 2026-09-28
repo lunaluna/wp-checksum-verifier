@@ -509,4 +509,134 @@ class GenerationDifferTest extends TestCase {
 	public function test_should_send_alert_false_when_nothing_to_report() {
 		$this->assertFalse( WPCV_Generation_Differ::should_send_alert( 0, 0 ) );
 	}
+
+	// ------------------------------------------------------------------
+	// v0.5後半 §Step15b: is_unverifiable_streak_member()(§2.1の全セル)
+	// ------------------------------------------------------------------
+
+	/**
+	 * target_run 1件分の最小データを作る.
+	 *
+	 * @param string      $status     `WPCV_Target_Status`の定数.
+	 * @param string|null $error_code error_code.
+	 * @param string      $target_id  target_id(既定は`plugin:foo`. coreの
+	 *                                特例を確認するテストだけ明示的に上書きする).
+	 * @return array
+	 */
+	private function make_target_run_for_streak( $status, $error_code = null, $target_id = 'plugin:foo' ) {
+		return array(
+			'target_id'  => $target_id,
+			'status'     => $status,
+			'error_code' => $error_code,
+		);
+	}
+
+	/**
+	 * `status = failed`はerror_codeを問わず数えることを確認する(§2.1の1行目.D5).
+	 *
+	 * @return void
+	 */
+	public function test_is_unverifiable_streak_member_true_when_failed_regardless_of_error_code() {
+		$this->assertTrue(
+			WPCV_Generation_Differ::is_unverifiable_streak_member(
+				$this->make_target_run_for_streak( WPCV_Target_Status::FAILED, WPCV_Error_Code::ARCHIVE_INVALID )
+			)
+		);
+	}
+
+	/**
+	 * `unverifiable`かつ`http_error`/`rate_limited`/`timeout`は数えることを確認する
+	 * (§2.1.D5).
+	 *
+	 * @return void
+	 */
+	public function test_is_unverifiable_streak_member_true_for_transient_error_codes() {
+		foreach ( array( WPCV_Error_Code::HTTP_ERROR, WPCV_Error_Code::RATE_LIMITED, WPCV_Error_Code::TIMEOUT ) as $error_code ) {
+			$this->assertTrue(
+				WPCV_Generation_Differ::is_unverifiable_streak_member(
+					$this->make_target_run_for_streak( WPCV_Target_Status::UNVERIFIABLE, $error_code )
+				),
+				"error_code={$error_code}は数えるはず"
+			);
+		}
+	}
+
+	/**
+	 * coreの`manifest_not_found`は数えることを確認する(§2.1.Q2).
+	 *
+	 * @return void
+	 */
+	public function test_is_unverifiable_streak_member_true_for_core_manifest_not_found() {
+		$this->assertTrue(
+			WPCV_Generation_Differ::is_unverifiable_streak_member(
+				$this->make_target_run_for_streak( WPCV_Target_Status::UNVERIFIABLE, WPCV_Error_Code::MANIFEST_NOT_FOUND, 'core' )
+			)
+		);
+	}
+
+	/**
+	 * core以外の`manifest_not_found`は独自プラグインの恒常状態のため途切れさせる
+	 * ことを確認する(§2.1.Q2の反例).
+	 *
+	 * @return void
+	 */
+	public function test_is_unverifiable_streak_member_false_for_non_core_manifest_not_found() {
+		$this->assertFalse(
+			WPCV_Generation_Differ::is_unverifiable_streak_member(
+				$this->make_target_run_for_streak( WPCV_Target_Status::UNVERIFIABLE, WPCV_Error_Code::MANIFEST_NOT_FOUND, 'plugin:foo' )
+			)
+		);
+
+		// core:_scan はマニフェストを取得しないため対象外(設計書§2.1の注記).
+		$this->assertFalse(
+			WPCV_Generation_Differ::is_unverifiable_streak_member(
+				$this->make_target_run_for_streak( WPCV_Target_Status::UNVERIFIABLE, WPCV_Error_Code::MANIFEST_NOT_FOUND, 'core:_scan' )
+			)
+		);
+	}
+
+	/**
+	 * `unverifiable`かつ`unknown_source`/`target_missing`は一時障害ではないため
+	 * 途切れさせることを確認する(§2.1).
+	 *
+	 * @return void
+	 */
+	public function test_is_unverifiable_streak_member_false_for_permanent_error_codes() {
+		foreach ( array( WPCV_Error_Code::UNKNOWN_SOURCE, WPCV_Error_Code::TARGET_MISSING ) as $error_code ) {
+			$this->assertFalse(
+				WPCV_Generation_Differ::is_unverifiable_streak_member(
+					$this->make_target_run_for_streak( WPCV_Target_Status::UNVERIFIABLE, $error_code )
+				),
+				"error_code={$error_code}は途切れさせるはず"
+			);
+		}
+	}
+
+	/**
+	 * `success`(baseline_rebuiltを含む)は照合できたため途切れさせることを確認する
+	 * (§2.1).
+	 *
+	 * @return void
+	 */
+	public function test_is_unverifiable_streak_member_false_when_success() {
+		$this->assertFalse(
+			WPCV_Generation_Differ::is_unverifiable_streak_member(
+				$this->make_target_run_for_streak( WPCV_Target_Status::SUCCESS, WPCV_Error_Code::BASELINE_REBUILT )
+			)
+		);
+	}
+
+	/**
+	 * `skipped`(checksum_covered等)は障害ではないため途切れさせることを確認する
+	 * (§2.1).
+	 *
+	 * @return void
+	 */
+	public function test_is_unverifiable_streak_member_false_when_skipped() {
+		$this->assertFalse(
+			WPCV_Generation_Differ::is_unverifiable_streak_member(
+				$this->make_target_run_for_streak( WPCV_Target_Status::SKIPPED, WPCV_Error_Code::CHECKSUM_COVERED )
+			)
+		);
+	}
 }

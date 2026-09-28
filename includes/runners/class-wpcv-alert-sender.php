@@ -24,10 +24,10 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 失敗専用の経路.`send_for_run()`と`send_mail()`/`run_channels()`〔メール送信・
  * 追加チャネル実行〕を共有するが、`alerting`のclaim/leaseには依存しない).
  *
- * `$unverifiable_streak_triggered`は`send_for_run()`では常にfalseで
- * `WPCV_Generation_Differ::should_send_alert()`を呼ぶ(連続unverifiableの
- * アラートはStep15bの範囲.runの連続失敗アラートはStep15aで`send_run_failure()`
- * として別経路にした).
+ * `send_for_run()`は`gather_unverifiable_streaks()`(v0.5後半 §Step15b)が
+ * 求めた連続unverifiableの有無を`$unverifiable_streak_triggered`として
+ * `WPCV_Generation_Differ::should_send_alert()`に渡す.runの連続失敗アラートは
+ * これとは別の経路(Step15a.`send_run_failure()`)で扱う.
  */
 class WPCV_Alert_Sender {
 
@@ -121,10 +121,17 @@ class WPCV_Alert_Sender {
 		$now         = call_user_func( $this->now );
 		$resend_days = (int) apply_filters( 'wpcv_alert_resend_days', 7 );
 
-		$candidates     = $this->gather_notify_candidates( $run_id, $now, $resend_days );
-		$resolved_count = (int) ( $run['findings_resolved'] ?? 0 );
+		// §3.2手順1(v0.5後半 §Step15b): find_all_by_run()をshould_send_alert()の
+		// 判定より前に移す(連続unverifiableの判定〔手順2〕にも使うため.
+		// 以前は宛先の確認のあとで呼んでいた).
+		$target_runs = $this->target_run_repository->find_all_by_run( $run_id );
 
-		if ( ! WPCV_Generation_Differ::should_send_alert( $candidates['notify_count'], $resolved_count, false ) ) {
+		$candidates             = $this->gather_notify_candidates( $run_id, $now, $resend_days );
+		$resolved_count         = (int) ( $run['findings_resolved'] ?? 0 );
+		$unverifiable_threshold = max( 1, (int) apply_filters( 'wpcv_alert_unverifiable_streak', 3 ) );
+		$unverifiable_streaks   = $this->gather_unverifiable_streaks( $target_runs, $run_id, $unverifiable_threshold );
+
+		if ( ! WPCV_Generation_Differ::should_send_alert( $candidates['notify_count'], $resolved_count, ! empty( $unverifiable_streaks ) ) ) {
 			$this->run_repository->record_alert_result( $run_id, $owner, 'not_needed', null, null, false );
 
 			return array( 'action' => 'not_needed' );
@@ -140,8 +147,6 @@ class WPCV_Alert_Sender {
 			return array( 'action' => 'no_recipient' );
 		}
 
-		$target_runs = $this->target_run_repository->find_all_by_run( $run_id );
-
 		// 本文の counts(New/Resolved/Continuing)は、finding_repositoryで再集計せず
 		// wpcv_runsに差分処理(Step12)が書き込み済みの集計値をそのまま使う
 		// (「通知した件数」〔notify_count〕とは別概念. §3設計上の決定参照).
@@ -155,16 +160,18 @@ class WPCV_Alert_Sender {
 
 		$composed = WPCV_Alert_Composer::compose(
 			array(
-				'site_name'        => get_option( 'blogname' ),
-				'run'              => $run,
-				'target_runs'      => $target_runs,
-				'counts'           => $counts,
-				'top_items'        => $candidates['top_items'],
-				'by_target'        => $this->finding_repository->count_by_target_and_status( $run_id ),
-				'resolved_items'   => $this->finding_repository->find_resolved_items( $run_id, self::RESOLVED_ITEMS_FETCH_LIMIT ),
-				'baseline_rebuilt' => $this->gather_baseline_rebuilt( $target_runs, $run_id ),
-				'removed_targets'  => $this->finding_repository->count_removed_targets( $run_id ),
-				'details_url'      => $details_url,
+				'site_name'              => get_option( 'blogname' ),
+				'run'                    => $run,
+				'target_runs'            => $target_runs,
+				'counts'                 => $counts,
+				'top_items'              => $candidates['top_items'],
+				'by_target'              => $this->finding_repository->count_by_target_and_status( $run_id ),
+				'resolved_items'         => $this->finding_repository->find_resolved_items( $run_id, self::RESOLVED_ITEMS_FETCH_LIMIT ),
+				'baseline_rebuilt'       => $this->gather_baseline_rebuilt( $target_runs, $run_id ),
+				'unverifiable_streaks'   => $unverifiable_streaks,
+				'unverifiable_threshold' => $unverifiable_threshold,
+				'removed_targets'        => $this->finding_repository->count_removed_targets( $run_id ),
+				'details_url'            => $details_url,
 			)
 		);
 
@@ -425,6 +432,40 @@ class WPCV_Alert_Sender {
 		}
 
 		return $items;
+	}
+
+	/**
+	 * 今回のtarget_runのうち§2.1の「数える」に該当するものについて
+	 * `WPCV_Target_Run_Repository::find_streak_for_target()`を呼び、閾値に
+	 * 達しかつ未通知のものを本文用に集める(v0.5後半 §Step15b設計§3.2手順2).
+	 *
+	 * @param array<int, array> $target_runs 今回のrunのtarget_run行一覧.
+	 * @param int               $run_id      対象のrunのid.
+	 * @param int               $threshold   閾値N.
+	 * @return array<int, array{target_id: string, error_code: string|null}>
+	 */
+	private function gather_unverifiable_streaks( array $target_runs, $run_id, $threshold ) {
+		$streaks = array();
+
+		foreach ( $target_runs as $target_run ) {
+			if ( ! WPCV_Generation_Differ::is_unverifiable_streak_member( $target_run ) ) {
+				continue;
+			}
+
+			$target_id = (string) ( $target_run['target_id'] ?? '' );
+			$result    = $this->target_run_repository->find_streak_for_target( $target_id, $run_id, $threshold );
+
+			if ( $result['length'] < $threshold || $result['notified'] ) {
+				continue;
+			}
+
+			$streaks[] = array(
+				'target_id'  => $target_id,
+				'error_code' => $target_run['error_code'] ?? null,
+			);
+		}
+
+		return $streaks;
 	}
 
 	/**
