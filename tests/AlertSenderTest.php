@@ -13,6 +13,7 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-finding-key.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-generation-differ.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-alert-composer.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
@@ -492,10 +493,11 @@ class AlertSenderTest extends TestCase {
 		$this->assertSame( self::NOW, $wpdb->rows['wp_wpcv_findings'][1]['notified_at'] );
 
 		$this->assertSame(
-			array( 'run_id', 'subject', 'body', 'counts', 'details_url' ),
+			array( 'type', 'run_id', 'subject', 'body', 'counts', 'details_url' ),
 			array_keys( $captured_context )
 		);
 		$this->assertSame( 1, $captured_context['run_id'] );
+		$this->assertSame( 'diff', $captured_context['type'], '差分アラートは`type => diff`を渡す(v0.5後半 §Step15a設計§3.3.Q3)' );
 	}
 
 	/**
@@ -711,5 +713,139 @@ class AlertSenderTest extends TestCase {
 		$result = $env['sender']->send_test();
 
 		$this->assertSame( array( 'action' => 'failed', 'error' => 'SMTP connect() failed' ), $result );
+	}
+
+	// ------------------------------------------------------------------
+	// v0.5後半 §Step15a: run の連続失敗アラート(`send_run_failure()`)
+	// ------------------------------------------------------------------
+
+	/**
+	 * `alert_to`が空のとき、メール・追加チャネルのどちらも実行せず
+	 * `no_recipient`を記録することを確認する(§4.3「実行しない」.U1と同じ考え方).
+	 *
+	 * @return void
+	 */
+	public function test_send_run_failure_no_recipient_when_alert_to_empty() {
+		$wpdb                       = new WPCV_Test_Fake_WPDB();
+		$wpdb->rows['wp_wpcv_runs'][6] = array(
+			'id'     => 6,
+			'status' => 'failed',
+		);
+		$env = $this->make_sender_environment( $wpdb );
+
+		$channel_invoked = false;
+		$GLOBALS['_wpcv_test_filters']['wpcv_alert_channels'][] = static function ( $channels ) use ( &$channel_invoked ) {
+			$channel_invoked = true;
+
+			return $channels;
+		};
+
+		$result = $env['sender']->send_run_failure(
+			6,
+			array(
+				array(
+					'id'          => 6,
+					'status'      => 'failed',
+					'started_at'  => self::NOW,
+					'run_trigger' => 'cron',
+				),
+			)
+		);
+
+		$this->assertSame( array( 'action' => 'no_recipient' ), $result );
+		$this->assertSame( 'no_recipient', $wpdb->rows['wp_wpcv_runs'][6]['alert_status'] );
+		$this->assertArrayNotHasKey( '_wpcv_test_wp_mail_calls', $GLOBALS );
+		$this->assertFalse( $channel_invoked );
+	}
+
+	/**
+	 * 宛先ありでメール送信成功時、件名・本文が`compose_run_failure()`の内容に
+	 * なり、`sent`が記録され、追加チャネルに`type => 'run_failure'`・空の
+	 * `counts`が渡ることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_send_run_failure_sends_mail_and_records_sent() {
+		$wpdb                       = new WPCV_Test_Fake_WPDB();
+		$wpdb->rows['wp_wpcv_runs'][6] = array(
+			'id'     => 6,
+			'status' => 'failed',
+		);
+		$env = $this->make_sender_environment( $wpdb );
+
+		WPCV_Settings::update_alert_to( 'ops@example.com' );
+
+		$captured_context = null;
+		$GLOBALS['_wpcv_test_filters']['wpcv_alert_channels'][] = static function ( $channels, $context ) use ( &$captured_context ) {
+			$captured_context = $context;
+
+			return $channels;
+		};
+
+		$streak_runs = array(
+			array(
+				'id'          => 6,
+				'status'      => 'failed',
+				'started_at'  => '2026-01-15 00:00:00',
+				'run_trigger' => 'cron',
+			),
+			array(
+				'id'          => 5,
+				'status'      => 'aborted',
+				'started_at'  => '2026-01-14 00:00:00',
+				'run_trigger' => 'manual',
+			),
+		);
+
+		$result = $env['sender']->send_run_failure( 6, $streak_runs );
+
+		$this->assertSame( array( 'action' => 'sent' ), $result );
+		$this->assertSame( 'sent', $wpdb->rows['wp_wpcv_runs'][6]['alert_status'] );
+		$this->assertSame( self::NOW, $wpdb->rows['wp_wpcv_runs'][6]['alert_attempted_at'] );
+
+		$this->assertCount( 1, $GLOBALS['_wpcv_test_wp_mail_calls'] );
+		$mail = $GLOBALS['_wpcv_test_wp_mail_calls'][0];
+		$this->assertSame( array( 'ops@example.com' ), $mail['to'] );
+		$this->assertStringContainsString( '2 runs failed in a row', $mail['subject'] );
+		$this->assertStringContainsString( '#6  failed  2026-01-15 00:00:00 UTC  cron', $mail['message'] );
+		$this->assertStringContainsString( '#5  aborted  2026-01-14 00:00:00 UTC  manual', $mail['message'] );
+		$this->assertStringContainsString( 'Details: http://example.com/wp-admin/admin.php?page=wpcv-runs', $mail['message'] );
+
+		$this->assertSame( 'run_failure', $captured_context['type'] );
+		$this->assertSame( array(), $captured_context['counts'] );
+	}
+
+	/**
+	 * `wp_mail()`失敗時に`failed`とエラーメッセージを記録することを確認する
+	 * (§4.2・§6).
+	 *
+	 * @return void
+	 */
+	public function test_send_run_failure_records_failed_when_mail_fails() {
+		$wpdb                       = new WPCV_Test_Fake_WPDB();
+		$wpdb->rows['wp_wpcv_runs'][6] = array(
+			'id'     => 6,
+			'status' => 'failed',
+		);
+		$env = $this->make_sender_environment( $wpdb );
+
+		WPCV_Settings::update_alert_to( 'ops@example.com' );
+		$GLOBALS['_wpcv_test_wp_mail_trigger_failed'] = new WP_Error( 'wp_mail_failed', 'SMTP connect() failed' );
+
+		$result = $env['sender']->send_run_failure(
+			6,
+			array(
+				array(
+					'id'          => 6,
+					'status'      => 'failed',
+					'started_at'  => self::NOW,
+					'run_trigger' => 'cron',
+				),
+			)
+		);
+
+		$this->assertSame( array( 'action' => 'failed' ), $result );
+		$this->assertSame( 'failed', $wpdb->rows['wp_wpcv_runs'][6]['alert_status'] );
+		$this->assertSame( 'SMTP connect() failed', $wpdb->rows['wp_wpcv_runs'][6]['alert_error'] );
 	}
 }

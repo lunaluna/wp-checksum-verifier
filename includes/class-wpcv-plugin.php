@@ -134,6 +134,14 @@ class WPCV_Plugin {
 	private static $alert_sender = null;
 
 	/**
+	 * 組み立て済みの `WPCV_Run_Failure_Alerter`(1リクエスト内で使い回す。
+	 * v0.5後半 §Step15aで追加).
+	 *
+	 * @var WPCV_Run_Failure_Alerter|null
+	 */
+	private static $run_failure_alerter = null;
+
+	/**
 	 * 本番用に配線された `WPCV_Run_Coordinator` を返す.
 	 *
 	 * @return WPCV_Run_Coordinator
@@ -309,6 +317,35 @@ class WPCV_Plugin {
 		}
 
 		return self::$alert_sender;
+	}
+
+	/**
+	 * 本番用に配線された `WPCV_Run_Failure_Alerter` を返す(v0.5後半 §Step15a).
+	 *
+	 * @return WPCV_Run_Failure_Alerter
+	 */
+	public static function run_failure_alerter() {
+		if ( null === self::$run_failure_alerter ) {
+			self::$run_failure_alerter = new WPCV_Run_Failure_Alerter( self::run_repository(), self::alert_sender() );
+		}
+
+		return self::$run_failure_alerter;
+	}
+
+	/**
+	 * `wpcv_run_terminated`フックのハンドラ(v0.5後半 §Step15a.
+	 * `WPCV_Run_Failure_Alerter`が実際の判定・送信を行う.
+	 * `includes/runners/class-wpcv-run-failure-alerter.php`の末尾で登録する.
+	 * `dispatch_chunk()`と同じ理由〔クラスdocblock参照〕で、フック登録時点では
+	 * `WPCV_Plugin`自身がまだ定義されていなくても構わない ―― 実際に呼ばれるのは
+	 * runが終端に達した時点であり、その時点ではすべて読み込み済みのため).
+	 *
+	 * @param int    $run_id 終端に達した run の id.
+	 * @param string $status 遷移後の `wpcv_runs.status`.
+	 * @return void
+	 */
+	public static function handle_run_terminated( $run_id, $status ) {
+		self::run_failure_alerter()->handle( (int) $run_id, (string) $status );
 	}
 
 	/**

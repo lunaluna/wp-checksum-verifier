@@ -393,6 +393,80 @@ class WPCV_Alert_Composer {
 	}
 
 	/**
+	 * Run の連続失敗アラート(v0.5後半 §Step15a設計§3.3)の件名と本文を組み立てる.
+	 *
+	 * `compose()`(差分アラート)とは別の入口にしてある ―― 通知する対象が
+	 * finding ではなく run そのものであり、`counts`/`top_items`/`by_target`等の
+	 * 差分アラート専用の節を一切持たないため、`compose()`に無理に合わせるより
+	 * 専用メソッドにするほうが単純になる.
+	 *
+	 * `notes`・`error_message`は本文に含めない(設計§0.1: 例外メッセージに
+	 * サーバーの絶対パスが入りうるため).
+	 *
+	 * @param array $input {
+	 *     すべて省略可(省略時は空・0として扱う).
+	 *
+	 *     @type string $site_name     サイト名(`get_option( 'blogname' )`の値そのまま.
+	 *                                 `clean_site_name()`で安全化する).
+	 *     @type int    $streak_length 連続した失敗runの件数(件名に使う).
+	 *     @type array  $streak_runs   連続の各run(`id`/`status`/`started_at`/
+	 *                                 `run_trigger`.新しい順、今回を含む.
+	 *                                 `WPCV_Run_Repository::find_failure_streak()`の
+	 *                                 `runs`をそのまま渡す想定).
+	 *     @type string $details_url  実行履歴画面のURL.
+	 * }
+	 * @return array{subject: string, body: string}
+	 */
+	public static function compose_run_failure( array $input ) {
+		$input = array_merge(
+			array(
+				'site_name'     => '',
+				'streak_length' => 0,
+				'streak_runs'   => array(),
+				'details_url'   => '',
+			),
+			$input
+		);
+
+		$subject = self::strip_control_chars(
+			sprintf(
+				/* translators: 1: site name, 2: number of consecutive failed runs. */
+				__( '[WPCV] %1$s: %2$s runs failed in a row', 'wp-checksum-verifier' ),
+				self::clean_site_name( (string) $input['site_name'] ),
+				number_format( (int) $input['streak_length'] )
+			)
+		);
+
+		$lines   = array();
+		$lines[] = sprintf(
+			/* translators: %d: number of consecutive failed runs. */
+			__( '%d runs failed in a row:', 'wp-checksum-verifier' ),
+			(int) $input['streak_length']
+		);
+
+		foreach ( (array) $input['streak_runs'] as $run ) {
+			$lines[] = sprintf(
+				'  #%1$s  %2$s  %3$s UTC  %4$s',
+				(int) ( $run['id'] ?? 0 ),
+				self::clean( $run['status'] ?? '' ),
+				self::clean( $run['started_at'] ?? '' ),
+				self::clean( $run['run_trigger'] ?? '' )
+			);
+		}
+
+		if ( '' !== (string) $input['details_url'] ) {
+			$lines[] = '';
+			/* translators: %s: URL of the run history screen. */
+			$lines[] = sprintf( __( 'Details: %s', 'wp-checksum-verifier' ), self::clean( $input['details_url'] ) );
+		}
+
+		return array(
+			'subject' => $subject,
+			'body'    => implode( "\n", $lines ) . "\n",
+		);
+	}
+
+	/**
 	 * サイト名を件名向けに安全化する(WPMARと同じ`wp_specialchars_decode()`+
 	 * `sanitize_text_field()`に、改行・制御文字の除去を重ねる).
 	 *

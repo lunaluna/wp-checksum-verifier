@@ -1662,6 +1662,236 @@ class RunRepositoryTest extends TestCase {
 		$this->assertNull( $repository->find_stale_diff_run() );
 	}
 
+	// ------------------------------------------------------------------
+	// v0.5後半 §Step15a: run の連続失敗アラート
+	// (`find_failure_streak()`/`record_failure_alert_result()`)
+	// ------------------------------------------------------------------
+
+	/**
+	 * `wpcv_runs`の1行分を直接insertするヘルパー(§Step15aのテスト専用.
+	 * `find_failure_streak()`はid順の並びだけに依存するため、`reserve_run()`等の
+	 * 状態遷移を経由せず直接行を作る).
+	 *
+	 * @param WPCV_Test_Fake_WPDB $wpdb      フェイクwpdb.
+	 * @param array               $overrides 上書きするフィールド(`status`は必須).
+	 * @return int insertした行のid.
+	 */
+	private function insert_run_row_for_streak( WPCV_Test_Fake_WPDB $wpdb, array $overrides ) {
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array_merge(
+				array(
+					'started_at'   => '2026-09-08 00:00:00',
+					'run_trigger'  => 'cron',
+					'runner'       => 'sync',
+					'alert_status' => null,
+				),
+				$overrides
+			)
+		);
+
+		return $wpdb->insert_id;
+	}
+
+	/**
+	 * 閾値ちょうどの連続(L = N)では、まだ誰も通知していないため
+	 * `notified = false`になり、`runs`が今回を含む新しい順で返ることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_find_failure_streak_returns_length_and_runs_at_threshold() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$this->insert_run_row_for_streak( $wpdb, array( 'status' => 'success' ) );
+		$run2 = $this->insert_run_row_for_streak( $wpdb, array( 'status' => 'failed' ) );
+		$run3 = $this->insert_run_row_for_streak( $wpdb, array( 'status' => 'aborted' ) );
+		$run4 = $this->insert_run_row_for_streak( $wpdb, array( 'status' => 'failed' ) );
+
+		$result = $repository->find_failure_streak( $run4, 3 );
+
+		$this->assertSame( 3, $result['length'] );
+		$this->assertFalse( $result['notified'] );
+		$this->assertSame( array( $run4, $run3, $run2 ), array_map( 'intval', array_column( $result['runs'], 'id' ) ) );
+	}
+
+	/**
+	 * 実行中(`WPCV_Run_Status::ACTIVE`)のrunは数えないし途切れさせないことを
+	 * 確認する(§2.3).
+	 *
+	 * @return void
+	 */
+	public function test_find_failure_streak_skips_active_run_without_breaking() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$this->insert_run_row_for_streak( $wpdb, array( 'status' => 'success' ) );
+		$run2 = $this->insert_run_row_for_streak( $wpdb, array( 'status' => 'failed' ) );
+		$this->insert_run_row_for_streak( $wpdb, array( 'status' => 'running' ) );
+		$run4 = $this->insert_run_row_for_streak( $wpdb, array( 'status' => 'failed' ) );
+
+		$result = $repository->find_failure_streak( $run4, 2 );
+
+		$this->assertSame( 2, $result['length'] );
+		$this->assertSame( array( $run4, $run2 ), array_map( 'intval', array_column( $result['runs'], 'id' ) ), '実行中のrunは連続に含めない' );
+	}
+
+	/**
+	 * 連続が閾値未満のときは`length`がその件数のまま返る(送るかどうかは
+	 * 呼び出し元が`length < threshold`で判断する)ことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_find_failure_streak_returns_length_below_threshold() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$this->insert_run_row_for_streak( $wpdb, array( 'status' => 'success' ) );
+		$run2 = $this->insert_run_row_for_streak( $wpdb, array( 'status' => 'failed' ) );
+
+		$result = $repository->find_failure_streak( $run2, 3 );
+
+		$this->assertSame( 1, $result['length'] );
+	}
+
+	/**
+	 * 連続の中で、先頭からN番目以降(今回を除く)に`alert_status = sent`のrunが
+	 * あれば`notified = true`になることを確認する(§2.2・§2.3と同じ式.
+	 * `WPCV_Run_Repository::find_failure_streak()`のdocblock参照).
+	 *
+	 * @return void
+	 */
+	public function test_find_failure_streak_detects_already_notified_run() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$this->insert_run_row_for_streak( $wpdb, array( 'status' => 'success' ) );
+		$this->insert_run_row_for_streak( $wpdb, array( 'status' => 'failed' ) ); // 位置1.
+		$this->insert_run_row_for_streak( $wpdb, array( 'status' => 'failed' ) ); // 位置2.
+		// 位置3(閾値ちょうどで最初に送ったrun): 送信成功済み.
+		$this->insert_run_row_for_streak(
+			$wpdb,
+			array(
+				'status'       => 'failed',
+				'alert_status' => 'sent',
+			)
+		);
+		$this->insert_run_row_for_streak( $wpdb, array( 'status' => 'failed' ) ); // 位置4.
+		$run6 = $this->insert_run_row_for_streak( $wpdb, array( 'status' => 'failed' ) ); // 位置5(今回).
+
+		$result = $repository->find_failure_streak( $run6, 3 );
+
+		$this->assertSame( 5, $result['length'] );
+		$this->assertTrue( $result['notified'] );
+	}
+
+	/**
+	 * 先頭からN番目より前(位置がN未満)にだけ`alert_status = sent`があっても、
+	 * 通知済みとは判定しないことを確認する(境界値の確認.前のテストの反例).
+	 *
+	 * @return void
+	 */
+	public function test_find_failure_streak_ignores_sent_run_before_threshold_position() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$this->insert_run_row_for_streak( $wpdb, array( 'status' => 'success' ) );
+		// 位置1: 過去に閾値を下げていた時期に送信したことがある、という想定.
+		$this->insert_run_row_for_streak(
+			$wpdb,
+			array(
+				'status'       => 'failed',
+				'alert_status' => 'sent',
+			)
+		);
+		$this->insert_run_row_for_streak( $wpdb, array( 'status' => 'failed' ) ); // 位置2.
+		$this->insert_run_row_for_streak( $wpdb, array( 'status' => 'failed' ) ); // 位置3.
+		$this->insert_run_row_for_streak( $wpdb, array( 'status' => 'failed' ) ); // 位置4.
+		$run6 = $this->insert_run_row_for_streak( $wpdb, array( 'status' => 'failed' ) ); // 位置5(今回).
+
+		$result = $repository->find_failure_streak( $run6, 3 );
+
+		$this->assertSame( 5, $result['length'] );
+		$this->assertFalse( $result['notified'] );
+	}
+
+	/**
+	 * `record_failure_alert_result()`が`status = failed`の行に記録できることを
+	 * 確認する.
+	 *
+	 * @return void
+	 */
+	public function test_record_failure_alert_result_writes_to_failed_row() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $this->insert_run_row_for_streak( $wpdb, array( 'status' => 'failed' ) );
+
+		$this->assertTrue( $repository->record_failure_alert_result( $run_id, 'sent', null, 'slack' ) );
+
+		$row = $wpdb->rows['wp_wpcv_runs'][ $run_id ];
+		$this->assertSame( 'sent', $row['alert_status'] );
+		$this->assertSame( '2026-09-08 12:00:00', $row['alert_attempted_at'] );
+		$this->assertNull( $row['alert_error'] );
+		$this->assertSame( 'slack', $row['alert_channel_failures'] );
+	}
+
+	/**
+	 * `status = aborted`の行にも記録できることを確認する(failed/abortedの
+	 * どちらでも良い. `record_failure_alert_result()`のdocblock参照).
+	 *
+	 * @return void
+	 */
+	public function test_record_failure_alert_result_writes_to_aborted_row() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $this->insert_run_row_for_streak( $wpdb, array( 'status' => 'aborted' ) );
+
+		$this->assertTrue( $repository->record_failure_alert_result( $run_id, 'failed', 'boom' ) );
+
+		$row = $wpdb->rows['wp_wpcv_runs'][ $run_id ];
+		$this->assertSame( 'failed', $row['alert_status'] );
+		$this->assertSame( 'boom', $row['alert_error'] );
+	}
+
+	/**
+	 * `status`がfailed/abortedのいずれでもない行には書き込まないことを確認する
+	 * (通常は`wpcv_run_terminated`フックがfailed/aborted以外で呼ばれないため
+	 * 起こらない想定だが、防御的な安全側の挙動として確認する).
+	 *
+	 * @return void
+	 */
+	public function test_record_failure_alert_result_does_not_write_when_status_mismatches() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $this->insert_run_row_for_streak( $wpdb, array( 'status' => 'success' ) );
+
+		$this->assertFalse( $repository->record_failure_alert_result( $run_id, 'sent' ) );
+		$this->assertNull( $wpdb->rows['wp_wpcv_runs'][ $run_id ]['alert_status'] );
+	}
+
+	/**
+	 * `alert_error`/`alert_channel_failures`が500文字を超える分を切り捨てる
+	 * ことを確認する(`record_alert_result()`と同じ仕様).
+	 *
+	 * @return void
+	 */
+	public function test_record_failure_alert_result_truncates_long_strings() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = $this->make_repository( $wpdb );
+
+		$run_id = $this->insert_run_row_for_streak( $wpdb, array( 'status' => 'failed' ) );
+		$long   = str_repeat( 'x', 600 );
+
+		$repository->record_failure_alert_result( $run_id, 'failed', $long, $long );
+
+		$row = $wpdb->rows['wp_wpcv_runs'][ $run_id ];
+		$this->assertSame( 500, strlen( $row['alert_error'] ) );
+		$this->assertSame( 500, strlen( $row['alert_channel_failures'] ) );
+	}
+
 	/**
 	 * `WPCV_Verifier::summarize()` 相当の固定summary配列を作る(`finish_run()` の
 	 * 引数用. このテストファイルでは差分処理の前提として run を success/partial に
@@ -1704,6 +1934,7 @@ class RunRepositoryTest extends TestCase {
 		$repository->find_stale_diff_run();
 		$repository->claim_diff( $run_id, 'owner-a' );
 		$repository->reserve_due_run( 11, 0 );
+		$repository->find_failure_streak( $run_id, 3 );
 
 		$this->assertNotEmpty( $wpdb->get_results_calls );
 

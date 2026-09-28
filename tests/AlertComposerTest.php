@@ -331,4 +331,98 @@ class AlertComposerTest extends TestCase {
 
 		$this->assertSame( 1, WPCV_Alert_Composer::max_items() );
 	}
+
+	// ------------------------------------------------------------------
+	// v0.5後半 §Step15a: run の連続失敗アラート(`compose_run_failure()`)
+	// ------------------------------------------------------------------
+
+	/**
+	 * 件名に site name と連続件数が入り、本文に各runのid・status・開始日時・
+	 * triggerが新しい順に並び、末尾にDetailsのURLが出ることを確認する(§3.3).
+	 *
+	 * @return void
+	 */
+	public function test_compose_run_failure_builds_subject_and_body() {
+		$result = WPCV_Alert_Composer::compose_run_failure(
+			array(
+				'site_name'     => 'Example Site',
+				'streak_length' => 3,
+				'streak_runs'   => array(
+					array(
+						'id'          => 6,
+						'status'      => 'failed',
+						'started_at'  => '2026-09-08 12:00:00',
+						'run_trigger' => 'cron',
+					),
+					array(
+						'id'          => 5,
+						'status'      => 'aborted',
+						'started_at'  => '2026-09-08 06:00:00',
+						'run_trigger' => 'manual',
+					),
+					array(
+						'id'          => 4,
+						'status'      => 'failed',
+						'started_at'  => '2026-09-08 00:00:00',
+						'run_trigger' => 'cli',
+					),
+				),
+				'details_url'   => 'https://example.test/wp-admin/admin.php?page=wpcv-runs',
+			)
+		);
+
+		$this->assertSame( '[WPCV] Example Site: 3 runs failed in a row', $result['subject'] );
+
+		$lines = explode( "\n", $result['body'] );
+
+		$this->assertSame( '3 runs failed in a row:', $lines[0] );
+		$this->assertSame( '  #6  failed  2026-09-08 12:00:00 UTC  cron', $lines[1] );
+		$this->assertSame( '  #5  aborted  2026-09-08 06:00:00 UTC  manual', $lines[2] );
+		$this->assertSame( '  #4  failed  2026-09-08 00:00:00 UTC  cli', $lines[3] );
+		$this->assertStringContainsString( 'Details: https://example.test/wp-admin/admin.php?page=wpcv-runs', $result['body'] );
+	}
+
+	/**
+	 * `notes`/`error_message`に相当する情報を入力に渡していなくても本文に
+	 * 出ない(そもそも入力欄自体が無い)ことと、`details_url`が空なら
+	 * Details行が出ないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_compose_run_failure_omits_details_section_when_url_is_empty() {
+		$result = WPCV_Alert_Composer::compose_run_failure(
+			array(
+				'site_name'     => 'Example Site',
+				'streak_length' => 1,
+				'streak_runs'   => array(
+					array(
+						'id'          => 1,
+						'status'      => 'failed',
+						'started_at'  => '2026-09-08 00:00:00',
+						'run_trigger' => 'cron',
+					),
+				),
+			)
+		);
+
+		$this->assertStringNotContainsString( 'Details:', $result['body'] );
+	}
+
+	/**
+	 * サイト名の改行・制御文字が件名から除かれることを確認する(§6.
+	 * `clean_site_name()`と同じ安全化. `compose()`側のテストと同種の観点).
+	 *
+	 * @return void
+	 */
+	public function test_compose_run_failure_strips_control_chars_from_site_name() {
+		$result = WPCV_Alert_Composer::compose_run_failure(
+			array(
+				'site_name'     => "Evil\nSite",
+				'streak_length' => 1,
+			)
+		);
+
+		$this->assertStringNotContainsString( "\n", $result['subject'] );
+		$this->assertStringContainsString( 'EvilSite', $result['subject'] );
+	}
 }

@@ -39,6 +39,7 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-generation-differ
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-alert-composer.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-alert-sender.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-diff-dispatcher.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-failure-alerter.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
 
 use PHPUnit\Framework\TestCase;
@@ -123,5 +124,16 @@ class PluginTest extends TestCase {
 	public function test_file_state_repository_returns_same_instance_on_repeated_calls() {
 		$this->assertInstanceOf( WPCV_File_State_Repository::class, WPCV_Plugin::file_state_repository() );
 		$this->assertSame( WPCV_Plugin::file_state_repository(), WPCV_Plugin::file_state_repository() );
+	}
+
+	/**
+	 * `run_failure_alerter()`(v0.5後半 §Step15a)が `WPCV_Run_Failure_Alerter` の
+	 * インスタンスを返し、複数回呼び出しても同一インスタンスが返ることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_run_failure_alerter_returns_same_instance_on_repeated_calls() {
+		$this->assertInstanceOf( WPCV_Run_Failure_Alerter::class, WPCV_Plugin::run_failure_alerter() );
+		$this->assertSame( WPCV_Plugin::run_failure_alerter(), WPCV_Plugin::run_failure_alerter() );
 	}
 }

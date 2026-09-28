@@ -252,6 +252,15 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-diff-dis
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-alert-sender.php';
 
 /**
+ * Run の連続失敗アラート(v0.5後半 §Step15a)。`wpcv_run_terminated`フックの
+ * ハンドラをファイル末尾で登録するため、`WPCV_Run_Repository`(フックの発火元)・
+ * `WPCV_Alert_Sender`(送信先)より後に読み込む必要がある。`WPCV_Plugin`本体は
+ * まだ読み込まれていないが、フック登録は `array( 'WPCV_Plugin', ... )` という
+ * 遅延解決の形のため問題ない(`WPCV_Chunk_Dispatcher::HOOK` の登録と同じ理由).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-run-failure-alerter.php';
+
+/**
  * Run開始時の「列挙(plan)→保存」を失敗時の後始末込みで行う共通処理
  * (v0.4.0 §Step5)。`WPCV_Run_Coordinator`・`WPCV_Runner_Async` の両方が使う.
  */

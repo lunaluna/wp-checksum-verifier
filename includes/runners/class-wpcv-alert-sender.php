@@ -16,13 +16,18 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 将来WPMARと共有ライブラリへ切り出すとき、送信部分だけを移せるようにするため
  * (`WPCV_Alert_Composer`のクラスdocblock参照).
  *
- * 公開メソッドは`send_for_run( $run_id )`(alerting段階からStep14cで配線済み)と
+ * 公開メソッドは`send_for_run( $run_id )`(alerting段階からStep14cで配線済み)、
  * `send_test()`(v0.5後半 §Step14d. 設定画面の「Send test alert」ボタン専用.
  * runに依存せず、保存済み`alert_to`へ固定文面のテストメールを送るだけの軽量な
- * 経路).
+ * 経路)、`send_run_failure( $run_id, $streak_runs )`(v0.5後半 §Step15a.
+ * `WPCV_Run_Failure_Alerter`が`wpcv_run_terminated`フックから呼ぶ.runの連続
+ * 失敗専用の経路.`send_for_run()`と`send_mail()`/`run_channels()`〔メール送信・
+ * 追加チャネル実行〕を共有するが、`alerting`のclaim/leaseには依存しない).
  *
- * `$unverifiable_streak_triggered`は常にfalseで`WPCV_Generation_Differ::should_send_alert()`
- * を呼ぶ(連続unverifiableのアラートはStep15の範囲).
+ * `$unverifiable_streak_triggered`は`send_for_run()`では常にfalseで
+ * `WPCV_Generation_Differ::should_send_alert()`を呼ぶ(連続unverifiableの
+ * アラートはStep15bの範囲.runの連続失敗アラートはStep15aで`send_run_failure()`
+ * として別経路にした).
  */
 class WPCV_Alert_Sender {
 
@@ -167,7 +172,7 @@ class WPCV_Alert_Sender {
 		$sent       = $this->send_mail( $alert_to, $composed['subject'], $composed['body'], $mail_error );
 
 		// 追加チャネルはメールの成功・失敗を問わず実行する(§4.3「実行する条件」).
-		$channel_failures = $this->run_channels( $run_id, $composed['subject'], $composed['body'], $counts, $details_url );
+		$channel_failures = $this->run_channels( $run_id, $composed['subject'], $composed['body'], $counts, $details_url, 'diff' );
 
 		if ( $sent ) {
 			// notified_atを書くのはalert_status=sentのときだけ(§2.4).
@@ -229,6 +234,75 @@ class WPCV_Alert_Sender {
 			'action' => 'failed',
 			'error'  => $mail_error,
 		);
+	}
+
+	/**
+	 * Run の連続失敗アラート(v0.5後半 §Step15a.§2.3・§2.4・§3.3)を送信する.
+	 *
+	 * `send_for_run()`と異なり、`alerting`のclaim・lease(`diff_owner`による
+	 * fencing)には依存しない ―― 呼び出し元(`WPCV_Run_Failure_Alerter`)は
+	 * `wpcv_run_terminated`フックの中で1回だけ呼ばれ、対象のrunの`alert_status`は
+	 * `WPCV_Run_Repository::record_failure_alert_result()`が書く(そちらの
+	 * docblock参照.fencingが要らない理由も同じ).
+	 *
+	 * 追加チャネルの実行条件(§4.3)はメールの成否を問わない点も`send_for_run()`と
+	 * 同じ(`run_channels()`を共有.`$context['type']`だけ`run_failure`にする.Q3).
+	 *
+	 * @param int   $run_id      対象のrun(連続の中で最新、今回failed/abortedへ
+	 *                           遷移したもの)のid.
+	 * @param array $streak_runs 連続の各run(`WPCV_Run_Repository::find_failure_streak()`が
+	 *                           返した`runs`.新しい順、今回を含む).
+	 * @return array{action: string} `action`は`no_recipient`/`sent`/`failed`のいずれか.
+	 */
+	public function send_run_failure( $run_id, array $streak_runs ) {
+		$run_id   = (int) $run_id;
+		$alert_to = WPCV_Settings::get_alert_to();
+
+		if ( empty( $alert_to ) ) {
+			// §4.3「no_recipientのときは実行しない」. U1と同じ考え方.
+			$this->run_repository->record_failure_alert_result( $run_id, 'no_recipient' );
+
+			return array( 'action' => 'no_recipient' );
+		}
+
+		$details_url = $this->run_history_url();
+
+		$composed = WPCV_Alert_Composer::compose_run_failure(
+			array(
+				'site_name'     => get_option( 'blogname' ),
+				'streak_length' => count( $streak_runs ),
+				'streak_runs'   => $streak_runs,
+				'details_url'   => $details_url,
+			)
+		);
+
+		$mail_error = null;
+		$sent       = $this->send_mail( $alert_to, $composed['subject'], $composed['body'], $mail_error );
+
+		// 追加チャネルはメールの成功・失敗を問わず実行する(§4.3「実行する条件」).
+		$channel_failures = $this->run_channels( $run_id, $composed['subject'], $composed['body'], array(), $details_url, 'run_failure' );
+
+		if ( $sent ) {
+			$this->run_repository->record_failure_alert_result( $run_id, 'sent', null, $channel_failures );
+
+			return array( 'action' => 'sent' );
+		}
+
+		$this->run_repository->record_failure_alert_result( $run_id, 'failed', $mail_error, $channel_failures );
+
+		return array( 'action' => 'failed' );
+	}
+
+	/**
+	 * 実行履歴画面のURLを返す(マルチサイトならネットワーク管理画面.
+	 * `details_url()`の実行履歴版).
+	 *
+	 * @return string
+	 */
+	private function run_history_url() {
+		return is_multisite()
+			? network_admin_url( 'admin.php?page=wpcv-runs' )
+			: admin_url( 'admin.php?page=wpcv-runs' );
 	}
 
 	/**
@@ -410,16 +484,24 @@ class WPCV_Alert_Sender {
 	 *
 	 * `$context`にはalert_error・トークン・絶対パス・HTTPエラー本文を含めない(§6).
 	 *
+	 * `type`(v0.5後半 §Step15a設計§3.3.Q3)は差分アラートが`diff`、runの連続
+	 * 失敗アラートが`run_failure`.チャネル側が種類を見て挙動を変えられるように
+	 * するための追加で、既存の登録者は新しいキーを無視するだけで壊れない.
+	 *
 	 * @param int    $run_id      対象のrunのid.
 	 * @param string $subject     件名.
 	 * @param string $body        本文.
-	 * @param array  $counts      new/resolved/continuingの件数.
-	 * @param string $details_url 検出結果画面のURL.
+	 * @param array  $counts      new/resolved/continuingの件数(runの連続失敗
+	 *                            アラートでは空配列).
+	 * @param string $details_url 検出結果画面(runの連続失敗アラートでは実行履歴
+	 *                            画面)のURL.
+	 * @param string $type        `diff`/`run_failure`のいずれか.
 	 * @return string|null 失敗したチャネルの`name`をカンマ区切りにした文字列
 	 *                      (1件も失敗していなければ`null`).
 	 */
-	private function run_channels( $run_id, $subject, $body, array $counts, $details_url ) {
+	private function run_channels( $run_id, $subject, $body, array $counts, $details_url, $type ) {
 		$context = array(
+			'type'        => $type,
 			'run_id'      => $run_id,
 			'subject'     => $subject,
 			'body'        => $body,

@@ -95,6 +95,18 @@ class WPCV_Run_Repository {
 	const DIFF_MAX_ATTEMPTS = 5;
 
 	/**
+	 * `find_failure_streak()` が1回に読む run の件数(v0.5後半 §Step15a設計§3.1
+	 * 「1回に読む件数は未実測の暫定値を置き、コメントに『未実測』と書く」).
+	 *
+	 * 未実測: 通常は最初の1バッチ(直前の1件を読んだ時点)で途切れる
+	 * (success/partialに遭遇する)ため、ほとんどの呼び出しは1回のクエリで終わる.
+	 * 長期間runが失敗し続ける異常事態でのみ複数回のクエリが発生する.
+	 *
+	 * @var int
+	 */
+	const FAILURE_STREAK_BATCH_SIZE = 50;
+
+	/**
 	 * `$wpdb` 相当のオブジェクト(`insert()` / `update()` / `get_results()` / `get_var()` /
 	 * `query()` / `prepare()` / `base_prefix` / `insert_id` / `last_error` を持つもの).
 	 *
@@ -973,6 +985,168 @@ class WPCV_Run_Repository {
 		}
 
 		return null;
+	}
+
+	/**
+	 * Run の連続失敗(v0.5後半 §Step15a設計§2.3・§3.1)を、`$current_run_id`から
+	 * id の降順に遡って求める.`wpcv_run_terminated`フック(§3.4)から、対象の
+	 * runがfailed/abortedへ遷移した直後に呼ぶ想定.
+	 *
+	 * 遡る各行を次のとおり分類する(§2.1と同じ「数える/途切れさせる/見ない」の
+	 * 考え方.run単位版):
+	 *
+	 * - 実行中(`WPCV_Run_Status::is_active()`. queued/planning/running)は
+	 *   **見ない**(数えないし途切れさせない.他プロセスが同時に別のrunを
+	 *   進めていても、この連続の判定には影響させない).
+	 * - `failed`/`aborted`は**数える**.
+	 * - それ以外(`success`/`partial`)で**途切れる**.
+	 * それ以上遡るrunが無くなった場合も、そこで連続が終わったとみなす.
+	 *
+	 * 「通知済み」の判定(§2.2・§2.3の表と同じ式): 連続の長さを L、閾値を N と
+	 * すると、`$current_run_id` 自身(先頭からの位置 L)を除く、位置が N 以上の
+	 * run(先頭寄りの `L - N` 件.配列の添字では今回を1件目として2件目〜
+	 * `L - N + 1`件目)のいずれかに `alert_status = sent` があれば通知済みとする.
+	 * L が N 未満なら通知済みかどうかは意味を持たない(呼び出し元は `length` が
+	 * 閾値未満の時点で送らないと判断すること).
+	 *
+	 * 読み方: 無制限の全件取得はしない.新しい順に `FAILURE_STREAK_BATCH_SIZE`件
+	 * ずつ読み、途切れる行が出るか、それ以上runが無くなるまで続ける
+	 * (コードレビュー指摘5と同じ方針).テストダブル(`WPCV_Test_Fake_WPDB`)は
+	 * 単純なWHERE(`id < ?`)なら解釈するが、念のためPHP側でも同じ条件で
+	 * 絞り直す(既存のRepositoryと同じ方針).
+	 *
+	 * @param int $current_run_id 起点のrun(failed/abortedへ遷移した直後のもの)のid.
+	 * @param int $threshold      閾値N(`wpcv_alert_run_failure_streak`.
+	 *                            下限1は呼び出し元が適用済みの前提だが、念のため
+	 *                            ここでも適用する).
+	 * @return array{length: int, notified: bool, runs: array} `runs` は数えた
+	 *         各run(`id`/`status`/`alert_status`/`started_at`/`run_trigger`)を
+	 *         新しい順(`$current_run_id` 自身を含む)で持つ.`length` は
+	 *         その件数(`count( $runs )` と同じ).
+	 */
+	public function find_failure_streak( $current_run_id, $threshold ) {
+		$current_run_id = (int) $current_run_id;
+		$threshold      = max( 1, (int) $threshold );
+		$table          = $this->wpdb->base_prefix . 'wpcv_runs';
+
+		$counted   = array();
+		$before_id = $current_run_id + 1;
+
+		while ( true ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- table name only; id/limit are bound via prepare().
+			$rows = $this->wpdb->get_results( $this->wpdb->prepare( "SELECT id, status, alert_status, started_at, run_trigger FROM {$table} WHERE id < %d ORDER BY id DESC LIMIT %d", $before_id, self::FAILURE_STREAK_BATCH_SIZE ), ARRAY_A );
+			$rows = is_array( $rows ) ? $rows : array();
+
+			if ( empty( $rows ) ) {
+				break; // これ以上遡るrunが無い(連続はここで終わる).
+			}
+
+			$broke = false;
+
+			foreach ( $rows as $row ) {
+				if ( (int) $row['id'] >= $before_id ) {
+					// テストダブルがWHEREを解釈せず全件を返した場合の保険.
+					continue;
+				}
+
+				$status = (string) ( $row['status'] ?? '' );
+
+				if ( WPCV_Run_Status::is_active( $status ) ) {
+					continue; // 実行中は数えないし途切れさせない.
+				}
+
+				if ( ! in_array( $status, array( WPCV_Run_Status::FAILED, WPCV_Run_Status::ABORTED ), true ) ) {
+					$broke = true;
+					break;
+				}
+
+				$counted[] = $row;
+			}
+
+			if ( $broke ) {
+				break;
+			}
+
+			$before_id = (int) $rows[ count( $rows ) - 1 ]['id'];
+
+			if ( count( $rows ) < self::FAILURE_STREAK_BATCH_SIZE ) {
+				break; // このテーブルの先頭まで読み切った.
+			}
+		}
+
+		$length   = count( $counted );
+		$notified = false;
+
+		for ( $i = 1; $i <= $length - $threshold; $i++ ) {
+			if ( 'sent' === (string) ( $counted[ $i ]['alert_status'] ?? '' ) ) {
+				$notified = true;
+				break;
+			}
+		}
+
+		return array(
+			'length'   => $length,
+			'notified' => $notified,
+			'runs'     => $counted,
+		);
+	}
+
+	/**
+	 * Run の連続失敗アラート(v0.5後半 §Step15a.`WPCV_Run_Failure_Alerter`)の
+	 * 結果を、失敗した run 自身の行に記録する.
+	 *
+	 * `record_alert_result()`と異なり `diff_owner` によるfencingは行わない ――
+	 * このメソッドを呼ぶ`wpcv_run_terminated`フックは、対象のrunが
+	 * failed/abortedへ遷移した1か所(`update_active_run()`)でのみ、CASが成功
+	 * した場合に限り1回だけ発火する(`update_active_run()`のdocblock参照)ため、
+	 * 複数プロセスがこの行を同時に更新しに来る余地が無い.念のため
+	 * `status IN (failed, aborted)`だけはWHEREに残す(実`$wpdb::update()`は
+	 * WHERE句にIN()を組み立てられないため、`update_active_run()`と同じく
+	 * 状態を順に試す).
+	 *
+	 * @param int         $run_id                 対象のrunのid.
+	 * @param string      $alert_status           `no_recipient`/`sent`/`failed`のいずれか
+	 *                                            (§2.4.失敗runには`not_needed`が
+	 *                                            無い ―― §2.3の表のとおり、閾値未満
+	 *                                            なら呼び出し元がそもそも呼ばない).
+	 * @param string|null $alert_error            `WP_Error::get_error_message()`のみ
+	 *                                            (§6: `get_error_data()`は保存しない).
+	 *                                            500文字を超える分は切り捨てる.
+	 * @param string|null $alert_channel_failures 失敗した追加チャネルの`name`を
+	 *                                            カンマ区切りで(§4.3).500文字を
+	 *                                            超える分は切り捨てる.
+	 * @return bool 1件以上更新できたら true(false は対象行が既に
+	 *              failed/abortedのいずれでもない ―― 通常起こらない想定).
+	 */
+	public function record_failure_alert_result( $run_id, $alert_status, $alert_error = null, $alert_channel_failures = null ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+
+		$data   = array(
+			'alert_status'           => (string) $alert_status,
+			'alert_attempted_at'     => call_user_func( $this->now ),
+			'alert_error'            => null === $alert_error ? null : substr( (string) $alert_error, 0, 500 ),
+			'alert_channel_failures' => null === $alert_channel_failures ? null : substr( (string) $alert_channel_failures, 0, 500 ),
+		);
+		$format = array( '%s', '%s', '%s', '%s' );
+
+		foreach ( array( WPCV_Run_Status::FAILED, WPCV_Run_Status::ABORTED ) as $status ) {
+			$updated = $this->wpdb->update(
+				$table,
+				$data,
+				array(
+					'id'     => (int) $run_id,
+					'status' => $status,
+				),
+				$format,
+				array( '%d', '%s' )
+			);
+
+			if ( $updated > 0 ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**

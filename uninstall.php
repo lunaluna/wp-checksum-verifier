@@ -32,12 +32,3 @@ $wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->base_prefix . 'wpcv_suppressions'
 $wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->base_prefix . 'wpcv_file_states' );
 
 delete_option( 'wpcv_db_version' );
-
-// v0.5後半 §Step14dの時点では`wpcv_alert_streaks`(連続unverifiable等のアラート
-// streak. Step15で新設予定)はまだ存在しないが、アンインストール処理は実装した
-// ステップに合わせて追記する方針(本ファイル冒頭コメント参照)のため、ここで
-// 削除だけ先に用意しておく. `delete_option()`/`delete_site_option()`は対象の
-// キーが無くても安全に`false`を返すだけなので、マルチサイト判定を待たず
-// 両方呼んでおく.
-delete_option( 'wpcv_alert_streaks' );
-delete_site_option( 'wpcv_alert_streaks' );
