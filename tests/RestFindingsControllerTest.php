@@ -11,6 +11,7 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-finding-key.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-generation-differ.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
 require_once dirname( __DIR__ ) . '/includes/rest/class-wpcv-rest-token.php';
@@ -138,7 +139,7 @@ class RestFindingsControllerTest extends TestCase {
 		wpcv_test_inject_run_repository( new WPCV_Run_Repository( $wpdb ) );
 		wpcv_test_inject_finding_repository( new WPCV_Finding_Repository( $wpdb ) );
 
-		foreach ( array( 'dimension', 'status', 'severity', 'sort', 'order' ) as $param ) {
+		foreach ( array( 'dimension', 'status', 'severity', 'diff_state', 'sort', 'order' ) as $param ) {
 			$response = WPCV_Rest_Findings_Controller::handle_findings( new WP_REST_Request( array( $param => 'not-a-real-value' ) ) );
 
 			$this->assertInstanceOf( WP_Error::class, $response, "param={$param}" );
@@ -231,5 +232,69 @@ class RestFindingsControllerTest extends TestCase {
 		$this->assertCount( 1, $response->data['findings'] );
 		$this->assertSame( 'stat.php', $response->data['findings'][0]['path'] );
 		$this->assertSame( '{"timestomp":false}', $response->data['findings'][0]['detail'] );
+	}
+
+	/**
+	 * `diff_state` で絞り込める(単一値・配列の両方)ことを確認する(v0.5後半 §16・Q1).
+	 *
+	 * @return void
+	 */
+	public function test_handle_findings_filters_by_diff_state() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_runs', array( 'started_at' => '2026-09-08 03:00:00', 'status' => 'partial', 'run_trigger' => 'rest', 'runner' => 'sync' ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 1, 'path' => 'new.php', 'diff_state' => 'new' ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 1, 'path' => 'continuing.php', 'diff_state' => 'continuing' ) ) );
+		$wpdb->insert( 'wp_wpcv_findings', wpcv_test_make_finding_row( array( 'run_id' => 1, 'path' => 'event.php', 'diff_state' => 'event' ) ) );
+
+		wpcv_test_inject_run_repository( new WPCV_Run_Repository( $wpdb ) );
+		wpcv_test_inject_finding_repository( new WPCV_Finding_Repository( $wpdb ) );
+
+		$single = WPCV_Rest_Findings_Controller::handle_findings( new WP_REST_Request( array( 'diff_state' => 'new' ) ) );
+		$this->assertCount( 1, $single->data['findings'] );
+		$this->assertSame( 'new.php', $single->data['findings'][0]['path'] );
+
+		$multi = WPCV_Rest_Findings_Controller::handle_findings( new WP_REST_Request( array( 'diff_state' => array( 'new', 'event' ) ) ) );
+		$this->assertSame(
+			array( 'new.php', 'event.php' ),
+			array_column( $multi->data['findings'], 'path' )
+		);
+
+		$omitted = WPCV_Rest_Findings_Controller::handle_findings( new WP_REST_Request() );
+		$this->assertCount( 3, $omitted->data['findings'], 'diff_state省略時は絞り込まない' );
+	}
+
+	/**
+	 * 応答の finding に `diff_state`/`notified_at`/`ended_in_run_id`/`end_reason`/
+	 * `finding_key` のキーがあることを確認する(v0.5後半 §16・§2.2. `SELECT *` を
+	 * やめて列を選ぶ変更が将来入ったときに、黙って消えないようにするための回帰テスト).
+	 *
+	 * @return void
+	 */
+	public function test_handle_findings_response_includes_diff_columns() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert( 'wp_wpcv_runs', array( 'started_at' => '2026-09-08 03:00:00', 'status' => 'partial', 'run_trigger' => 'rest', 'runner' => 'sync' ) );
+		$wpdb->insert(
+			'wp_wpcv_findings',
+			wpcv_test_make_finding_row(
+				array(
+					'run_id'          => 1,
+					'diff_state'      => 'new',
+					'notified_at'     => '2026-09-28 00:00:00',
+					'ended_in_run_id' => null,
+					'end_reason'      => null,
+					'finding_key'     => str_repeat( 'a', 64 ),
+				)
+			)
+		);
+
+		wpcv_test_inject_run_repository( new WPCV_Run_Repository( $wpdb ) );
+		wpcv_test_inject_finding_repository( new WPCV_Finding_Repository( $wpdb ) );
+
+		$response = WPCV_Rest_Findings_Controller::handle_findings( new WP_REST_Request() );
+		$finding  = $response->data['findings'][0];
+
+		foreach ( array( 'diff_state', 'notified_at', 'ended_in_run_id', 'end_reason', 'finding_key' ) as $key ) {
+			$this->assertArrayHasKey( $key, $finding, "key={$key}" );
+		}
 	}
 }

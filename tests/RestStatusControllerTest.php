@@ -223,4 +223,170 @@ class RestStatusControllerTest extends TestCase {
 		$this->assertSame( 2, $response->data['last_run']['findings_total'] );
 		$this->assertNull( $response->data['last_run']['last_activity_at'] );
 	}
+
+	/**
+	 * `describe_run()` に足した `diff_status`/`findings_new`/`findings_resolved`/
+	 * `findings_continuing`/`alert_status`/`alert_attempted_at` が、値がある場合・
+	 * NULLの場合の両方で正しく返ることを確認する(v0.5後半 §16・§2.1).
+	 *
+	 * @return void
+	 */
+	public function test_handle_status_includes_diff_and_alert_fields() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'          => '2026-09-07 03:00:00',
+				'finished_at'         => '2026-09-07 03:10:00',
+				'status'              => 'partial',
+				'run_trigger'         => 'cron',
+				'runner'              => 'async',
+				'diff_status'         => WPCV_Diff_Status::DONE,
+				'findings_new'        => 5,
+				'findings_resolved'   => 0,
+				'findings_continuing' => 1,
+				'alert_status'        => 'sent',
+				'alert_attempted_at'  => '2026-09-07 03:10:05',
+			)
+		);
+
+		wpcv_test_inject_run_repository( $this->make_run_repository( $wpdb ) );
+		wpcv_test_inject_target_run_repository( new WPCV_Target_Run_Repository( $wpdb ) );
+
+		$response = WPCV_Rest_Status_Controller::handle_status( new WP_REST_Request() );
+		$last_run = $response->data['last_run'];
+
+		$this->assertSame( WPCV_Diff_Status::DONE, $last_run['diff_status'] );
+		$this->assertSame( 5, $last_run['findings_new'] );
+		$this->assertSame( 0, $last_run['findings_resolved'] );
+		$this->assertSame( 1, $last_run['findings_continuing'] );
+		$this->assertSame( 'sent', $last_run['alert_status'] );
+		$this->assertSame( '2026-09-07 03:10:05', $last_run['alert_attempted_at'] );
+	}
+
+	/**
+	 * 差分・アラートの列が未計算(NULL)のrunでは、`findings_new` 等が0にならず
+	 * NULLのまま返ることを確認する(「まだ数えていない」と「0件」の区別. §2.1).
+	 *
+	 * @return void
+	 */
+	public function test_handle_status_diff_fields_are_null_when_not_yet_computed() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-07 03:00:00',
+				'finished_at' => '2026-09-07 03:10:00',
+				'status'      => 'partial',
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+			)
+		);
+
+		wpcv_test_inject_run_repository( $this->make_run_repository( $wpdb ) );
+		wpcv_test_inject_target_run_repository( new WPCV_Target_Run_Repository( $wpdb ) );
+
+		$response = WPCV_Rest_Status_Controller::handle_status( new WP_REST_Request() );
+		$last_run = $response->data['last_run'];
+
+		$this->assertNull( $last_run['diff_status'] );
+		$this->assertNull( $last_run['findings_new'] );
+		$this->assertNull( $last_run['findings_resolved'] );
+		$this->assertNull( $last_run['findings_continuing'] );
+		$this->assertNull( $last_run['alert_status'] );
+		$this->assertNull( $last_run['alert_attempted_at'] );
+	}
+
+	/**
+	 * `alert_error`/`alert_channel_failures`(内部エラー文言.§6)が run 行に
+	 * 入っていても、`current_run`/`last_run` のどちらにもキーとして出ず、応答を
+	 * JSON化した文字列のどこにも値の文字列が含まれないことを確認する
+	 * (v0.5後半 §16・§2.1. `diff_owner`/`diff_lease_expires_at`/`diff_cursor`/
+	 * `diff_attempt_count` も同様に内部の値として出さない).
+	 *
+	 * @return void
+	 */
+	public function test_handle_status_excludes_internal_run_fields() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'             => '2026-09-08 11:00:00',
+				'status'                 => 'running',
+				'run_trigger'            => 'cron',
+				'runner'                 => 'async',
+				'diff_owner'             => 'worker-secret-owner-token',
+				'diff_lease_expires_at'  => '2026-09-08 12:00:00',
+				'diff_cursor'            => '{"phase":"pass1"}',
+				'diff_attempt_count'     => 2,
+				'alert_error'            => 'secret-smtp-password-leaked-in-error',
+				'alert_channel_failures' => 'webhook: secret-token-failure',
+			)
+		);
+
+		wpcv_test_inject_run_repository( $this->make_run_repository( $wpdb ) );
+		wpcv_test_inject_target_run_repository( new WPCV_Target_Run_Repository( $wpdb ) );
+
+		$response = WPCV_Rest_Status_Controller::handle_status( new WP_REST_Request() );
+
+		foreach ( array( 'current_run', 'last_run' ) as $run_key ) {
+			$run = $response->data[ $run_key ];
+
+			if ( null === $run ) {
+				continue;
+			}
+
+			foreach ( array( 'alert_error', 'alert_channel_failures', 'diff_owner', 'diff_lease_expires_at', 'diff_cursor', 'diff_attempt_count' ) as $internal_key ) {
+				$this->assertArrayNotHasKey( $internal_key, $run, "run={$run_key}, key={$internal_key}" );
+			}
+		}
+
+		$encoded = wp_json_encode( $response->data );
+		$this->assertStringNotContainsString( 'worker-secret-owner-token', $encoded );
+		$this->assertStringNotContainsString( 'secret-smtp-password-leaked-in-error', $encoded );
+		$this->assertStringNotContainsString( 'secret-token-failure', $encoded );
+	}
+
+	/**
+	 * v0.4のキー一覧がすべて残っていることを確認する(v0.5後半 §16でキーを
+	 * 追加しても既存のキーを消していないことの回帰テスト. §2.1「削除・改名は
+	 * しない」).
+	 *
+	 * @return void
+	 */
+	public function test_handle_status_preserves_all_existing_v04_keys() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-07 03:00:00',
+				'finished_at' => '2026-09-07 03:10:00',
+				'status'      => 'partial',
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+			)
+		);
+
+		wpcv_test_inject_run_repository( $this->make_run_repository( $wpdb ) );
+		wpcv_test_inject_target_run_repository( new WPCV_Target_Run_Repository( $wpdb ) );
+
+		$response = WPCV_Rest_Status_Controller::handle_status( new WP_REST_Request() );
+
+		$v04_keys = array(
+			'run_id',
+			'status',
+			'run_trigger',
+			'started_at',
+			'finished_at',
+			'scheduled_for',
+			'deadline_at',
+			'last_activity_at',
+			'findings_total',
+			'targets',
+		);
+
+		foreach ( $v04_keys as $key ) {
+			$this->assertArrayHasKey( $key, $response->data['last_run'], "key={$key}" );
+		}
+	}
 }

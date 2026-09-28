@@ -21,6 +21,15 @@ class WPCV_API {
 	/**
 	 * 最新の実行サマリを取得する.
 	 *
+	 * `wpcv_runs` の行を `SELECT *` でそのまま返す(v0.5後半 §16・Q2で確認済みの
+	 * 契約).v0.5後半で増えた列(`diff_status`/`findings_new`/`findings_resolved`/
+	 * `findings_continuing`/`alert_status`/`alert_attempted_at`/`alert_error`/
+	 * `alert_channel_failures`/`diff_owner`/`diff_lease_expires_at`/`diff_cursor`/
+	 * `diff_attempt_count`)も同じ行にそのまま含まれる ―― `GET /status`(REST。
+	 * 外部公開)とは異なり、この Public API は同じ PHP プロセス内のコード
+	 * (WPMAR)が呼ぶもので、呼び出し側はどのみち DB を直接読めるため、REST側の
+	 * ような内部値の除外は行わない.
+	 *
 	 * @return array|null run 行(status, finished_at, 各カウント). run が1件も無ければ null.
 	 */
 	public static function get_latest_run() {
@@ -93,11 +102,18 @@ class WPCV_API {
 	/**
 	 * 最新の検証結果(findings)を取得する.
 	 *
+	 * `wpcv_findings` の行を `SELECT *` でそのまま返すため、v0.5後半で増えた列
+	 * (`finding_key`/`diff_state`/`notified_at`/`ended_in_run_id`/`end_reason`)も
+	 * 同じ行にそのまま含まれる(v0.5後半 §16・§2.3. `wpcv_findings` には秘密の値が
+	 * 無いため`SELECT *`のままでよい).
+	 *
 	 * @param array $args {
 	 *     絞り込み条件.
 	 *
 	 *     @type array $dimension           core|plugin|theme|muplugin.
-	 *     @type array $status              modified|added|missing|unreadable.
+	 *     @type array $status              modified|added|missing|unreadable|stat_changed
+	 *                                      (`stat_changed`はv0.5 §Step8で追加.
+	 *                                      v0.5後半 §16でdocblockに書き足した).
 	 *     @type array $severity            high|medium|low.
 	 *     @type bool  $include_suppressed  既定 false.
 	 *     @type bool  $include_closed      既定 false.

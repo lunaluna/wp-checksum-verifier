@@ -22,6 +22,7 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-finding-key.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-generation-differ.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
