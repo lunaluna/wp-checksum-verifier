@@ -41,8 +41,11 @@ if ( ! defined( 'ABSPATH' ) ) {
  * `(target_run_id, finding_key)`しか無いためPRIMARY(id)スキャンになり、
  * テーブル全体の件数に比例してコストが増える性能上の懸念が見つかったため、
  * `(target_run_id, id)`の複合indexを追加してv0.5後半 §Step12で5へ更新した.
+ *
+ * 更新イベント連動(v0.6プラン§2.1・D1)用に `wpcv_update_events` テーブルを
+ * 新設したため、v0.6 §Step1で6へ更新した(`WPCV_Migrator::table_definitions()` 参照).
  */
-define( 'WPCV_DB_VERSION', 5 );
+define( 'WPCV_DB_VERSION', 6 );
 
 /**
  * Public API contract のバージョン. 後方互換を維持する契約(§10).
@@ -216,6 +219,13 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-suppression-repo
  * 他のRepository群と同じ場所にまとめる.
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-file-state-repository.php';
+
+/**
+ * 更新イベント(`wpcv_update_events`)の永続化層(v0.6 §Step1). フック側からの
+ * 記録・差分処理側での突き合わせは v0.6 Step2・3 で実装する. 他クラスからの
+ * 依存はまだ無いため読み込み順の制約は無いが、他のRepository群と同じ場所にまとめる.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-update-event-repository.php';
 
 /**
  * Chunk結果(cursor更新とfindings保存)をtransactionで確定する調整役(v0.4.0 §Step3).

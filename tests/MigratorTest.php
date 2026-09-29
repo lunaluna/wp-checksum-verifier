@@ -167,7 +167,7 @@ class MigratorTest extends TestCase {
 
 		$sqls = $method->invoke( null );
 
-		$this->assertCount( 5, $sqls, 'table_definitions() must return 5 CREATE TABLE statements from v0.5 onward' );
+		$this->assertCount( 6, $sqls, 'table_definitions() must return 6 CREATE TABLE statements from v0.6 onward' );
 
 		$sql_file_states = $sqls[4];
 
@@ -378,7 +378,7 @@ class MigratorTest extends TestCase {
 	}
 
 	/**
-	 * 5テーブルすべてについて、抽出した列名にインデックス・制約のキーワードが
+	 * 6テーブルすべてについて、抽出した列名にインデックス・制約のキーワードが
 	 * 紛れ込んでいないことを確認する(今後 `table_definitions()` に新しい種類の
 	 * インデックス行を追加した場合の回帰防止).
 	 *
@@ -443,6 +443,149 @@ class MigratorTest extends TestCase {
 	}
 
 	/**
+	 * `table_definitions()` が6番目の要素として `wpcv_update_events`(v0.6プラン
+	 * §2.1・D1で新設)の CREATE TABLE 文を返し、必要な列・indexを含むことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_table_definitions_include_update_events_table_columns_and_indexes() {
+		$GLOBALS['wpdb'] = new WPCV_Test_Fake_WPDB();
+
+		$method = new ReflectionMethod( WPCV_Migrator::class, 'table_definitions' );
+		$method->setAccessible( true );
+
+		$sqls = $method->invoke( null );
+
+		$this->assertCount( 6, $sqls, 'table_definitions() must return 6 CREATE TABLE statements from v0.6 onward' );
+
+		$sql_update_events = $sqls[5];
+
+		foreach ( array(
+			'target_id',
+			'version',
+			'event_at',
+			'source',
+			'created_by',
+			'idx_target_event',
+			'idx_event_at',
+		) as $needle ) {
+			$this->assertStringContainsString( $needle, $sql_update_events, "wpcv_update_events is missing column/index: {$needle}" );
+		}
+
+		$this->assertStringContainsString( 'KEY idx_target_event (target_id, event_at)', $sql_update_events );
+		$this->assertStringContainsString( 'KEY idx_event_at (event_at)', $sql_update_events );
+
+		// version/created_by は D3・§2.1 のとおり NULL 許容(version が読めない・
+		// cron/CLI で created_by が0になる場合と別に、記録できなかった場合を
+		// NULLで表すため。ただし §2.1 の表どおり created_by は cron/CLI で 0 を
+		// 書く運用なので、列自体の NULL 許容は将来の拡張余地として持たせる).
+		$this->assertMatchesRegularExpression( '/version\s+varchar\(32\)\s+NULL/', $sql_update_events );
+		$this->assertMatchesRegularExpression( '/event_at\s+datetime\s+NOT NULL/', $sql_update_events );
+		$this->assertMatchesRegularExpression( '/source\s+varchar\(24\)\s+NOT NULL/', $sql_update_events );
+	}
+
+	/**
+	 * `wpcv_update_events` の定義から抽出される列名が、実DBの `DESCRIBE` が返す
+	 * はずの列名と完全に一致することを、`parse_column_names()` に依存しない
+	 * 手書きの期待値で確認する(`test_parse_column_names_matches_explicit_file_states_columns`
+	 * と同じ考え方).
+	 *
+	 * @return void
+	 */
+	public function test_parse_column_names_matches_explicit_update_events_columns() {
+		$GLOBALS['wpdb'] = new WPCV_Test_Fake_WPDB();
+
+		$definitions = new ReflectionMethod( WPCV_Migrator::class, 'table_definitions' );
+		$definitions->setAccessible( true );
+		$parse = new ReflectionMethod( WPCV_Migrator::class, 'parse_column_names' );
+		$parse->setAccessible( true );
+
+		$sqls = $definitions->invoke( null );
+
+		$this->assertSame(
+			array(
+				'id',
+				'target_id',
+				'version',
+				'event_at',
+				'source',
+				'created_by',
+			),
+			$parse->invoke( null, $sqls[5] )
+		);
+	}
+
+	/**
+	 * `maybe_record_update_events_since()`(D6・§2.3)が、単一サイトで
+	 * `wpcv_update_events_since` が未設定なら現在時刻を保存することを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_maybe_record_update_events_since_saves_option_when_unset_on_single_site() {
+		$method = new ReflectionMethod( WPCV_Migrator::class, 'maybe_record_update_events_since' );
+		$method->setAccessible( true );
+
+		$method->invoke( null );
+
+		$this->assertArrayHasKey( 'wpcv_update_events_since', $GLOBALS['_wpcv_test_options'] );
+		$this->assertNotSame( '', $GLOBALS['_wpcv_test_options']['wpcv_update_events_since'] );
+	}
+
+	/**
+	 * `maybe_record_update_events_since()` が、既に値が保存されている場合は
+	 * 上書きしない(冪等)ことを確認する(D6: 一度確定した基準時刻を、以後の
+	 * バージョンアップのたびに新しい時刻へ書き換えてしまうと、過去に記録なしで
+	 * 通知を抑制していた期間の意味が変わってしまうため).
+	 *
+	 * @return void
+	 */
+	public function test_maybe_record_update_events_since_does_not_overwrite_existing_value_on_single_site() {
+		$GLOBALS['_wpcv_test_options']['wpcv_update_events_since'] = '2020-01-01 00:00:00';
+
+		$method = new ReflectionMethod( WPCV_Migrator::class, 'maybe_record_update_events_since' );
+		$method->setAccessible( true );
+
+		$method->invoke( null );
+
+		$this->assertSame( '2020-01-01 00:00:00', $GLOBALS['_wpcv_test_options']['wpcv_update_events_since'] );
+	}
+
+	/**
+	 * マルチサイトでは `wp_sitemeta` の site option へ保存することを確認する
+	 * (`WPCV_Migrator::write_stored_version()` と同じ規則).
+	 *
+	 * @return void
+	 */
+	public function test_maybe_record_update_events_since_saves_site_option_when_unset_on_multisite() {
+		$GLOBALS['_wpcv_test_is_multisite'] = true;
+
+		$method = new ReflectionMethod( WPCV_Migrator::class, 'maybe_record_update_events_since' );
+		$method->setAccessible( true );
+
+		$method->invoke( null );
+
+		$this->assertArrayHasKey( 'wpcv_update_events_since', $GLOBALS['_wpcv_test_site_options'] );
+		$this->assertArrayNotHasKey( 'wpcv_update_events_since', $GLOBALS['_wpcv_test_options'] ?? array() );
+	}
+
+	/**
+	 * マルチサイトで既に site option が設定済みなら上書きしないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_maybe_record_update_events_since_does_not_overwrite_existing_site_option() {
+		$GLOBALS['_wpcv_test_is_multisite']                                    = true;
+		$GLOBALS['_wpcv_test_site_options']['wpcv_update_events_since'] = '2020-01-01 00:00:00';
+
+		$method = new ReflectionMethod( WPCV_Migrator::class, 'maybe_record_update_events_since' );
+		$method->setAccessible( true );
+
+		$method->invoke( null );
+
+		$this->assertSame( '2020-01-01 00:00:00', $GLOBALS['_wpcv_test_site_options']['wpcv_update_events_since'] );
+	}
+
+	/**
 	 * `table_definitions()` の出力を `parse_column_names()` に通し、フェイクwpdbの
 	 * `columns_by_table`(=実DBの `DESCRIBE` 相当)を「dbDeltaが完全に成功した」
 	 * 状態として組み立てる(`test_schema_is_current_*` の共通セットアップ).
@@ -462,6 +605,7 @@ class MigratorTest extends TestCase {
 			$wpdb->base_prefix . 'wpcv_findings',
 			$wpdb->base_prefix . 'wpcv_suppressions',
 			$wpdb->base_prefix . 'wpcv_file_states',
+			$wpdb->base_prefix . 'wpcv_update_events',
 		);
 		$sqls = $table_definitions_method->invoke( null );
 

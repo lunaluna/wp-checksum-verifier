@@ -30,16 +30,22 @@ $wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->base_prefix . 'wpcv_suppressions'
 // v0.5(rev.3 §3.3)で追加した stat 差分検知のベースラインテーブル.
 // phpcs:ignore WordPress.DB.DirectDatabaseQuery.SchemaChange,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- uninstall cleanup.
 $wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->base_prefix . 'wpcv_file_states' );
+// v0.6(プラン§2.1・D1)で追加した更新イベントの記録テーブル.
+// phpcs:ignore WordPress.DB.DirectDatabaseQuery.SchemaChange,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- uninstall cleanup.
+$wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->base_prefix . 'wpcv_update_events' );
 
 // DBバージョン(WPCV_Migrator::DB_VERSION_OPTION)・設定画面の値(alert_to等.
 // WPCV_Settings::OPTION_NAME)・REST APIトークンのハッシュ(read/write.
-// WPCV_Rest_Token::OPTION_NAME/OPTION_NAME_READ)を消す. このファイルは
-// プラグイン本体のクラスを読み込まないため、値は直接指定する(§7-3是正. v0.5.1).
+// WPCV_Rest_Token::OPTION_NAME/OPTION_NAME_READ)・更新イベント連動の基準時刻
+// (v0.6 §2.3. WPCV_Migrator::maybe_record_update_events_since())を消す. この
+// ファイルはプラグイン本体のクラスを読み込まないため、値は直接指定する
+// (§7-3是正. v0.5.1. v0.6でwpcv_update_events_sinceを追加).
 $wpcv_uninstall_options = array(
 	'wpcv_db_version',
 	'wpcv_settings',
 	'wpcv_rest_token_hash',
 	'wpcv_rest_token_hash_read',
+	'wpcv_update_events_since',
 );
 
 // `uninstall_plugin()`(WordPressコア)はネットワーク管理画面から実行された
