@@ -158,6 +158,14 @@ class WPCV_Plugin {
 	private static $update_event_recorder = null;
 
 	/**
+	 * 組み立て済みの `WPCV_Update_Event_Matcher`(1リクエスト内で使い回す。
+	 * v0.6 §Step3で追加、§Step4で`WPCV_Chunk_Dispatcher`とも共有するようにした).
+	 *
+	 * @var WPCV_Update_Event_Matcher|null
+	 */
+	private static $update_event_matcher = null;
+
+	/**
 	 * 本番用に配線された `WPCV_Run_Coordinator` を返す.
 	 *
 	 * @return WPCV_Run_Coordinator
@@ -291,7 +299,7 @@ class WPCV_Plugin {
 				self::finding_repository(),
 				self::file_state_repository(),
 				self::alert_sender(),
-				self::update_event_repository()
+				self::update_event_matcher()
 			);
 		}
 
@@ -375,6 +383,20 @@ class WPCV_Plugin {
 		}
 
 		return self::$update_event_recorder;
+	}
+
+	/**
+	 * 本番用に配線された `WPCV_Update_Event_Matcher` を返す(v0.6 §Step3。
+	 * §Step4で`WPCV_Chunk_Dispatcher`とも共有するようにした).
+	 *
+	 * @return WPCV_Update_Event_Matcher
+	 */
+	public static function update_event_matcher() {
+		if ( null === self::$update_event_matcher ) {
+			self::$update_event_matcher = new WPCV_Update_Event_Matcher( self::update_event_repository(), self::run_repository() );
+		}
+
+		return self::$update_event_matcher;
 	}
 
 	/**
@@ -479,7 +501,8 @@ class WPCV_Plugin {
 			$continuation_scheduler,
 			null,
 			self::file_state_repository(),
-			self::diff_dispatcher()
+			self::diff_dispatcher(),
+			self::update_event_matcher()
 		);
 	}
 

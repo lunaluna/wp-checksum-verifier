@@ -91,12 +91,12 @@ class WPCV_Diff_Dispatcher {
 	private $alert_sender;
 
 	/**
-	 * `wpcv_update_events`の永続化層(v0.6 §Step3. `DIFF_MODE_VERSION_CHANGED`の
-	 * 分岐でD5の突き合わせに使う).
+	 * D5・D6の突き合わせ(v0.6 §Step3・§Step4で`WPCV_Chunk_Dispatcher`と共通化)。
+	 * `DIFF_MODE_VERSION_CHANGED`の分岐で使う.
 	 *
-	 * @var WPCV_Update_Event_Repository
+	 * @var WPCV_Update_Event_Matcher
 	 */
-	private $update_event_repository;
+	private $update_event_matcher;
 
 	/**
 	 * `claim_diff()`に渡す一意なowner文字列を生成するcallable.
@@ -108,13 +108,13 @@ class WPCV_Diff_Dispatcher {
 	/**
 	 * コンストラクタ.
 	 *
-	 * @param WPCV_Run_Repository          $run_repository           `wpcv_runs`の永続化層.
-	 * @param WPCV_Target_Run_Repository   $target_run_repository    `wpcv_target_runs`の永続化層.
-	 * @param WPCV_Finding_Repository      $finding_repository       `wpcv_findings`の永続化層.
-	 * @param WPCV_File_State_Repository   $file_state_repository    `wpcv_file_states`の永続化層.
-	 * @param WPCV_Alert_Sender            $alert_sender             アラート送信本体(v0.5後半 §Step14c).
-	 * @param WPCV_Update_Event_Repository $update_event_repository  `wpcv_update_events`の永続化層(v0.6 §Step3).
-	 * @param callable|null                $lease_owner_factory      省略時は `uniqid( 'wpcv_diff_', true )`.
+	 * @param WPCV_Run_Repository        $run_repository        `wpcv_runs`の永続化層.
+	 * @param WPCV_Target_Run_Repository $target_run_repository `wpcv_target_runs`の永続化層.
+	 * @param WPCV_Finding_Repository    $finding_repository    `wpcv_findings`の永続化層.
+	 * @param WPCV_File_State_Repository $file_state_repository `wpcv_file_states`の永続化層.
+	 * @param WPCV_Alert_Sender          $alert_sender          アラート送信本体(v0.5後半 §Step14c).
+	 * @param WPCV_Update_Event_Matcher  $update_event_matcher  D5・D6の突き合わせ(v0.6 §Step3・§Step4).
+	 * @param callable|null              $lease_owner_factory   省略時は `uniqid( 'wpcv_diff_', true )`.
 	 */
 	public function __construct(
 		WPCV_Run_Repository $run_repository,
@@ -122,15 +122,15 @@ class WPCV_Diff_Dispatcher {
 		WPCV_Finding_Repository $finding_repository,
 		WPCV_File_State_Repository $file_state_repository,
 		WPCV_Alert_Sender $alert_sender,
-		WPCV_Update_Event_Repository $update_event_repository,
+		WPCV_Update_Event_Matcher $update_event_matcher,
 		?callable $lease_owner_factory = null
 	) {
-		$this->run_repository          = $run_repository;
-		$this->target_run_repository   = $target_run_repository;
-		$this->finding_repository      = $finding_repository;
-		$this->file_state_repository   = $file_state_repository;
-		$this->alert_sender            = $alert_sender;
-		$this->update_event_repository = $update_event_repository;
+		$this->run_repository        = $run_repository;
+		$this->target_run_repository = $target_run_repository;
+		$this->finding_repository    = $finding_repository;
+		$this->file_state_repository = $file_state_repository;
+		$this->alert_sender          = $alert_sender;
+		$this->update_event_matcher  = $update_event_matcher;
 
 		$this->lease_owner_factory = $lease_owner_factory ?? static function () {
 			return uniqid( 'wpcv_diff_', true );
@@ -367,25 +367,14 @@ class WPCV_Diff_Dispatcher {
 			return;
 		}
 
-		$baseline_run = $this->run_repository->find_by_id( (int) ( $baseline['run_id'] ?? 0 ) );
-
-		if ( null === $baseline_run || empty( $baseline_run['started_at'] ) ) {
-			// 安全側: 基準runの開始時刻が引けなければ判定できないため何もしない.
+		if ( $this->update_event_matcher->is_outside_tracked_period( $baseline ) ) {
+			// D6: 期間外(基準runの開始時刻が引けない場合も判定不能=期間外と同じ
+			// 扱いになる.`WPCV_Update_Event_Matcher::is_outside_tracked_period()`
+			// のdocblock参照).
 			return;
 		}
 
-		$since = WPCV_Migrator::get_update_events_since();
-
-		if ( null === $since || (string) $baseline_run['started_at'] < $since ) {
-			// D6: 期間外(または`wpcv_update_events_since`が未設定=判定不能.
-			// 安全側として「期間外」と同じ扱いにする.get_update_events_since()の
-			// docblock参照).
-			return;
-		}
-
-		$found = $this->update_event_repository->find_matching( $target_id, $version, (string) $baseline_run['started_at'] );
-
-		if ( ! empty( $found ) ) {
+		if ( $this->update_event_matcher->has_matching_event( $target_id, $version, $baseline ) ) {
 			return;
 		}
 

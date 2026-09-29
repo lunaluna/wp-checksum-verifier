@@ -38,6 +38,8 @@ require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-context-builder.
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-runner-async.php';
 require_once dirname( __DIR__ ) . '/includes/cli/class-wpcv-cli-command.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-update-event-repository.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-update-event-matcher.php';
 require_once __DIR__ . '/doubles.php';
 
 use PHPUnit\Framework\TestCase;

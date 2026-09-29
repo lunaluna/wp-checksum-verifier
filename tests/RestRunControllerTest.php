@@ -41,6 +41,8 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-scheduler.php';
 require_once dirname( __DIR__ ) . '/includes/rest/class-wpcv-rest-token.php';
 require_once dirname( __DIR__ ) . '/includes/rest/class-wpcv-rest-support.php';
 require_once dirname( __DIR__ ) . '/includes/rest/class-wpcv-rest-run-controller.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-update-event-repository.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-update-event-matcher.php';
 require_once __DIR__ . '/doubles.php';
 
 use PHPUnit\Framework\TestCase;

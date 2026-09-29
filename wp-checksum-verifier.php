@@ -228,6 +228,14 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-file-state-repos
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-update-event-repository.php';
 
 /**
+ * D5・D6の突き合わせ(v0.6 §Step3・§Step4)。`WPCV_Diff_Dispatcher`・
+ * `WPCV_Chunk_Dispatcher`の両方がコンストラクタで型宣言するため、それより
+ * 前に読み込む必要がある。`WPCV_Update_Event_Repository`・`WPCV_Run_Repository`
+ * (いずれも上でrequire済み)に依存する.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-update-event-matcher.php';
+
+/**
  * Chunk結果(cursor更新とfindings保存)をtransactionで確定する調整役(v0.4.0 §Step3).
  * `WPCV_Target_Run_Repository`/`WPCV_Finding_Repository`/`WPCV_Suppression_Repository`
  * より後に読み込む必要がある.

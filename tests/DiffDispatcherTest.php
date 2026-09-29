@@ -21,6 +21,7 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-file-state-repository.ph
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-migrator.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-update-event-repository.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-update-event-matcher.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-alert-sender.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-diff-dispatcher.php';
 require_once __DIR__ . '/doubles.php';
@@ -78,6 +79,7 @@ class DiffDispatcherTest extends TestCase {
 		$file_state_repository   = new WPCV_File_State_Repository( $wpdb, $now );
 		$alert_sender            = new WPCV_Alert_Sender( $run_repository, $target_run_repository, $finding_repository, $now );
 		$update_event_repository = new WPCV_Update_Event_Repository( $wpdb, $now );
+		$update_event_matcher    = new WPCV_Update_Event_Matcher( $update_event_repository, $run_repository );
 
 		$owner_sequence = 0;
 		$dispatcher     = new WPCV_Diff_Dispatcher(
@@ -86,7 +88,7 @@ class DiffDispatcherTest extends TestCase {
 			$finding_repository,
 			$file_state_repository,
 			$alert_sender,
-			$update_event_repository,
+			$update_event_matcher,
 			static function () use ( &$owner_sequence ) {
 				++$owner_sequence;
 				return 'owner-' . $owner_sequence;
@@ -101,6 +103,7 @@ class DiffDispatcherTest extends TestCase {
 			'file_state_repository'    => $file_state_repository,
 			'alert_sender'             => $alert_sender,
 			'update_event_repository'  => $update_event_repository,
+			'update_event_matcher'     => $update_event_matcher,
 			'dispatcher'               => $dispatcher,
 		);
 	}

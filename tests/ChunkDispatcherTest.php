@@ -31,6 +31,7 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-chunk-result-repository.
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-file-state-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-migrator.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-update-event-repository.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-update-event-matcher.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-planner.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-generation-differ.php';
@@ -118,9 +119,10 @@ class ChunkDispatcherTest extends TestCase {
 			return '2026-09-11 12:00:00';
 		};
 
-		$run_repository        = new WPCV_Run_Repository( $wpdb, $now );
-		$target_run_repository = new WPCV_Target_Run_Repository( $wpdb, $now );
-		$finding_repository    = new WPCV_Finding_Repository( $wpdb );
+		$run_repository          = new WPCV_Run_Repository( $wpdb, $now );
+		$target_run_repository   = new WPCV_Target_Run_Repository( $wpdb, $now );
+		$finding_repository      = new WPCV_Finding_Repository( $wpdb );
+		$update_event_repository = new WPCV_Update_Event_Repository( $wpdb, $now );
 
 		return array(
 			'run_repository'          => $run_repository,
@@ -128,7 +130,8 @@ class ChunkDispatcherTest extends TestCase {
 			'finding_repository'      => $finding_repository,
 			'file_state_repository'   => new WPCV_File_State_Repository( $wpdb, $now ),
 			'alert_sender'            => new WPCV_Alert_Sender( $run_repository, $target_run_repository, $finding_repository, $now ),
-			'update_event_repository' => new WPCV_Update_Event_Repository( $wpdb, $now ),
+			'update_event_repository' => $update_event_repository,
+			'update_event_matcher'    => new WPCV_Update_Event_Matcher( $update_event_repository, $run_repository ),
 		);
 	}
 
@@ -317,7 +320,7 @@ class ChunkDispatcherTest extends TestCase {
 			$repositories['finding_repository'],
 			$repositories['file_state_repository'],
 			$repositories['alert_sender'],
-			$repositories['update_event_repository']
+			$repositories['update_event_matcher']
 		);
 
 		$continuation_calls = array();
@@ -366,7 +369,7 @@ class ChunkDispatcherTest extends TestCase {
 			$repositories['finding_repository'],
 			$repositories['file_state_repository'],
 			$repositories['alert_sender'],
-			$repositories['update_event_repository']
+			$repositories['update_event_matcher']
 		);
 
 		$continuation_calls = array();
@@ -411,7 +414,7 @@ class ChunkDispatcherTest extends TestCase {
 			$repositories['finding_repository'],
 			$repositories['file_state_repository'],
 			$repositories['alert_sender'],
-			$repositories['update_event_repository']
+			$repositories['update_event_matcher']
 		);
 
 		$continuation_calls = array();
@@ -455,7 +458,7 @@ class ChunkDispatcherTest extends TestCase {
 			$repositories['finding_repository'],
 			$repositories['file_state_repository'],
 			$repositories['alert_sender'],
-			$repositories['update_event_repository']
+			$repositories['update_event_matcher']
 		);
 
 		$continuation_calls = array();
@@ -742,7 +745,7 @@ class ChunkDispatcherTest extends TestCase {
 			$repositories['finding_repository'],
 			$repositories['file_state_repository'],
 			$repositories['alert_sender'],
-			$repositories['update_event_repository']
+			$repositories['update_event_matcher']
 		);
 
 		$continuation_calls = array();

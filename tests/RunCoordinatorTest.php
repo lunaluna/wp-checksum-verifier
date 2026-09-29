@@ -34,6 +34,8 @@ require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-planner.php'
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-starter.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-coordinator.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-update-event-repository.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-update-event-matcher.php';
 require_once __DIR__ . '/doubles.php';
 
 use PHPUnit\Framework\TestCase;
