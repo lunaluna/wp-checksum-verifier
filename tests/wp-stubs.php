@@ -284,6 +284,41 @@ if ( ! function_exists( 'get_mu_plugins' ) ) {
 	}
 }
 
+if ( ! function_exists( 'get_plugin_data' ) ) {
+	/**
+	 * Stub get_plugin_data() — $GLOBALS['_wpcv_test_plugin_data'][$plugin_file] を
+	 * 返す(無ければ `Version` キーが空文字列の配列。`WPCV_Update_Event_Recorder::
+	 * read_plugin_version()` が D4のとおり `get_plugin_data( WP_PLUGIN_DIR . '/' .
+	 * $file, false, false )` で呼ぶため、キーは絶対パスで登録する想定. v0.6 §Step2).
+	 *
+	 * 本番の `get_plugin_data()` は内部の `get_file_data()` が既定ヘッダーの
+	 * キーを常にすべて持つ配列を返す(ファイルが存在しない・ヘッダーが無い場合も
+	 * 各値が空文字列になるだけでキー自体は欠けない)ため、このスタブも同じ形にする
+	 * (`Version` キーの欠落を心配しなくてよいことをPHPStanの型からも保証するため).
+	 *
+	 * @param string $plugin_file プラグインファイルの絶対パス.
+	 * @param bool   $markup     無視する.
+	 * @param bool   $translate  無視する.
+	 * @return array{Version: string}
+	 */
+	function get_plugin_data( $plugin_file, $markup = true, $translate = true ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		unset( $markup, $translate );
+		return isset( $GLOBALS['_wpcv_test_plugin_data'][ $plugin_file ] ) ? $GLOBALS['_wpcv_test_plugin_data'][ $plugin_file ] : array( 'Version' => '' );
+	}
+}
+
+if ( ! function_exists( 'get_current_user_id' ) ) {
+	/**
+	 * Stub get_current_user_id() — $GLOBALS['_wpcv_test_current_user_id'] を返す
+	 * (無ければ0. cron・CLIでの既定値と同じ. v0.6 §Step2).
+	 *
+	 * @return int
+	 */
+	function get_current_user_id() { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return isset( $GLOBALS['_wpcv_test_current_user_id'] ) ? (int) $GLOBALS['_wpcv_test_current_user_id'] : 0;
+	}
+}
+
 // WP_PLUGIN_DIR / WPMU_PLUGIN_DIR は定数のためテストごとに値を変えられない。
 // 実際の WordPress の既定値(WP_CONTENT_DIR 配下)と同じ形にしておき、
 // ContextBuilderTest はこのパス配下にフィクスチャを置いて検証する.

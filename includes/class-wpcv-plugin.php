@@ -142,6 +142,22 @@ class WPCV_Plugin {
 	private static $run_failure_alerter = null;
 
 	/**
+	 * 組み立て済みの `WPCV_Update_Event_Repository`(1リクエスト内で使い回す。
+	 * v0.6 §Step1で追加).
+	 *
+	 * @var WPCV_Update_Event_Repository|null
+	 */
+	private static $update_event_repository = null;
+
+	/**
+	 * 組み立て済みの `WPCV_Update_Event_Recorder`(1リクエスト内で使い回す。
+	 * v0.6 §Step2で追加).
+	 *
+	 * @var WPCV_Update_Event_Recorder|null
+	 */
+	private static $update_event_recorder = null;
+
+	/**
 	 * 本番用に配線された `WPCV_Run_Coordinator` を返す.
 	 *
 	 * @return WPCV_Run_Coordinator
@@ -330,6 +346,59 @@ class WPCV_Plugin {
 		}
 
 		return self::$run_failure_alerter;
+	}
+
+	/**
+	 * 本番用に配線された `WPCV_Update_Event_Repository` を返す(v0.6 §Step1).
+	 *
+	 * @return WPCV_Update_Event_Repository
+	 */
+	public static function update_event_repository() {
+		if ( null === self::$update_event_repository ) {
+			global $wpdb;
+
+			self::$update_event_repository = new WPCV_Update_Event_Repository( $wpdb );
+		}
+
+		return self::$update_event_repository;
+	}
+
+	/**
+	 * 本番用に配線された `WPCV_Update_Event_Recorder` を返す(v0.6 §Step2).
+	 *
+	 * @return WPCV_Update_Event_Recorder
+	 */
+	public static function update_event_recorder() {
+		if ( null === self::$update_event_recorder ) {
+			self::$update_event_recorder = new WPCV_Update_Event_Recorder( self::update_event_repository() );
+		}
+
+		return self::$update_event_recorder;
+	}
+
+	/**
+	 * `upgrader_process_complete`フックのハンドラ(v0.6 §Step2.
+	 * `WPCV_Update_Event_Recorder`が実際の判定・記録を行う.
+	 * `includes/runners/class-wpcv-update-event-recorder.php`の末尾で登録する.
+	 * `dispatch_chunk()`/`handle_run_terminated()`と同じ理由〔クラスdocblock参照〕で、
+	 * フック登録時点では`WPCV_Plugin`自身がまだ定義されていなくても構わない.
+	 *
+	 * @param WP_Upgrader $upgrader   更新処理を行った upgrader インスタンス.
+	 * @param array       $hook_extra `type`/`action`/`plugin`/`plugins`/`bulk` 等.
+	 * @return void
+	 */
+	public static function handle_upgrader_process_complete( $upgrader, $hook_extra ) {
+		self::update_event_recorder()->handle_upgrader_process_complete( $upgrader, $hook_extra );
+	}
+
+	/**
+	 * `_core_updated_successfully`フックのハンドラ(v0.6 §Step2).
+	 *
+	 * @param string $wp_version 更新後の WordPress version.
+	 * @return void
+	 */
+	public static function handle_core_updated_successfully( $wp_version ) {
+		self::update_event_recorder()->handle_core_updated_successfully( $wp_version );
 	}
 
 	/**

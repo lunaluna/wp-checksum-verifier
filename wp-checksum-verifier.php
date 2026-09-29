@@ -274,6 +274,16 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-alert-se
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-run-failure-alerter.php';
 
 /**
+ * 更新イベントの記録(v0.6 §Step2)。`upgrader_process_complete`フックの
+ * ハンドラをファイル末尾で登録するため、`WPCV_Update_Event_Repository`
+ * (v0.6 §Step1. 記録先)・`WPCV_Run_Planner`(slug解決)より後に読み込む必要が
+ * ある。`WPCV_Plugin`本体はまだ読み込まれていないが、フック登録は
+ * `array( 'WPCV_Plugin', ... )` という遅延解決の形のため問題ない
+ * (`WPCV_Run_Failure_Alerter` の登録と同じ理由).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-update-event-recorder.php';
+
+/**
  * Run開始時の「列挙(plan)→保存」を失敗時の後始末込みで行う共通処理
  * (v0.4.0 §Step5)。`WPCV_Run_Coordinator`・`WPCV_Runner_Async` の両方が使う.
  */
