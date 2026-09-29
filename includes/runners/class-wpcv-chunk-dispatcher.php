@@ -1350,6 +1350,46 @@ class WPCV_Chunk_Dispatcher {
 			);
 		}
 	}
+
+	/**
+	 * 無効化フックから呼ぶ. Action Scheduler に予約済みの継続アクション
+	 * (self::GROUP に属するすべて. self::HOOK の chunk 継続と
+	 * `WPCV_Runner_Async::HOOK`(`wpcv_run_async`)の起動の両方が対象)を
+	 * キャンセルする(v0.5.1. rev.3/roadmap §2.1 ★1・§13).
+	 *
+	 * `as_unschedule_all_actions( '', array(), self::GROUP )` は hook を空にすると
+	 * `ActionScheduler_Store::cancel_actions_by_group()` に委譲される(Action
+	 * Scheduler本体の実装で確認済み). hookごとに `as_unschedule_all_actions()` を
+	 * 個別に呼ぶより、このgroupが本プラグイン専用(他プラグインと共有しない
+	 * 固定値 'wpcv'. 本クラス・`WPCV_Runner_Async` のクラスdocblock参照)である
+	 * ことを利用してgroup単位でまとめて消したほうが、新しい継続アクションを
+	 * 追加した際にこのメソッドを更新し忘れるリスクが無い.
+	 *
+	 * uninstall.php 側では対応しない: `uninstall_plugin()` を呼ぶ経路
+	 * (管理画面の削除リンク・WP-CLIの `wp plugin uninstall`)はいずれも
+	 * 無効化済みのプラグインにしか働かない(WP-CLI実ソース `Plugin_Command::
+	 * uninstall()` の `is_plugin_active()` チェックで確認済み)ため、
+	 * アンインストール時点でこのメソッドは既に実行済み. 加えて uninstall.php は
+	 * プラグイン本体(bundled Action Scheduler含む)を読み込まないため、
+	 * `as_unschedule_all_actions()` 自体が呼べない(§7-3是正のdocblock参照).
+	 *
+	 * 未対応のまま残ったactionが実行されるとどうなるか(実装前に実ソースで
+	 * 確認済み): Action Scheduler の `ActionScheduler_Action::execute()` は
+	 * `has_action( $hook )` が偽なら実行前に例外を投げてfailedとして記録する
+	 * (無反応のdo_actionで静かに無視される訳ではない). 本メソッドが無いと、
+	 * 無効化後に他プラグインの操作等で稀にAction Schedulerのワーカーが動いた
+	 * 場合、削除済みのはずの本プラグインについてのエラーがログ・Scheduled
+	 * Actions画面に残り続ける.
+	 *
+	 * @return void
+	 */
+	public static function deactivate() {
+		if ( ! function_exists( 'as_unschedule_all_actions' ) || ! class_exists( 'ActionScheduler' ) || ! ActionScheduler::is_initialized() ) {
+			return;
+		}
+
+		as_unschedule_all_actions( '', array(), self::GROUP );
+	}
 }
 
 add_action( WPCV_Chunk_Dispatcher::HOOK, array( 'WPCV_Plugin', 'dispatch_chunk' ), 10, 1 );
