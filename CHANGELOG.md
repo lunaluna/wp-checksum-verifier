@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.1] - 2026-09-29
+
+Patch release: fixes an uninstall bug found while reviewing the v0.6
+roadmap. No new features.
+
+### Fixed
+
+- `uninstall.php` only deleted the `wpcv_db_version` option, leaving the
+  alert-recipients setting and REST API token hashes behind. On multisite,
+  the DB version is stored as a network-wide site option that was never
+  deleted either; deleting and reinstalling the plugin would then leave
+  the stale site option in place, causing the version check to think the
+  schema was already current and **skip creating the five database
+  tables entirely**. All four options (`wpcv_db_version`, `wpcv_settings`,
+  `wpcv_rest_token_hash`, `wpcv_rest_token_hash_read`) are now deleted on
+  both single-site and multisite installs, and a previously issued REST
+  token no longer works after reinstalling.
+- Deactivating the plugin now cancels any Action Scheduler actions still
+  pending for its own chunk-continuation and async-run hooks, so a
+  removed installation does not leave "no callbacks registered" errors in
+  the Scheduled Actions log if the queue happens to run afterward.
+
 ## [0.5.0] - 2026-09-28
 
 ### Added
