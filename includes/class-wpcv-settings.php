@@ -98,13 +98,25 @@ class WPCV_Settings {
 	const DEFAULT_STAT_DETECTION = true;
 
 	/**
+	 * 「更新イベントの無い version 変化を知らせる」(v0.6プラン §2.3・U3)の既定値.
+	 *
+	 * 2026-09-29 ユーザー確認済み(プラン§8 Q1)の推奨案: 既定 true(git / FTP /
+	 * composer でデプロイするサイトは設定でOFFにする)。checksumが公式配布物と
+	 * 一致していても通知するのは、脆弱な古い version へのダウングレードが公式の
+	 * チェックサムと一致してしまう穴(rev.3 §3.7)をふさぐため.
+	 *
+	 * @var bool
+	 */
+	const DEFAULT_ALERT_UNRECORDED_VERSION_CHANGE = true;
+
+	/**
 	 * 既定値.
 	 *
 	 * `alert_to`(v0.5後半 §Step14)の既定は空の配列. 空のときはアラートを送らず、
 	 * 管理画面に「宛先未設定」の警告を出す(プラン U1. admin_email へのフォールバックは
 	 * しない. WPMAR と同じ扱い).
 	 *
-	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool,stat_detection:bool,alert_to:string[]}
+	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool,stat_detection:bool,alert_to:string[],alert_unrecorded_version_change:bool}
 	 */
 	public static function defaults() {
 		return array(
@@ -114,13 +126,14 @@ class WPCV_Settings {
 			'strict_mode'                       => self::DEFAULT_STRICT_MODE,
 			'stat_detection'                    => self::DEFAULT_STAT_DETECTION,
 			'alert_to'                          => array(),
+			'alert_unrecorded_version_change'   => self::DEFAULT_ALERT_UNRECORDED_VERSION_CHANGE,
 		);
 	}
 
 	/**
 	 * 保存済みの設定値を既定値とマージして返す.
 	 *
-	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool,stat_detection:bool,alert_to:string[]}
+	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool,stat_detection:bool,alert_to:string[],alert_unrecorded_version_change:bool}
 	 */
 	public static function get_all() {
 		$stored = self::read_option();
@@ -265,6 +278,32 @@ class WPCV_Settings {
 		$settings = self::get_all();
 
 		$settings['alert_to'] = self::parse_email_list( $raw );
+
+		return self::write_option( $settings );
+	}
+
+	/**
+	 * 「更新イベントの無い version 変化を知らせる」(v0.6プラン §2.3・U3)が
+	 * 有効かどうかを返す.
+	 *
+	 * @return bool
+	 */
+	public static function get_alert_unrecorded_version_change_enabled() {
+		$settings = self::get_all();
+
+		return (bool) $settings['alert_unrecorded_version_change'];
+	}
+
+	/**
+	 * 「更新イベントの無い version 変化を知らせる」の有効・無効を保存する.
+	 *
+	 * @param bool $enabled true で有効化.
+	 * @return bool `update_option()`/`update_site_option()` の戻り値.
+	 */
+	public static function update_alert_unrecorded_version_change_enabled( $enabled ) {
+		$settings = self::get_all();
+
+		$settings['alert_unrecorded_version_change'] = (bool) $enabled;
 
 		return self::write_option( $settings );
 	}

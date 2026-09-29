@@ -126,12 +126,13 @@ class WPCV_Alert_Sender {
 		// 以前は宛先の確認のあとで呼んでいた).
 		$target_runs = $this->target_run_repository->find_all_by_run( $run_id );
 
-		$candidates             = $this->gather_notify_candidates( $run_id, $now, $resend_days );
-		$resolved_count         = (int) ( $run['findings_resolved'] ?? 0 );
-		$unverifiable_threshold = max( 1, (int) apply_filters( 'wpcv_alert_unverifiable_streak', 3 ) );
-		$unverifiable_streaks   = $this->gather_unverifiable_streaks( $target_runs, $run_id, $unverifiable_threshold );
+		$candidates                 = $this->gather_notify_candidates( $run_id, $now, $resend_days );
+		$resolved_count             = (int) ( $run['findings_resolved'] ?? 0 );
+		$unverifiable_threshold     = max( 1, (int) apply_filters( 'wpcv_alert_unverifiable_streak', 3 ) );
+		$unverifiable_streaks       = $this->gather_unverifiable_streaks( $target_runs, $run_id, $unverifiable_threshold );
+		$unrecorded_version_changes = $this->gather_unrecorded_version_changes( $target_runs, $run_id );
 
-		if ( ! WPCV_Generation_Differ::should_send_alert( $candidates['notify_count'], $resolved_count, ! empty( $unverifiable_streaks ) ) ) {
+		if ( ! WPCV_Generation_Differ::should_send_alert( $candidates['notify_count'], $resolved_count, ! empty( $unverifiable_streaks ), count( $unrecorded_version_changes ) ) ) {
 			$this->run_repository->record_alert_result( $run_id, $owner, 'not_needed', null, null, false );
 
 			return array( 'action' => 'not_needed' );
@@ -160,18 +161,19 @@ class WPCV_Alert_Sender {
 
 		$composed = WPCV_Alert_Composer::compose(
 			array(
-				'site_name'              => get_option( 'blogname' ),
-				'run'                    => $run,
-				'target_runs'            => $target_runs,
-				'counts'                 => $counts,
-				'top_items'              => $candidates['top_items'],
-				'by_target'              => $this->finding_repository->count_by_target_and_status( $run_id ),
-				'resolved_items'         => $this->finding_repository->find_resolved_items( $run_id, self::RESOLVED_ITEMS_FETCH_LIMIT ),
-				'baseline_rebuilt'       => $this->gather_baseline_rebuilt( $target_runs, $run_id ),
-				'unverifiable_streaks'   => $unverifiable_streaks,
-				'unverifiable_threshold' => $unverifiable_threshold,
-				'removed_targets'        => $this->finding_repository->count_removed_targets( $run_id ),
-				'details_url'            => $details_url,
+				'site_name'                  => get_option( 'blogname' ),
+				'run'                        => $run,
+				'target_runs'                => $target_runs,
+				'counts'                     => $counts,
+				'top_items'                  => $candidates['top_items'],
+				'by_target'                  => $this->finding_repository->count_by_target_and_status( $run_id ),
+				'resolved_items'             => $this->finding_repository->find_resolved_items( $run_id, self::RESOLVED_ITEMS_FETCH_LIMIT ),
+				'baseline_rebuilt'           => $this->gather_baseline_rebuilt( $target_runs, $run_id ),
+				'unrecorded_version_changes' => $unrecorded_version_changes,
+				'unverifiable_streaks'       => $unverifiable_streaks,
+				'unverifiable_threshold'     => $unverifiable_threshold,
+				'removed_targets'            => $this->finding_repository->count_removed_targets( $run_id ),
+				'details_url'                => $details_url,
 			)
 		);
 
@@ -418,6 +420,37 @@ class WPCV_Alert_Sender {
 
 		foreach ( $target_runs as $target_run ) {
 			if ( WPCV_Error_Code::BASELINE_REBUILT !== ( $target_run['error_code'] ?? null ) ) {
+				continue;
+			}
+
+			$target_id = (string) ( $target_run['target_id'] ?? '' );
+			$baseline  = $this->target_run_repository->find_baseline_target_run( $target_id, $run_id );
+
+			$items[] = array(
+				'target_id'    => $target_id,
+				'from_version' => (string) ( $baseline['version'] ?? '' ),
+				'to_version'   => (string) ( $target_run['version'] ?? '' ),
+			);
+		}
+
+		return $items;
+	}
+
+	/**
+	 * 今回のrunで`error_code = version_changed_unrecorded`(v0.6プラン §3.1・D5.
+	 * `WPCV_Diff_Dispatcher::maybe_flag_unrecorded_version_change()`が書く)になった
+	 * target_runから、本文の`unrecorded_version_changes`項目を組み立てる
+	 * (`gather_baseline_rebuilt()`と同じ形. クラスdocblock参照).
+	 *
+	 * @param array<int, array> $target_runs 今回のrunのtarget_run行一覧.
+	 * @param int               $run_id      対象のrunのid.
+	 * @return array<int, array{target_id: string, from_version: string, to_version: string}>
+	 */
+	private function gather_unrecorded_version_changes( array $target_runs, $run_id ) {
+		$items = array();
+
+		foreach ( $target_runs as $target_run ) {
+			if ( WPCV_Error_Code::VERSION_CHANGED_UNRECORDED !== ( $target_run['error_code'] ?? null ) ) {
 				continue;
 			}
 

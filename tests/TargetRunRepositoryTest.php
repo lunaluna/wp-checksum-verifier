@@ -844,6 +844,8 @@ class TargetRunRepositoryTest extends TestCase {
 
 		$this->assertNotNull( $baseline );
 		$this->assertSame( '1.1.0', $baseline['version'] );
+		// v0.6 §Step3: D5の突き合わせ(基準runのstarted_atを引く)に使うため追加した`run_id`.
+		$this->assertSame( 20, $baseline['run_id'] );
 	}
 
 	/**
@@ -959,6 +961,43 @@ class TargetRunRepositoryTest extends TestCase {
 		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_ids['core'] ];
 		$this->assertSame( 'first', $row['diff_mode'] );
 		$this->assertNull( $row['baseline_target_run_id'] );
+	}
+
+	/**
+	 * `mark_version_changed_unrecorded()`(v0.6 §Step3・D5)が`error_code`列に
+	 * `version_changed_unrecorded`を書くことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_mark_version_changed_unrecorded_writes_error_code() {
+		$wpdb           = new WPCV_Test_Fake_WPDB();
+		$repository     = new WPCV_Target_Run_Repository( $wpdb );
+		$target_run_ids = $repository->save_target_runs( 1, array( wpcv_test_make_target_run() ) );
+
+		$repository->mark_version_changed_unrecorded( $target_run_ids['core'] );
+
+		$this->assertSame(
+			WPCV_Error_Code::VERSION_CHANGED_UNRECORDED,
+			$wpdb->rows['wp_wpcv_target_runs'][ $target_run_ids['core'] ]['error_code']
+		);
+	}
+
+	/**
+	 * `mark_version_changed_unrecorded()`が`$wpdb->update()`の失敗を例外にすることを
+	 * 確認する(他のRepositoryと同じ規則).
+	 *
+	 * @return void
+	 */
+	public function test_mark_version_changed_unrecorded_throws_when_update_fails() {
+		$wpdb           = new WPCV_Test_Fake_WPDB();
+		$repository     = new WPCV_Target_Run_Repository( $wpdb );
+		$target_run_ids = $repository->save_target_runs( 1, array( wpcv_test_make_target_run() ) );
+
+		$wpdb->update_should_fail = true;
+
+		$this->expectException( RuntimeException::class );
+
+		$repository->mark_version_changed_unrecorded( $target_run_ids['core'] );
 	}
 
 	/**

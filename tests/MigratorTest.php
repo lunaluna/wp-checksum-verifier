@@ -586,6 +586,43 @@ class MigratorTest extends TestCase {
 	}
 
 	/**
+	 * `get_update_events_since()`(v0.6 §Step3)が、単一サイトで保存済みの値を
+	 * 返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_get_update_events_since_returns_stored_value_on_single_site() {
+		$GLOBALS['_wpcv_test_options']['wpcv_update_events_since'] = '2026-09-01 00:00:00';
+
+		$this->assertSame( '2026-09-01 00:00:00', WPCV_Migrator::get_update_events_since() );
+	}
+
+	/**
+	 * `get_update_events_since()`が、未設定なら`null`を返すことを確認する
+	 * (呼び出し側〔`WPCV_Diff_Dispatcher`〕が「期間外」と同じ扱いにする前提.
+	 * メソッドdocblock参照).
+	 *
+	 * @return void
+	 */
+	public function test_get_update_events_since_returns_null_when_unset() {
+		$this->assertNull( WPCV_Migrator::get_update_events_since() );
+	}
+
+	/**
+	 * `get_update_events_since()`が、マルチサイトでは site option を読むことを
+	 * 確認する.
+	 *
+	 * @return void
+	 */
+	public function test_get_update_events_since_reads_site_option_on_multisite() {
+		$GLOBALS['_wpcv_test_is_multisite']                              = true;
+		$GLOBALS['_wpcv_test_site_options']['wpcv_update_events_since']  = '2026-09-01 00:00:00';
+		$GLOBALS['_wpcv_test_options']['wpcv_update_events_since']       = '2020-01-01 00:00:00';
+
+		$this->assertSame( '2026-09-01 00:00:00', WPCV_Migrator::get_update_events_since() );
+	}
+
+	/**
 	 * `table_definitions()` の出力を `parse_column_names()` に通し、フェイクwpdbの
 	 * `columns_by_table`(=実DBの `DESCRIBE` 相当)を「dbDeltaが完全に成功した」
 	 * 状態として組み立てる(`test_schema_is_current_*` の共通セットアップ).

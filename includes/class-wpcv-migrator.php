@@ -33,6 +33,14 @@ class WPCV_Migrator {
 	const DB_VERSION_OPTION = 'wpcv_db_version';
 
 	/**
+	 * D6の基準時刻を保持する wp_options のキー(v0.6 §2.3。
+	 * `maybe_record_update_events_since()`/`get_update_events_since()` 参照).
+	 *
+	 * @var string
+	 */
+	const UPDATE_EVENTS_SINCE_OPTION = 'wpcv_update_events_since';
+
+	/**
 	 * 保存されている DB バージョンが WPCV_DB_VERSION より古ければスキーマを更新する.
 	 *
 	 * プラグイン有効化時に加え、`plugins_loaded` にもフックする(自動更新で
@@ -547,17 +555,34 @@ class WPCV_Migrator {
 	 * @return void
 	 */
 	private static function maybe_record_update_events_since() {
-		$option = 'wpcv_update_events_since';
-
 		if ( is_multisite() ) {
-			if ( null === get_site_option( $option, null ) ) {
-				update_site_option( $option, gmdate( 'Y-m-d H:i:s' ) );
+			if ( null === get_site_option( self::UPDATE_EVENTS_SINCE_OPTION, null ) ) {
+				update_site_option( self::UPDATE_EVENTS_SINCE_OPTION, gmdate( 'Y-m-d H:i:s' ) );
 			}
 			return;
 		}
 
-		if ( false === get_option( $option, false ) ) {
-			update_option( $option, gmdate( 'Y-m-d H:i:s' ), true );
+		if ( false === get_option( self::UPDATE_EVENTS_SINCE_OPTION, false ) ) {
+			update_option( self::UPDATE_EVENTS_SINCE_OPTION, gmdate( 'Y-m-d H:i:s' ), true );
 		}
+	}
+
+	/**
+	 * `wpcv_update_events_since`(D6)を読み取る(v0.6 §Step3から呼ばれる想定).
+	 *
+	 * 基準target_runのrun開始時刻がこれより前なら「期間外」とみなし、更新イベント
+	 * の記録なしを理由にした通知(§3.1)を出さない。値が無い(=`maybe_upgrade()`が
+	 * まだ一度もv6のスキーマ確認を終えていない、通常は起こらない状態)場合は
+	 * `null`を返す ―― 呼び出し側は`null`を「期間外」と同じ扱いにする想定
+	 * (安全側: 基準時刻が無いのに「期間内」と誤判定して通知しないため).
+	 *
+	 * @return string|null UTCのMySQL DATETIME文字列、または未設定なら `null`.
+	 */
+	public static function get_update_events_since() {
+		$value = is_multisite()
+			? get_site_option( self::UPDATE_EVENTS_SINCE_OPTION, null )
+			: get_option( self::UPDATE_EVENTS_SINCE_OPTION, null );
+
+		return ( null === $value || false === $value || '' === $value ) ? null : (string) $value;
 	}
 }

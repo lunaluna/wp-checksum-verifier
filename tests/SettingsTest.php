@@ -217,6 +217,26 @@ class SettingsTest extends TestCase {
 		$this->assertTrue( WPCV_Settings::get_stat_detection_enabled() );
 	}
 
+	/**
+	 * 「更新イベントの無い version 変化を知らせる」(v0.6プラン §2.3・U3)は
+	 * 未保存なら有効(既定 true)で、保存した値がそのまま返り、他の設定を
+	 * 巻き戻さないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_alert_unrecorded_version_change_defaults_to_enabled_and_persists() {
+		$this->assertTrue( WPCV_Settings::get_alert_unrecorded_version_change_enabled() );
+
+		WPCV_Settings::update_strict_mode( true );
+		WPCV_Settings::update_alert_unrecorded_version_change_enabled( false );
+
+		$this->assertFalse( WPCV_Settings::get_alert_unrecorded_version_change_enabled() );
+		$this->assertTrue( WPCV_Settings::get_strict_mode() );
+
+		WPCV_Settings::update_alert_unrecorded_version_change_enabled( true );
+		$this->assertTrue( WPCV_Settings::get_alert_unrecorded_version_change_enabled() );
+	}
+
 	// ------------------------------------------------------------------
 	// v0.5後半 §Step14: `parse_email_list()`(WPMAR からの移植)と `alert_to`.
 	// 最初の3件は WPMAR `tests/SettingsTest.php` と同じ入力・同じ期待値にそろえている.
