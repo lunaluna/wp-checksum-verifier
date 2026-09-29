@@ -74,6 +74,39 @@ class WPCV_Run_Repository {
 	const DEFAULT_DEADLINE_HOURS = 6;
 
 	/**
+	 * 差分処理(v0.5後半 §Step12)の claim が設定する lease 有効期間の既定値(秒).
+	 *
+	 * 未実測: 暫定値.`WPCV_Target_Run_Repository::DEFAULT_LEASE_SECONDS`(検証本体の
+	 * chunk leaseと同じ120秒)をそのまま流用する(プラン§4.5「差分処理の試行上限・
+	 * lease の長さは target_run と同じ定数を流用」).
+	 *
+	 * @var int
+	 */
+	const DIFF_LEASE_SECONDS = 120;
+
+	/**
+	 * 差分処理がlease切れとみなして再試行させる最大回数の既定値.
+	 *
+	 * `WPCV_Target_Run_Repository::DEFAULT_MAX_ATTEMPTS` と同じ値を流用する
+	 * (プラン§4.5. 上記 `DIFF_LEASE_SECONDS` と同じ理由).
+	 *
+	 * @var int
+	 */
+	const DIFF_MAX_ATTEMPTS = 5;
+
+	/**
+	 * `find_failure_streak()` が1回に読む run の件数(v0.5後半 §Step15a設計§3.1
+	 * 「1回に読む件数は未実測の暫定値を置き、コメントに『未実測』と書く」).
+	 *
+	 * 未実測: 通常は最初の1バッチ(直前の1件を読んだ時点)で途切れる
+	 * (success/partialに遭遇する)ため、ほとんどの呼び出しは1回のクエリで終わる.
+	 * 長期間runが失敗し続ける異常事態でのみ複数回のクエリが発生する.
+	 *
+	 * @var int
+	 */
+	const FAILURE_STREAK_BATCH_SIZE = 50;
+
+	/**
 	 * `$wpdb` 相当のオブジェクト(`insert()` / `update()` / `get_results()` / `get_var()` /
 	 * `query()` / `prepare()` / `base_prefix` / `insert_id` / `last_error` を持つもの).
 	 *
@@ -310,8 +343,9 @@ class WPCV_Run_Repository {
 				'finished_at' => call_user_func( $this->now ),
 				'status'      => WPCV_Run_Status::FAILED,
 				'notes'       => (string) $notes,
+				'diff_status' => WPCV_Diff_Status::SKIPPED,
 			),
-			array( '%s', '%s', '%s' )
+			array( '%s', '%s', '%s', '%s' )
 		);
 	}
 
@@ -337,8 +371,9 @@ class WPCV_Run_Repository {
 				'finished_at' => call_user_func( $this->now ),
 				'status'      => WPCV_Run_Status::ABORTED,
 				'notes'       => (string) $notes,
+				'diff_status' => WPCV_Diff_Status::SKIPPED,
 			),
-			array( '%s', '%s', '%s' )
+			array( '%s', '%s', '%s', '%s' )
 		);
 	}
 
@@ -355,8 +390,13 @@ class WPCV_Run_Repository {
 	 * この2メソッドだけがこのヘルパーを使う想定(`finish_run()`のように
 	 * 特定の1状態〔`running`〕のみを条件にすべき箇所には使わない).
 	 *
+	 * v0.5後半 §Step12(§3.4): 実際に更新できた場合のみ `wpcv_run_terminated`
+	 * フックを発火する.呼び出し元(`mark_run_failed()`/`mark_run_aborted()`の
+	 * さらに外側)ではなく、状態遷移が成功したこの1か所に集約することで、
+	 * 呼び出し箇所ごとにフック発火の有無がドリフトすることを防ぐ.
+	 *
 	 * @param int   $run_id 対象の run の id.
-	 * @param array $data   更新するデータ.
+	 * @param array $data   更新するデータ(`status` キーを含むこと.フック引数に使う).
 	 * @param array $format `$data` の `%s`/`%d` 書式(1件目の要素は必ず
 	 *                       `array( 'id' => ..., 'status' => ... )` のWHERE用
 	 *                       書式〔`%d`, `%s`〕の前に来る点は呼び出し元が揃える).
@@ -378,6 +418,15 @@ class WPCV_Run_Repository {
 			);
 
 			if ( $updated > 0 ) {
+				/**
+				 * Runが終端状態(failed/aborted/success/partial)に達したことを知らせる
+				 * (v0.5後半 §Step15の失敗アラートが購読する.§3.4参照).
+				 *
+				 * @param int    $run_id 終端に達した run の id.
+				 * @param string $status 遷移後の `wpcv_runs.status`.
+				 */
+				do_action( 'wpcv_run_terminated', (int) $run_id, (string) $data['status'] );
+
 				return true;
 			}
 		}
@@ -468,6 +517,16 @@ class WPCV_Run_Repository {
 	 * 後から戻ってきた旧ワーカーが success/partial を書き戻せてしまう事故
 	 * 〔プラン§P1「stale化後に旧ワーカーが成功で上書きできる」〕を防ぐ).
 	 *
+	 * `diff_status` に `pending` を同じ UPDATE で書き込む(v0.5後半プラン §3.1:
+	 * success/partial になった run は差分処理の対象になるため. 差分処理
+	 * (Step12以降)が claim できるようにする起点であり、ここで書き漏らすと
+	 * どの run も差分処理へ進めなくなる).
+	 *
+	 * v0.5後半 §Step12(§3.4): 実際に更新できた場合のみ `wpcv_run_terminated`
+	 * フックを発火する(`update_active_run()` の同じフックと合わせて、
+	 * `mark_run_failed()`/`mark_run_aborted()`/`finish_run()` の3メソッドすべてが
+	 * 「状態遷移が成功した1か所」でのみ発火する).
+	 *
 	 * @param int   $run_id  `reserve_run()` が返した run の id.
 	 * @param array $summary `WPCV_Verifier::summarize()` の戻り値.
 	 * @return bool 更新できたら true。false は対象行が既に `running` ではない
@@ -486,16 +545,626 @@ class WPCV_Run_Repository {
 				'targets_unverifiable' => $summary['targets_unverifiable'],
 				'targets_failed'       => $summary['targets_failed'],
 				'findings_total'       => $summary['findings_total'],
+				'diff_status'          => WPCV_Diff_Status::PENDING,
 			),
 			array(
 				'id'     => (int) $run_id,
 				'status' => WPCV_Run_Status::RUNNING,
 			),
-			array( '%s', '%s', '%d', '%d', '%d', '%d', '%d' ),
+			array( '%s', '%s', '%d', '%d', '%d', '%d', '%d', '%s' ),
 			array( '%d', '%s' )
 		);
 
+		if ( $updated > 0 ) {
+			/** この記述は `update_active_run()` の同名フックのdocblock参照. */
+			do_action( 'wpcv_run_terminated', (int) $run_id, (string) $summary['status'] );
+		}
+
 		return $updated > 0;
+	}
+
+	/**
+	 * 差分処理(v0.5後半 §Step12)の1chunk分を進める権利をclaimする(§3.1の状態遷移).
+	 *
+	 * `wpcv_target_runs.claim_next()`(CAS方式)と異なり、runは1行しか無いため
+	 * 候補選定は不要(既知の `$run_id` に対する単純なCAS).target_runのlease方式
+	 * (`sweep_expired_leases()`→`claim_next()`の2段階)とも異なり、次の3状態遷移を
+	 * このメソッド1つにまとめている:
+	 *
+	 * - `pending` → `processing`(通常のclaim.`diff_attempt_count` は変えない.
+	 *   §3.1「chunkが正常にyieldして継続する分はこのカウントを消費しない」と
+	 *   同じ考え方)
+	 * - `processing`/`alerting`(lease有効) → 変わらず `claimed: false`(他プロセスが
+	 *   実際に処理中. §3.1「他のプロセスがclaimしようとする→何もせず戻る」)
+	 * - `processing`/`alerting`(lease切れ) → 試行回数が上限以内なら `pending` へ
+	 *   戻してから即座に同じCASで再claim(worker crash からの再開.§3.1「途中の
+	 *   プロセスが死んだケース」).上限を超えていれば `failed` へ倒す
+	 *
+	 * fencingに `diff_owner` の値そのものではなく `diff_status`(読み取り時点の値)を
+	 * 使うのは、`$wpdb->update()` の WHERE に `NULL` を渡すと `%s` プレースホルダーが
+	 * 空文字列にキャストされ `diff_owner = ''` という誤ったSQLになる(NULLの等価
+	 * 比較にならない)ため、未claim状態を`diff_owner IS NULL`では表現しない設計に
+	 * したことによる(`WPCV_Target_Run_Repository` の fencing とは異なる理由で、
+	 * こちらは値そのものが `pending`/`processing` という非NULLの列挙値であるため
+	 * 安全に等価比較できる).claim後の実際のchunk処理結果の書き込み
+	 * (`finalize_diff_chunk()` 等)は、あらためて `diff_owner = $owner` も
+	 * WHEREに含めてfencingする(この時点では非NULLの具体的な値のため安全).
+	 *
+	 * Lease切れの経路(`failed`化・`alerting`の再claim・`processing`の`pending`への
+	 * 差し戻し)は、`diff_status`に加えて読み取り時点の`diff_lease_expires_at`も
+	 * WHEREに含める(コードレビュー指摘で修正).`diff_status`だけでは、
+	 * `alerting`→`alerting`のように状態が変わらない遷移や、差し戻し後にすぐ
+	 * 再claimされて`processing`に戻った行に、同じ行を読んだ別workerのUPDATEも
+	 * 一致してしまい、2つのworkerが両方とも`claimed: true`を受け取る(二重送信・
+	 * 二重処理になる).lease切れと判定された行の`diff_lease_expires_at`は必ず
+	 * NULL以外の値(`is_past()`は空文字列を「期限切れ」と判定しない)のため、
+	 * `$wpdb->update()`のWHEREで安全に等価比較できる.claimに成功した側は
+	 * leaseを新しい値(未来の時刻)に書き換えるので、遅れた側のUPDATEは0件になる.
+	 *
+	 * @param int    $run_id        対象の run の id.
+	 * @param string $owner         この呼び出しを識別する一意な文字列
+	 *                              (`WPCV_Diff_Dispatcher` が呼び出しごとに生成する).
+	 * @param int    $lease_seconds lease有効期間(秒). 省略時は `DIFF_LEASE_SECONDS`.
+	 * @param int    $max_attempts  lease切れの最大許容回数. 省略時は `DIFF_MAX_ATTEMPTS`.
+	 * @return array{claimed: bool, run: array|null, failed: bool} `claimed` が
+	 *         true なら `run` に claim 直後の行(`diff_owner`/`diff_status` 更新済み)を
+	 *         持つ.`failed` が true は今回の呼び出しで試行上限超過により
+	 *         `failed` へ倒したことを意味する(この場合 `claimed` は常に false).
+	 */
+	public function claim_diff( $run_id, $owner, $lease_seconds = self::DIFF_LEASE_SECONDS, $max_attempts = self::DIFF_MAX_ATTEMPTS ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+		$run   = $this->find_by_id( (int) $run_id );
+
+		if ( null === $run ) {
+			return array(
+				'claimed' => false,
+				'run'     => null,
+				'failed'  => false,
+			);
+		}
+
+		$current_status = (string) ( $run['diff_status'] ?? '' );
+
+		if ( WPCV_Diff_Status::PENDING === $current_status ) {
+			return $this->cas_claim_diff( $table, $run_id, WPCV_Diff_Status::PENDING, WPCV_Diff_Status::PROCESSING, $owner, $lease_seconds );
+		}
+
+		if ( ! in_array( $current_status, array( WPCV_Diff_Status::PROCESSING, WPCV_Diff_Status::ALERTING ), true ) ) {
+			return array(
+				'claimed' => false,
+				'run'     => $run,
+				'failed'  => false,
+			);
+		}
+
+		if ( ! $this->is_past( (string) $run['diff_lease_expires_at'] ) ) {
+			// Lease有効中. 他プロセスが実際に処理中(§3.1「変わらず戻る」).
+			return array(
+				'claimed' => false,
+				'run'     => $run,
+				'failed'  => false,
+			);
+		}
+
+		// `diff_attempt_count` は列定義上 `NOT NULL default 0` だが、テストダブルは
+		// カラムのdefault値を模さない(実際に insert() へ渡した値しか持たない)ため、
+		// `insert_run_row()` が明示的に書かない値でも安全に読めるよう `??` で補う.
+		$next_attempt_count = (int) ( $run['diff_attempt_count'] ?? 0 ) + 1;
+
+		// 読み取り時点のlease値. 以降のUPDATEのWHEREに含め、同じ行を読んだ
+		// 別workerとの競合を防ぐ(このメソッドのdocblock参照).
+		$expected_lease = (string) $run['diff_lease_expires_at'];
+
+		if ( $next_attempt_count > (int) $max_attempts ) {
+			$updated = $this->wpdb->update(
+				$table,
+				array(
+					'diff_status'           => WPCV_Diff_Status::FAILED,
+					'diff_owner'            => null,
+					'diff_lease_expires_at' => null,
+					'diff_attempt_count'    => $next_attempt_count,
+				),
+				array(
+					'id'                    => (int) $run_id,
+					'diff_status'           => $current_status,
+					'diff_lease_expires_at' => $expected_lease,
+				),
+				array( '%s', '%s', '%s', '%d' ),
+				array( '%d', '%s', '%s' )
+			);
+
+			return array(
+				'claimed' => false,
+				'run'     => null,
+				'failed'  => $updated > 0,
+			);
+		}
+
+		if ( WPCV_Diff_Status::ALERTING === $current_status ) {
+			// `alerting`はlease切れでも`processing`へは戻さず、`alerting`のまま
+			// owner・leaseだけ更新して再claimする(v0.5後半 §Step14c. `dispatch_diff()`
+			// がclaim後の`diff_status`を見て送信処理〔手順5〕へ進めるかどうかを
+			// 判定するため、状態そのものを保つ必要がある. `attempt_count`は
+			// `processing`のlease切れと同じ扱いで消費する ―― 一度もclaimされて
+			// いない初回〔`finalize_diff_chunk()`がlease切れ相当の値を書いた直後〕も
+			// この経路に乗るため1回分だけ余分に消費するが、実害は小さいと判断した).
+			return $this->cas_claim_diff( $table, $run_id, WPCV_Diff_Status::ALERTING, WPCV_Diff_Status::ALERTING, $owner, $lease_seconds, $next_attempt_count, $expected_lease );
+		}
+
+		// Lease切れ・試行上限内(processing): いったん pending へ戻してから、
+		// 同じ呼び出しの中で即座に再claimする(呼び出し元に2回に分けて再試行させない).
+		$reverted = $this->wpdb->update(
+			$table,
+			array(
+				'diff_status'           => WPCV_Diff_Status::PENDING,
+				'diff_owner'            => null,
+				'diff_lease_expires_at' => null,
+				'diff_attempt_count'    => $next_attempt_count,
+			),
+			array(
+				'id'                    => (int) $run_id,
+				'diff_status'           => $current_status,
+				'diff_lease_expires_at' => $expected_lease,
+			),
+			array( '%s', '%s', '%s', '%d' ),
+			array( '%d', '%s', '%s' )
+		);
+
+		if ( $reverted <= 0 ) {
+			// 他プロセスが同時にこの行へ触れた(稀). 今回は諦め、次回の
+			// dispatchに委ねる.
+			return array(
+				'claimed' => false,
+				'run'     => null,
+				'failed'  => false,
+			);
+		}
+
+		return $this->cas_claim_diff( $table, $run_id, WPCV_Diff_Status::PENDING, WPCV_Diff_Status::PROCESSING, $owner, $lease_seconds );
+	}
+
+	/**
+	 * `claim_diff()` のCAS本体(`pending`→`processing`の通常claim・`processing`の
+	 * lease切れ再claim〔`pending`経由〕・`alerting`のlease切れ再claim〔状態を
+	 * 保ったまま〕の3通りで共有する).
+	 *
+	 * @param string      $table          `wpcv_runs` テーブル名.
+	 * @param int         $run_id         対象の run の id.
+	 * @param string      $expected_from  CASの `WHERE diff_status = ?` に使う、読み取り時点の値.
+	 * @param string      $to_status      遷移先の `diff_status`.
+	 * @param string      $owner          claim した worker を識別する一意な文字列.
+	 * @param int         $lease_seconds  lease有効期間(秒).
+	 * @param int|null    $attempt_count  書き込む`diff_attempt_count`(省略時は変更しない.
+	 *                                    `alerting`のlease切れ再claim時にのみ渡す).
+	 * @param string|null $expected_lease CASのWHEREに加える、読み取り時点の
+	 *                                    `diff_lease_expires_at`(省略時は条件に加えない.
+	 *                                    `alerting`→`alerting`のように状態が変わらない
+	 *                                    遷移で二重claimを防ぐために渡す.`claim_diff()`の
+	 *                                    docblock参照).
+	 * @return array{claimed: bool, run: array|null, failed: bool}
+	 */
+	private function cas_claim_diff( $table, $run_id, $expected_from, $to_status, $owner, $lease_seconds, $attempt_count = null, $expected_lease = null ) {
+		$lease_expires_at = gmdate( 'Y-m-d H:i:s', strtotime( call_user_func( $this->now ) ) + (int) $lease_seconds );
+
+		$data   = array(
+			'diff_status'           => $to_status,
+			'diff_owner'            => (string) $owner,
+			'diff_lease_expires_at' => $lease_expires_at,
+		);
+		$format = array( '%s', '%s', '%s' );
+
+		if ( null !== $attempt_count ) {
+			$data['diff_attempt_count'] = $attempt_count;
+			$format[]                   = '%d';
+		}
+
+		$where        = array(
+			'id'          => (int) $run_id,
+			'diff_status' => $expected_from,
+		);
+		$where_format = array( '%d', '%s' );
+
+		if ( null !== $expected_lease ) {
+			$where['diff_lease_expires_at'] = $expected_lease;
+			$where_format[]                 = '%s';
+		}
+
+		$updated = $this->wpdb->update( $table, $data, $where, $format, $where_format );
+
+		if ( $updated <= 0 ) {
+			return array(
+				'claimed' => false,
+				'run'     => null,
+				'failed'  => false,
+			);
+		}
+
+		return array(
+			'claimed' => true,
+			'run'     => $this->find_by_id( (int) $run_id ),
+			'failed'  => false,
+		);
+	}
+
+	/**
+	 * 差分処理の1chunkを確定する(§3.1「chunkを1つ処理...diff_cursorを進め、
+	 * leaseを延長」に対応.ただしStep12の設計〔本ファイルのクラス docblock
+	 * 相当の判断.`WPCV_Diff_Dispatcher` クラス docblock参照〕では、
+	 * leaseを延長して同じ`processing`のまま居座るのではなく、target_run の
+	 * `update_chunk_progress()`(completed:false時にleaseを手放しRETRYへ戻す)と
+	 * 同じ考え方を採用した: 完了していなければ `pending` へ戻し(次回のclaimへ
+	 * 委ねる)、完了していれば集計値を書いて `alerting` へ進める.
+	 *
+	 * `diff_owner = $owner` をWHEREに含めてfencingする(claim_diff()が割り当てた
+	 * ものと一致する場合のみ書き込みを反映させる.§3.1「書き込みはすべて
+	 * diff_ownerをWHEREに含める」).
+	 *
+	 * @param int         $run_id      対象の run の id.
+	 * @param string      $owner       `claim_diff()` がこの呼び出しに割り当てた owner.
+	 * @param string|null $cursor_json 次回に渡す `diff_cursor`(完了時は `null`).
+	 * @param bool        $completed   全targetの差分処理が終わったか.
+	 * @param array|null  $counts      `$completed` が true のときの集計値
+	 *                                 (`new`/`resolved`/`continuing`).
+	 * @return bool 更新できたら true(false はfencing失敗. 呼び出し元は諦めてよい
+	 *              ―― 既に別プロセスが再claimしている).
+	 */
+	public function finalize_diff_chunk( $run_id, $owner, $cursor_json, $completed, ?array $counts = null ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+
+		if ( $completed ) {
+			$data   = array(
+				'diff_status'           => WPCV_Diff_Status::ALERTING,
+				'diff_owner'            => null,
+				// NULLにはしない: `claim_diff()`の`is_past()`はNULL(`(string)`で
+				// 空文字列になる)を「lease有効中」と誤判定し、alertingへ入った
+				// 瞬間に二度とclaimできなくなるため(v0.5後半 §Step14cで発見・
+				// 修正. 既に期限切れの値にしておくことで即座に再claim可能にする).
+				'diff_lease_expires_at' => call_user_func( $this->now ),
+				'diff_cursor'           => null,
+				'findings_new'          => (int) $counts['new'],
+				'findings_resolved'     => (int) $counts['resolved'],
+				'findings_continuing'   => (int) $counts['continuing'],
+			);
+			$format = array( '%s', '%s', '%s', '%s', '%d', '%d', '%d' );
+		} else {
+			$data   = array(
+				'diff_status'           => WPCV_Diff_Status::PENDING,
+				'diff_owner'            => null,
+				'diff_lease_expires_at' => null,
+				'diff_cursor'           => $cursor_json,
+			);
+			$format = array( '%s', '%s', '%s', '%s' );
+		}
+
+		$updated = $this->wpdb->update(
+			$table,
+			$data,
+			array(
+				'id'          => (int) $run_id,
+				'diff_status' => WPCV_Diff_Status::PROCESSING,
+				'diff_owner'  => (string) $owner,
+			),
+			$format,
+			array( '%d', '%s', '%s' )
+		);
+
+		return $updated > 0;
+	}
+
+	/**
+	 * アラート送信(v0.5後半 §Step14. `WPCV_Alert_Sender`)の結果をrun行に記録する.
+	 *
+	 * `finalize_diff_alerting()`と同じく、`diff_status = alerting`と
+	 * `diff_owner = $owner`をWHEREに含めてfencingする(コードレビュー指摘で修正).
+	 * Step14cでは「後から書かれた結果が正でよい」としてfencingを持たせていなかったが、
+	 * 次の順序で誤った結果が残ることが分かった:
+	 *
+	 * 1. Aがメール送信中にlease切れ
+	 * 2. Bが再claimして送信に成功し、`sent`を記録して`done`へ進める
+	 * 3. 遅れてAが失敗し、`failed`で上書きする(`done`への遷移はfencingで弾かれるが、
+	 *    `alert_status`は`failed`のまま残る)
+	 *
+	 * 管理画面には実際には成功した送信の失敗通知が出てしまう.fencingを掛けると、
+	 * 3のAの書き込みは(`diff_owner`がBのもの、または`done`で状態が違うため)0件になる.
+	 *
+	 * @param int         $run_id                 対象の run の id.
+	 * @param string      $owner                  `claim_diff()`が`alerting`のclaimで割り当てた owner.
+	 * @param string      $alert_status           `no_recipient`/`sent`/`failed`/`not_needed`
+	 *                                            のいずれか(§2.5).
+	 * @param string|null $alert_error            `WP_Error::get_error_message()`のみ
+	 *                                            (§6: `get_error_data()`は保存しない).
+	 *                                            500文字を超える分は切り捨てる.
+	 * @param string|null $alert_channel_failures 失敗した追加チャネルの`name`をカンマ区切りで
+	 *                                            (§4.3). 500文字を超える分は切り捨てる.
+	 * @param bool        $mark_attempted         `true`なら`alert_attempted_at`も書く
+	 *                                            (`not_needed`のときは呼び出し元が`false`を渡す
+	 *                                            ―― 送信を試みていないため).
+	 * @return bool 1件以上更新できたら true(false はfencing失敗 ―― 既に別ownerが
+	 *              再claimしたか、`done`へ進んでいる.呼び出し元は諦めてよい).
+	 */
+	public function record_alert_result( $run_id, $owner, $alert_status, $alert_error = null, $alert_channel_failures = null, $mark_attempted = true ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+
+		$data   = array( 'alert_status' => (string) $alert_status );
+		$format = array( '%s' );
+
+		if ( $mark_attempted ) {
+			$data['alert_attempted_at'] = call_user_func( $this->now );
+			$format[]                   = '%s';
+		}
+
+		$data['alert_error'] = null === $alert_error ? null : substr( (string) $alert_error, 0, 500 );
+		$format[]            = '%s';
+
+		$data['alert_channel_failures'] = null === $alert_channel_failures ? null : substr( (string) $alert_channel_failures, 0, 500 );
+		$format[]                       = '%s';
+
+		$updated = $this->wpdb->update(
+			$table,
+			$data,
+			array(
+				'id'          => (int) $run_id,
+				'diff_status' => WPCV_Diff_Status::ALERTING,
+				'diff_owner'  => (string) $owner,
+			),
+			$format,
+			array( '%d', '%s', '%s' )
+		);
+
+		return $updated > 0;
+	}
+
+	/**
+	 * `alerting` を `done` へ進める(v0.5後半 §Step14c. `WPCV_Alert_Sender::
+	 * send_for_run()` を呼んだ直後に呼ぶ).
+	 *
+	 * `diff_owner` を条件に含める(§3.1直下の注記「書き込みはすべて`diff_owner`を
+	 * WHEREに含める」).lease切れ後に別ownerが再claimして送り直した場合、遅れて
+	 * 戻った古いプロセスがこの呼び出しで誤って`done`にしてしまわないようにする
+	 * ため(`record_alert_result()`も同じ条件でfencingする.コードレビュー指摘3).
+	 *
+	 * @param int    $run_id 対象の run の id.
+	 * @param string $owner  `claim_diff()` がこの呼び出しに割り当てた owner.
+	 * @return bool 更新できたら true(false はfencing失敗 ―― 既に別ownerが
+	 *              再claimしている. 呼び出し元は諦めてよい).
+	 */
+	public function finalize_diff_alerting( $run_id, $owner ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+
+		$updated = $this->wpdb->update(
+			$table,
+			array( 'diff_status' => WPCV_Diff_Status::DONE ),
+			array(
+				'id'          => (int) $run_id,
+				'diff_status' => WPCV_Diff_Status::ALERTING,
+				'diff_owner'  => (string) $owner,
+			),
+			array( '%s' ),
+			array( '%d', '%s', '%s' )
+		);
+
+		return $updated > 0;
+	}
+
+	/**
+	 * 差分処理が `pending`、またはlease切れの `processing`/`alerting` の run を
+	 * 古いもの(id最小)から最大1件だけ探す(v0.5後半 §Step12・§3.3「取りこぼしの
+	 * 回収」).新しい run の開始時(`WPCV_Run_Starter::plan_and_save()`)に呼ぶ想定.
+	 *
+	 * その場で処理はしない(呼び出し元が継続の action を1つ予約するだけに
+	 * とどめる. 新しい run の開始をタイムアウトさせないため).
+	 *
+	 * lease切れの判定は`is_past()`(`claim_diff()`と共有)を使う ―― v0.5後半
+	 * §Step14cで発見: 以前はここだけ独自の文字列比較(`<`)を行っており、
+	 * `claim_diff()`(`is_past()`.`<=`)と境界値の扱いが食い違っていた
+	 * (`finalize_diff_chunk()`が`alerting`遷移時に書く「現在時刻ちょうど」の
+	 * lease値を、claimはできるのにここでは拾えない、という不整合になりうる箇所
+	 * だったため統一した).
+	 *
+	 * 候補の読み取りは、差分処理が終わっていない(`pending`/`processing`/`alerting`)
+	 * runだけをSQLで絞り込み、古い順に読む(コードレビュー指摘5. 以前は全runを
+	 * 読んでPHPで絞り込んでいた).終わっていないrunは通常ごく少数のため、
+	 * lease切れの判定だけをPHPで行う(`pending`はleaseがNULLのため、SQLの
+	 * 1つの条件にまとめにくい).
+	 *
+	 * @return int|null 見つからなければ `null`.
+	 */
+	public function find_stale_diff_run() {
+		$table    = $this->wpdb->base_prefix . 'wpcv_runs';
+		$statuses = "'" . implode( "', '", array( WPCV_Diff_Status::PENDING, WPCV_Diff_Status::PROCESSING, WPCV_Diff_Status::ALERTING ) ) . "'";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static literal (table name and a hardcoded enum list), no user input.
+		$rows = $this->wpdb->get_results( "SELECT id, diff_status, diff_lease_expires_at FROM {$table} WHERE diff_status IN ( {$statuses} ) ORDER BY id ASC", ARRAY_A );
+
+		foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+			$status = (string) ( $row['diff_status'] ?? '' );
+
+			if ( WPCV_Diff_Status::PENDING === $status || $this->is_past( (string) ( $row['diff_lease_expires_at'] ?? '' ) ) ) {
+				return (int) $row['id'];
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Run の連続失敗(v0.5後半 §Step15a設計§2.3・§3.1)を、`$current_run_id`から
+	 * id の降順に遡って求める.`wpcv_run_terminated`フック(§3.4)から、対象の
+	 * runがfailed/abortedへ遷移した直後に呼ぶ想定.
+	 *
+	 * 遡る各行を次のとおり分類する(§2.1と同じ「数える/途切れさせる/見ない」の
+	 * 考え方.run単位版):
+	 *
+	 * - 実行中(`WPCV_Run_Status::is_active()`. queued/planning/running)は
+	 *   **見ない**(数えないし途切れさせない.他プロセスが同時に別のrunを
+	 *   進めていても、この連続の判定には影響させない).
+	 * - `failed`/`aborted`は**数える**.
+	 * - それ以外(`success`/`partial`)で**途切れる**.
+	 * それ以上遡るrunが無くなった場合も、そこで連続が終わったとみなす.
+	 *
+	 * 「通知済み」の判定(§2.2・§2.3の表と同じ式): 連続の長さを L、閾値を N と
+	 * すると、`$current_run_id` 自身(先頭からの位置 L)を除く、位置が N 以上の
+	 * run(先頭寄りの `L - N` 件.配列の添字では今回を1件目として2件目〜
+	 * `L - N + 1`件目)のいずれかに `alert_status = sent` があれば通知済みとする.
+	 * L が N 未満なら通知済みかどうかは意味を持たない(呼び出し元は `length` が
+	 * 閾値未満の時点で送らないと判断すること).
+	 *
+	 * 読み方: 無制限の全件取得はしない.新しい順に `FAILURE_STREAK_BATCH_SIZE`件
+	 * ずつ読み、途切れる行が出るか、それ以上runが無くなるまで続ける
+	 * (コードレビュー指摘5と同じ方針).テストダブル(`WPCV_Test_Fake_WPDB`)は
+	 * 単純なWHERE(`id < ?`)なら解釈するが、念のためPHP側でも同じ条件で
+	 * 絞り直す(既存のRepositoryと同じ方針).
+	 *
+	 * @param int $current_run_id 起点のrun(failed/abortedへ遷移した直後のもの)のid.
+	 * @param int $threshold      閾値N(`wpcv_alert_run_failure_streak`.
+	 *                            下限1は呼び出し元が適用済みの前提だが、念のため
+	 *                            ここでも適用する).
+	 * @return array{length: int, notified: bool, runs: array} `runs` は数えた
+	 *         各run(`id`/`status`/`alert_status`/`started_at`/`run_trigger`)を
+	 *         新しい順(`$current_run_id` 自身を含む)で持つ.`length` は
+	 *         その件数(`count( $runs )` と同じ).
+	 */
+	public function find_failure_streak( $current_run_id, $threshold ) {
+		$current_run_id = (int) $current_run_id;
+		$threshold      = max( 1, (int) $threshold );
+		$table          = $this->wpdb->base_prefix . 'wpcv_runs';
+
+		$counted   = array();
+		$before_id = $current_run_id + 1;
+
+		while ( true ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- table name only; id/limit are bound via prepare().
+			$rows = $this->wpdb->get_results( $this->wpdb->prepare( "SELECT id, status, alert_status, started_at, run_trigger FROM {$table} WHERE id < %d ORDER BY id DESC LIMIT %d", $before_id, self::FAILURE_STREAK_BATCH_SIZE ), ARRAY_A );
+			$rows = is_array( $rows ) ? $rows : array();
+
+			if ( empty( $rows ) ) {
+				break; // これ以上遡るrunが無い(連続はここで終わる).
+			}
+
+			$broke = false;
+
+			foreach ( $rows as $row ) {
+				if ( (int) $row['id'] >= $before_id ) {
+					// テストダブルがWHEREを解釈せず全件を返した場合の保険.
+					continue;
+				}
+
+				$status = (string) ( $row['status'] ?? '' );
+
+				if ( WPCV_Run_Status::is_active( $status ) ) {
+					continue; // 実行中は数えないし途切れさせない.
+				}
+
+				if ( ! in_array( $status, array( WPCV_Run_Status::FAILED, WPCV_Run_Status::ABORTED ), true ) ) {
+					$broke = true;
+					break;
+				}
+
+				$counted[] = $row;
+			}
+
+			if ( $broke ) {
+				break;
+			}
+
+			$before_id = (int) $rows[ count( $rows ) - 1 ]['id'];
+
+			if ( count( $rows ) < self::FAILURE_STREAK_BATCH_SIZE ) {
+				break; // このテーブルの先頭まで読み切った.
+			}
+		}
+
+		$length   = count( $counted );
+		$notified = false;
+
+		for ( $i = 1; $i <= $length - $threshold; $i++ ) {
+			if ( 'sent' === (string) ( $counted[ $i ]['alert_status'] ?? '' ) ) {
+				$notified = true;
+				break;
+			}
+		}
+
+		return array(
+			'length'   => $length,
+			'notified' => $notified,
+			'runs'     => $counted,
+		);
+	}
+
+	/**
+	 * Run の連続失敗アラート(v0.5後半 §Step15a.`WPCV_Run_Failure_Alerter`)の
+	 * 結果を、失敗した run 自身の行に記録する.
+	 *
+	 * `record_alert_result()`と異なり `diff_owner` によるfencingは行わない ――
+	 * このメソッドを呼ぶ`wpcv_run_terminated`フックは、対象のrunが
+	 * failed/abortedへ遷移した1か所(`update_active_run()`)でのみ、CASが成功
+	 * した場合に限り1回だけ発火する(`update_active_run()`のdocblock参照)ため、
+	 * 複数プロセスがこの行を同時に更新しに来る余地が無い.念のため
+	 * `status IN (failed, aborted)`だけはWHEREに残す(実`$wpdb::update()`は
+	 * WHERE句にIN()を組み立てられないため、`update_active_run()`と同じく
+	 * 状態を順に試す).
+	 *
+	 * @param int         $run_id                 対象のrunのid.
+	 * @param string      $alert_status           `no_recipient`/`sent`/`failed`のいずれか
+	 *                                            (§2.4.失敗runには`not_needed`が
+	 *                                            無い ―― §2.3の表のとおり、閾値未満
+	 *                                            なら呼び出し元がそもそも呼ばない).
+	 * @param string|null $alert_error            `WP_Error::get_error_message()`のみ
+	 *                                            (§6: `get_error_data()`は保存しない).
+	 *                                            500文字を超える分は切り捨てる.
+	 * @param string|null $alert_channel_failures 失敗した追加チャネルの`name`を
+	 *                                            カンマ区切りで(§4.3).500文字を
+	 *                                            超える分は切り捨てる.
+	 * @return bool 1件以上更新できたら true(false は対象行が既に
+	 *              failed/abortedのいずれでもない ―― 通常起こらない想定).
+	 */
+	public function record_failure_alert_result( $run_id, $alert_status, $alert_error = null, $alert_channel_failures = null ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+
+		$data   = array(
+			'alert_status'           => (string) $alert_status,
+			'alert_attempted_at'     => call_user_func( $this->now ),
+			'alert_error'            => null === $alert_error ? null : substr( (string) $alert_error, 0, 500 ),
+			'alert_channel_failures' => null === $alert_channel_failures ? null : substr( (string) $alert_channel_failures, 0, 500 ),
+		);
+		$format = array( '%s', '%s', '%s', '%s' );
+
+		foreach ( array( WPCV_Run_Status::FAILED, WPCV_Run_Status::ABORTED ) as $status ) {
+			$updated = $this->wpdb->update(
+				$table,
+				$data,
+				array(
+					'id'     => (int) $run_id,
+					'status' => $status,
+				),
+				$format,
+				array( '%d', '%s' )
+			);
+
+			if ( $updated > 0 ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * 与えられたMySQL DATETIME文字列(UTC)が現在時刻より過去かどうかを判定する
+	 * (`WPCV_Chunk_Dispatcher::is_past()` と同じロジック. `claim_diff()`・
+	 * `find_stale_diff_run()`のlease切れ判定を共有する).
+	 *
+	 * @param string $datetime `Y-m-d H:i:s` 形式のUTC日時文字列.
+	 * @return bool
+	 */
+	private function is_past( $datetime ) {
+		if ( '' === $datetime ) {
+			return false;
+		}
+
+		$timestamp = strtotime( $datetime );
+
+		return false !== $timestamp && $timestamp <= strtotime( call_user_func( $this->now ) );
 	}
 
 	/**
@@ -536,13 +1205,9 @@ class WPCV_Run_Repository {
 	 * @return array|null 見つからなければ `null`.
 	 */
 	public function find_by_id( $run_id ) {
-		foreach ( $this->all_rows() as $row ) {
-			if ( (int) $row['id'] === (int) $run_id ) {
-				return $row;
-			}
-		}
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
 
-		return null;
+		return $this->first_row( $this->wpdb->prepare( "SELECT * FROM {$table} WHERE id = %d LIMIT 1", (int) $run_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name only.
 	}
 
 	/**
@@ -553,17 +1218,19 @@ class WPCV_Run_Repository {
 	 * @return array|null run行が1件も無ければ `null`.
 	 */
 	public function find_most_recent_run() {
-		return self::most_recent_of( $this->all_rows() );
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+
+		return $this->first_row( "SELECT * FROM {$table} ORDER BY id DESC LIMIT 1" );
 	}
 
 	/**
 	 * 全run行を、新しい(id最大の)ものから順にpagination付きで返す(v0.4.0 §Step9:
 	 * `WPCV_Page_Run_History` の実行履歴一覧画面から使う).
 	 *
-	 * `WPCV_Finding_Repository::query()` と同じ理由(テストダブルがWHERE句を
-	 * 解釈しないため)で、sort・paginationはPHP側で行う。v1では絞り込み条件を
-	 * 設けない(運用開始直後はrun件数が少なく、必要になった時点でstatus等の
-	 * 絞り込みを追加する).
+	 * 並べ替え・paginationはSQL(`ORDER BY id DESC LIMIT %d OFFSET %d`)で行い、
+	 * 総件数は`COUNT(*)`で取る(コードレビュー指摘5. 以前はテストダブルがSQLを
+	 * 解釈しなかったため、全runを読んでPHPで並べ替えていた).v1では絞り込み条件を
+	 * 設けない(必要になった時点でstatus等の絞り込みを追加する).
 	 *
 	 * @param array $args {
 	 *     省略可能なpagination条件.
@@ -582,22 +1249,19 @@ class WPCV_Run_Repository {
 			)
 		);
 
-		$rows = $this->all_rows();
-
-		usort(
-			$rows,
-			static function ( $a, $b ) {
-				return (int) $b['id'] <=> (int) $a['id'];
-			}
-		);
-
-		$total    = count( $rows );
+		$table    = $this->wpdb->base_prefix . 'wpcv_runs';
 		$per_page = min( self::MAX_PER_PAGE, max( 1, (int) $args['per_page'] ) );
 		$page     = max( 1, (int) $args['page'] );
 		$offset   = ( $page - 1 ) * $per_page;
 
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static table literal, no user input.
+		$total = (int) $this->wpdb->get_var( "SELECT COUNT(*) FROM {$table}" );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- table name only; limit/offset are bound via prepare().
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( "SELECT * FROM {$table} ORDER BY id DESC LIMIT %d OFFSET %d", $per_page, $offset ), ARRAY_A );
+
 		return array(
-			'rows'  => array_slice( $rows, $offset, $per_page ),
+			'rows'  => is_array( $rows ) ? $rows : array(),
 			'total' => $total,
 		);
 	}
@@ -613,16 +1277,9 @@ class WPCV_Run_Repository {
 	 * @return array|null 該当する run が1件も無ければ `null`.
 	 */
 	public function find_most_recent_by_trigger( $run_trigger ) {
-		$matching_rows = array_values(
-			array_filter(
-				$this->all_rows(),
-				static function ( $row ) use ( $run_trigger ) {
-					return isset( $row['run_trigger'] ) && (string) $row['run_trigger'] === (string) $run_trigger;
-				}
-			)
-		);
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
 
-		return self::most_recent_of( $matching_rows );
+		return $this->first_row( $this->wpdb->prepare( "SELECT * FROM {$table} WHERE run_trigger = %s ORDER BY id DESC LIMIT 1", (string) $run_trigger ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name only.
 	}
 
 	/**
@@ -634,38 +1291,28 @@ class WPCV_Run_Repository {
 	 * @return array|null 該当する run が1件も無ければ `null`.
 	 */
 	public function find_most_recent_terminal_run() {
-		$terminal_rows = array_values(
-			array_filter(
-				$this->all_rows(),
-				static function ( $row ) {
-					return WPCV_Run_Status::is_terminal( $row['status'] );
-				}
-			)
-		);
+		$table    = $this->wpdb->base_prefix . 'wpcv_runs';
+		$statuses = "'" . implode( "', '", WPCV_Run_Status::TERMINAL ) . "'";
 
-		return self::most_recent_of( $terminal_rows );
+		return $this->first_row( "SELECT * FROM {$table} WHERE status IN ( {$statuses} ) ORDER BY id DESC LIMIT 1" );
 	}
 
 	/**
-	 * `find_most_recent_run()`/`find_most_recent_terminal_run()` で共有する
-	 * 「最も id が大きい行を返す」処理.
+	 * SELECT文を実行し、最初の1行を返す(`find_by_id()`・`find_most_recent_*()`で
+	 * 共有する.コードレビュー指摘5で、全runを読んでPHPで絞り込む`all_rows()`を
+	 * やめたときに追加した).
 	 *
-	 * @param array<int, array> $rows 対象の行群.
-	 * @return array|null `$rows` が空なら `null`.
+	 * `$sql`は呼び出し元が組み立て済みのもの(動的な値は`prepare()`済み、または
+	 * `WPCV_Run_Status`等の固定enumのみ)に限る.
+	 *
+	 * @param string $sql 実行するSELECT文(`LIMIT 1`を付けておくこと).
+	 * @return array|null 1行も無ければ `null`.
 	 */
-	private static function most_recent_of( array $rows ) {
-		if ( empty( $rows ) ) {
-			return null;
-		}
+	private function first_row( $sql ) {
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- $sql is built by the callers above (table name + prepare()d values or hardcoded enums only).
+		$rows = $this->wpdb->get_results( $sql, ARRAY_A );
 
-		usort(
-			$rows,
-			static function ( $a, $b ) {
-				return (int) $b['id'] <=> (int) $a['id'];
-			}
-		);
-
-		return $rows[0];
+		return is_array( $rows ) && ! empty( $rows ) ? $rows[0] : null;
 	}
 
 	/**
@@ -799,17 +1446,13 @@ class WPCV_Run_Repository {
 	 * @return bool
 	 */
 	private function has_run_scheduled_for_date( $date ) {
-		foreach ( $this->all_rows() as $row ) {
-			if ( empty( $row['scheduled_for'] ) ) {
-				continue;
-			}
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+		$start = $date . ' 00:00:00';
+		$end   = gmdate( 'Y-m-d H:i:s', strtotime( $start . ' UTC' ) + DAY_IN_SECONDS );
 
-			if ( substr( (string) $row['scheduled_for'], 0, 10 ) === $date ) {
-				return true;
-			}
-		}
-
-		return false;
+		// その暦日の範囲(`[当日 00:00:00, 翌日 00:00:00)`)で絞り込む(コードレビュー
+		// 指摘5. 以前は全runを読んでPHPで日付部分を比べていた).
+		return null !== $this->first_row( $this->wpdb->prepare( "SELECT id FROM {$table} WHERE scheduled_for >= %s AND scheduled_for < %s LIMIT 1", $start, $end ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name only.
 	}
 
 	/**
@@ -844,23 +1487,6 @@ class WPCV_Run_Repository {
 		}
 
 		return null;
-	}
-
-	/**
-	 * `find_by_id()`/`find_most_recent_run()`/`has_run_scheduled_for_date()`で
-	 * 共有する「テーブルの全行を読み取る」処理(v0.4.0 §Step6で `find_by_id()` から
-	 * 抽出。`WPCV_Target_Run_Repository::all_rows()` と同じ理由〔テストダブルが
-	 * WHERE 句を解釈しないための設計〕).
-	 *
-	 * @return array<int, array>
-	 */
-	private function all_rows() {
-		$table = $this->wpdb->base_prefix . 'wpcv_runs';
-
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static table literal, no user input.
-		$rows = $this->wpdb->get_results( "SELECT * FROM {$table}", ARRAY_A );
-
-		return is_array( $rows ) ? $rows : array();
 	}
 
 	/**

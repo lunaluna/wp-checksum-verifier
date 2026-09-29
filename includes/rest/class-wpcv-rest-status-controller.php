@@ -102,6 +102,12 @@ class WPCV_Rest_Status_Controller {
 	/**
 	 * 1件のrunを、target集計・最終活動時刻込みの詳細形へ変換する.
 	 *
+	 * `diff_status`/`findings_new`/`findings_resolved`/`findings_continuing`/
+	 * `alert_status`/`alert_attempted_at`を追加した(v0.5後半 §16・§2.1).
+	 * `alert_error`/`alert_channel_failures`(§6.内部エラー文言)・`diff_owner`/
+	 * `diff_lease_expires_at`/`diff_cursor`/`diff_attempt_count`(内部の値)は
+	 * あえて出さない.
+	 *
 	 * @param array|null                 $run                    `WPCV_Run_Repository::find_by_id()`/
 	 *                                                            `find_most_recent_terminal_run()` の戻り値.
 	 * @param WPCV_Target_Run_Repository $target_run_repository `wpcv_target_runs` の永続化層.
@@ -115,16 +121,22 @@ class WPCV_Rest_Status_Controller {
 		$target_runs = $target_run_repository->find_all_by_run( (int) $run['id'] );
 
 		return array(
-			'run_id'           => (int) $run['id'],
-			'status'           => (string) $run['status'],
-			'run_trigger'      => isset( $run['run_trigger'] ) ? (string) $run['run_trigger'] : null,
-			'started_at'       => self::nullable_string( $run, 'started_at' ),
-			'finished_at'      => self::nullable_string( $run, 'finished_at' ),
-			'scheduled_for'    => self::nullable_string( $run, 'scheduled_for' ),
-			'deadline_at'      => self::nullable_string( $run, 'deadline_at' ),
-			'last_activity_at' => self::last_activity_at( $target_runs ),
-			'findings_total'   => (int) ( $run['findings_total'] ?? 0 ),
-			'targets'          => self::tally_target_statuses( $target_runs ),
+			'run_id'              => (int) $run['id'],
+			'status'              => (string) $run['status'],
+			'run_trigger'         => isset( $run['run_trigger'] ) ? (string) $run['run_trigger'] : null,
+			'started_at'          => self::nullable_string( $run, 'started_at' ),
+			'finished_at'         => self::nullable_string( $run, 'finished_at' ),
+			'scheduled_for'       => self::nullable_string( $run, 'scheduled_for' ),
+			'deadline_at'         => self::nullable_string( $run, 'deadline_at' ),
+			'last_activity_at'    => self::last_activity_at( $target_runs ),
+			'findings_total'      => (int) ( $run['findings_total'] ?? 0 ),
+			'targets'             => self::tally_target_statuses( $target_runs ),
+			'diff_status'         => self::nullable_string( $run, 'diff_status' ),
+			'findings_new'        => self::nullable_int( $run, 'findings_new' ),
+			'findings_resolved'   => self::nullable_int( $run, 'findings_resolved' ),
+			'findings_continuing' => self::nullable_int( $run, 'findings_continuing' ),
+			'alert_status'        => self::nullable_string( $run, 'alert_status' ),
+			'alert_attempted_at'  => self::nullable_string( $run, 'alert_attempted_at' ),
 		);
 	}
 
@@ -195,5 +207,19 @@ class WPCV_Rest_Status_Controller {
 	 */
 	private static function nullable_string( array $run, $field ) {
 		return empty( $run[ $field ] ) ? null : (string) $run[ $field ];
+	}
+
+	/**
+	 * Run行から整数カラムを読み取る(v0.5後半 §16・§2.1: `findings_new` 等).
+	 *
+	 * `0` は「まだ数えていない」ではなく実際の0件のため、`nullable_string()`の
+	 * `empty()`判定は使わない ―― NULL(未計算)と0(計算済み・0件)を区別する.
+	 *
+	 * @param array  $run   Run行.
+	 * @param string $field カラム名.
+	 * @return int|null
+	 */
+	private static function nullable_int( array $run, $field ) {
+		return isset( $run[ $field ] ) ? (int) $run[ $field ] : null;
 	}
 }

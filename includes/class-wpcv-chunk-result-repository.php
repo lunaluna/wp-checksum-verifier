@@ -47,6 +47,13 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 表示され `findings_total` と実件数が食い違う不整合が起きていた(レビュー指摘)。
  * fencingに失敗した場合は削除しない ―― 既に別workerが再claimして進めている
  * findingsを、fencing負けした古いworkerが誤って消してしまわないため.
+ *
+ * v0.5 §Step6: stat 差分検知 target の chunk 結果に含まれる `baseline_rows` を、
+ * findings と同じトランザクションで `WPCV_File_State_Repository::upsert_many()` に
+ * 渡すようにした(3テーブル目。`$file_state_repository` プロパティ参照).
+ *
+ * v0.5 §Step7: 同じトランザクションで、version 変化時のベースライン全削除
+ * (`rebuild_baseline`)と、削除検出で `missing` にした行の削除(`stale_state_ids`)も行う.
  */
 class WPCV_Chunk_Result_Repository {
 
@@ -79,18 +86,31 @@ class WPCV_Chunk_Result_Repository {
 	private $suppression_repository;
 
 	/**
+	 * `wpcv_file_states` の永続化層(v0.5 §Step6. stat 差分検知のベースライン).
+	 *
+	 * Stat target 以外の chunk では使わないため省略可能にしている(既存の呼び出し元・
+	 * テストを変えずに済むようにするため)。`baseline_rows` を含む chunk 結果が
+	 * 渡されたのに未設定なら、`commit_chunk()` が例外で知らせる.
+	 *
+	 * @var WPCV_File_State_Repository|null
+	 */
+	private $file_state_repository;
+
+	/**
 	 * コンストラクタ.
 	 *
-	 * @param object                      $wpdb                   `$wpdb` 相当のオブジェクト.
-	 * @param WPCV_Target_Run_Repository  $target_run_repository  `wpcv_target_runs` の永続化層.
-	 * @param WPCV_Finding_Repository     $finding_repository     `wpcv_findings` の永続化層.
-	 * @param WPCV_Suppression_Repository $suppression_repository `wpcv_suppressions` の永続化層.
+	 * @param object                          $wpdb                   `$wpdb` 相当のオブジェクト.
+	 * @param WPCV_Target_Run_Repository      $target_run_repository  `wpcv_target_runs` の永続化層.
+	 * @param WPCV_Finding_Repository         $finding_repository     `wpcv_findings` の永続化層.
+	 * @param WPCV_Suppression_Repository     $suppression_repository `wpcv_suppressions` の永続化層.
+	 * @param WPCV_File_State_Repository|null $file_state_repository  `wpcv_file_states` の永続化層(v0.5 §Step6).
 	 */
-	public function __construct( $wpdb, WPCV_Target_Run_Repository $target_run_repository, WPCV_Finding_Repository $finding_repository, WPCV_Suppression_Repository $suppression_repository ) {
+	public function __construct( $wpdb, WPCV_Target_Run_Repository $target_run_repository, WPCV_Finding_Repository $finding_repository, WPCV_Suppression_Repository $suppression_repository, ?WPCV_File_State_Repository $file_state_repository = null ) {
 		$this->wpdb                   = $wpdb;
 		$this->target_run_repository  = $target_run_repository;
 		$this->finding_repository     = $finding_repository;
 		$this->suppression_repository = $suppression_repository;
+		$this->file_state_repository  = $file_state_repository;
 	}
 
 	/**
@@ -137,6 +157,8 @@ class WPCV_Chunk_Result_Repository {
 	 *                          `update_chunk_progress()`/`reset_for_retry()` が
 	 *                          `$wpdb` の insert/update 失敗時に投げる `RuntimeException`
 	 *                          〔v0.4.0コードレビューCR-03是正〕もここで捕捉される).
+	 * @throws LogicException   `baseline_rows` があるのに `WPCV_File_State_Repository` が
+	 *                          注入されていない場合(ROLLBACK後に再送出).
 	 * @throws RuntimeException `$wpdb->query( 'COMMIT' )` 自体が失敗した場合
 	 *                          (v0.4.0コードレビューCR-03是正。上記の`Throwable`と
 	 *                          同じcatch節でROLLBACKを試みたうえで再送出する).
@@ -180,6 +202,33 @@ class WPCV_Chunk_Result_Repository {
 						array( $target_id => $target_run_id ),
 						$this->apply_suppressions( $chunk_result['findings'] )
 					);
+				}
+
+				// v0.5 §Step6: stat 差分検知のベースラインを findings と同じ
+				// トランザクションで更新する(rev.3 §3.5「実装上の落とし穴」:
+				// findings だけ確定してベースラインが古いまま残ると、次回 run で
+				// 同じ変更が再び finding になる)。fencing に負けた場合は下の
+				// ROLLBACK でこの upsert も取り消される.
+				$touches_baseline = ! empty( $chunk_result['baseline_rows'] ) || ! empty( $chunk_result['rebuild_baseline'] ) || ! empty( $chunk_result['stale_state_ids'] );
+
+				if ( $touches_baseline && null === $this->file_state_repository ) {
+					throw new LogicException( 'WPCV_Chunk_Result_Repository::commit_chunk() received baseline changes but no WPCV_File_State_Repository was injected.' );
+				}
+
+				// v0.5 §Step7(rev.3 §3.7-a): version 変化でベースラインを作り直す場合は、
+				// 新しい行を書く前に古い行を全部消す(同じトランザクション内).
+				if ( ! empty( $chunk_result['rebuild_baseline'] ) ) {
+					$this->file_state_repository->delete_by_target( $target_id );
+				}
+
+				if ( ! empty( $chunk_result['baseline_rows'] ) ) {
+					$this->file_state_repository->upsert_many( $chunk_result['baseline_rows'] );
+				}
+
+				// v0.5 §Step7(rev.3 §3.3): `missing` finding にした行を消す. 残すと
+				// 次の run でも同じ削除が finding になり続ける.
+				if ( ! empty( $chunk_result['stale_state_ids'] ) ) {
+					$this->file_state_repository->delete_by_ids( $chunk_result['stale_state_ids'] );
 				}
 
 				$committed = $this->target_run_repository->update_chunk_progress( $target_run_id, $chunk_result, $lease_owner );

@@ -45,6 +45,12 @@ class WPCV_Verifier {
 	 * | 1件以上の success と、1件以上の unverifiable/failed 等 | partial    |
 	 * | success が0件(全滅、または target_runs 自体が空)       | success(空の場合)/ partial(1件以上あるが全滅の場合) |
 	 *
+	 * v0.5 §Step6: `skipped` かつ `error_code = checksum_covered` の target_run
+	 * (本体がチェックサム照合できたので省略した stat target)は、件数にも status 判定にも
+	 * 含めない。本体の結果の複製でしかなく、数えると公式プラグインだけのサイトでも
+	 * run が常に partial になってしまうため. それ以外の skipped(exclude_target 等)の
+	 * 扱いは従来どおり.
+	 *
 	 * @param array $target_runs target_run の配列(§5.3準拠。`status`/`findings_total`を持つもの).
 	 * @return array {
 	 *     @type string $status                success|partial.
@@ -56,6 +62,15 @@ class WPCV_Verifier {
 	 * }
 	 */
 	public static function summarize( array $target_runs ) {
+		$target_runs = array_values(
+			array_filter(
+				$target_runs,
+				static function ( $target_run ) {
+					return ! ( 'skipped' === $target_run['status'] && isset( $target_run['error_code'] ) && WPCV_Error_Code::CHECKSUM_COVERED === $target_run['error_code'] );
+				}
+			)
+		);
+
 		$targets_total        = count( $target_runs );
 		$targets_verified     = 0;
 		$targets_unverifiable = 0;
@@ -111,6 +126,13 @@ class WPCV_Verifier {
 		$expected_hash   = isset( $expected_hashes[0] ) ? $expected_hashes[0] : null;
 
 		if ( ! file_exists( $absolute_path ) ) {
+			if ( self::is_core_wp_content_missing_exempt( $dimension, $finding_path ) ) {
+				return array(
+					'finding'  => null,
+					'verified' => false,
+				);
+			}
+
 			return array(
 				'finding'  => self::make_finding( $target_id, $dimension, $slug, $version, $source, $finding_path, 'missing', 'medium', $algorithm, $expected_hash, null, null ),
 				'verified' => false,
@@ -255,6 +277,190 @@ class WPCV_Verifier {
 	}
 
 	/**
+	 * Stat差分検知(層1)の1ファイル分の前回値と今回値を比べ、finding に変換する
+	 * (v0.5 §Step5. rev.3 §3.2/§3.5参照).
+	 *
+	 * 状態の組み合わせ(`$previous` は前回ベースライン、`$current` は今回の `lstat()` 値):
+	 *
+	 * | 前回値 | size | ctime | mtime | 結果                                    |
+	 * |--------|------|-------|-------|-----------------------------------------|
+	 * | 無し   | -    | -     | -     | `added`(新規ファイル)                   |
+	 * | あり   | 同じ | 同じ  | 同じ  | null(変更なし)                          |
+	 * | あり   | 同じ | 変化  | 変化  | `stat_changed`                          |
+	 * | あり   | 同じ | 変化  | 同じ  | `stat_changed`(chmod等. timestomp扱いしない) |
+	 * | あり   | 同じ | 同じ  | 変化  | `stat_changed`(通常は起きない組み合わせ)|
+	 * | あり   | 変化 | *     | 変化  | `stat_changed`                          |
+	 * | あり   | 変化 | *     | 同じ  | `stat_changed` + timestomp(severity=high) |
+	 *
+	 * timestomp は rev.3 §3.5 の定義どおり「size(層2では content_hash)が変化したのに
+	 * mtime が不変」の場合だけ立てる。size が同じで ctime だけ変わった場合は、
+	 * chmod/chown と「同サイズ書き換え+mtime巻き戻し」を stat だけでは区別できない
+	 * ため、timestomp にはせず通常の `stat_changed` として拾うに留める(層1の限界。§3.2-c).
+	 *
+	 * 層1はファイル内容を読まない設計(§3.2-c)のため、`added` でも hash を計算しない
+	 * (`make_finding_for_unknown_file()` は hash を計算するので使わない)。そのため
+	 * `expected_hash`/`actual_hash` は常に null、`hash_algorithm` は空文字にする
+	 * (列が NOT NULL のため)。actual_hash を持たないので、ハッシュ承認
+	 * (`allowlist_hash`)の対象にもならない. 抑制は `exclude_path` で行う(§3.5).
+	 *
+	 * @param string     $target_id     target_id(`{dimension}:{slug}:_stat` 形式).
+	 * @param string     $dimension     dimension.
+	 * @param string     $slug          slug.
+	 * @param string     $version       version.
+	 * @param string     $source        source.
+	 * @param string     $relative_path ABSPATH 相対パス.
+	 * @param string     $severity      timestomp でない場合の severity(走査時に拡張子から決めた値).
+	 * @param array|null $previous      前回値 `array( 'size' => int, 'ctime' => int, 'mtime' => int )`.
+	 *                                  ベースラインに無い(新規)場合は null.
+	 * @param array      $current       今回値(`$previous` と同じ形).
+	 * @return array|null 変更が無ければ null. それ以外は finding(`stat_changed` のみ `detail` を持つ).
+	 */
+	public static function make_finding_for_stat_change( $target_id, $dimension, $slug, $version, $source, $relative_path, $severity, ?array $previous, array $current ) {
+		$current_size = (int) $current['size'];
+
+		if ( null === $previous ) {
+			return self::make_finding( $target_id, $dimension, $slug, $version, $source, $relative_path, 'added', $severity, '', null, null, $current_size );
+		}
+
+		$size_changed  = (int) $previous['size'] !== $current_size;
+		$ctime_changed = (int) $previous['ctime'] !== (int) $current['ctime'];
+		$mtime_changed = (int) $previous['mtime'] !== (int) $current['mtime'];
+
+		if ( ! $size_changed && ! $ctime_changed && ! $mtime_changed ) {
+			return null;
+		}
+
+		$timestomp = $size_changed && ! $mtime_changed;
+
+		$finding = self::make_finding(
+			$target_id,
+			$dimension,
+			$slug,
+			$version,
+			$source,
+			$relative_path,
+			'stat_changed',
+			$timestomp ? 'high' : $severity,
+			'',
+			null,
+			null,
+			$current_size
+		);
+
+		// 管理画面で「何が変わったのか」を読めるよう、前回値と今回値を JSON で持たせる
+		// (expected_hash/actual_hash が空になるため. rev.3 §3.5の detail 形式).
+		$finding['detail'] = wp_json_encode(
+			array(
+				'size'      => array(
+					'old' => (int) $previous['size'],
+					'new' => $current_size,
+				),
+				'ctime'     => array(
+					'old' => (int) $previous['ctime'],
+					'new' => (int) $current['ctime'],
+				),
+				'mtime'     => array(
+					'old' => (int) $previous['mtime'],
+					'new' => (int) $current['mtime'],
+				),
+				'timestomp' => $timestomp,
+			)
+		);
+
+		return $finding;
+	}
+
+	/**
+	 * Stat差分検知で、前回のベースラインにあったのに今回見つからなかったファイルを
+	 * `missing` finding にする(v0.5 §Step7. rev.3 §3.3「削除検出は last_seen_run_id 方式」).
+	 *
+	 * Severity はチェックサム照合の `missing`(`compare_one_file()`)と同じ medium にする.
+	 * 層1は内容を読まないため hash は持たない。消えたファイルなので file_size も null.
+	 *
+	 * @param string $target_id     target_id(`{dimension}:{slug}:_stat` 形式).
+	 * @param string $dimension     dimension.
+	 * @param string $slug          slug.
+	 * @param string $version       version.
+	 * @param string $source        source.
+	 * @param string $relative_path ABSPATH 相対パス.
+	 * @return array finding.
+	 */
+	public static function make_finding_for_stat_missing( $target_id, $dimension, $slug, $version, $source, $relative_path ) {
+		return self::make_finding( $target_id, $dimension, $slug, $version, $source, $relative_path, 'missing', 'medium', '', null, null, null );
+	}
+
+	/**
+	 * Stat差分検知の変更 finding をまとめて1件の集約 finding にする
+	 * (v0.5 §Step7. rev.3 §3.7-c 大量変更のロールアップ).
+	 *
+	 * Version を上げない更新(mu-plugin・単一ファイルプラグイン・一部のベンダー)では
+	 * version 変化によるベースライン作り直しが効かず、更新のたびに数百件の
+	 * `stat_changed` が出てしまう。そうした場合に1件へまとめる.
+	 *
+	 * 集約 finding の `path` は target のルート(ディレクトリ、または単一ファイル)、
+	 * severity は元の finding のうち最も高いもの。`detail` に件数と代表パスを入れる.
+	 *
+	 * @param string $target_id        target_id.
+	 * @param string $dimension        dimension.
+	 * @param string $slug             slug.
+	 * @param string $version          version.
+	 * @param string $source           source.
+	 * @param string $target_root_path target のルートの ABSPATH 相対パス.
+	 * @param array  $findings         まとめる finding(1件以上).
+	 * @param int    $files_scanned    このまとまりで走査したファイル数.
+	 * @return array finding(status は `stat_changed`).
+	 */
+	public static function make_rollup_finding_for_stat_changes( $target_id, $dimension, $slug, $version, $source, $target_root_path, array $findings, $files_scanned ) {
+		$rank     = array(
+			'low'    => 0,
+			'medium' => 1,
+			'high'   => 2,
+		);
+		$severity = 'low';
+		$paths    = array();
+		$added    = 0;
+
+		foreach ( $findings as $finding ) {
+			if ( $rank[ $finding['severity'] ] > $rank[ $severity ] ) {
+				$severity = $finding['severity'];
+			}
+
+			if ( 'added' === $finding['status'] ) {
+				++$added;
+			}
+
+			$paths[] = $finding['path'];
+		}
+
+		sort( $paths, SORT_STRING );
+
+		$rollup = self::make_finding( $target_id, $dimension, $slug, $version, $source, $target_root_path, 'stat_changed', $severity, '', null, null, null );
+
+		$rollup['detail'] = wp_json_encode(
+			array(
+				'rollup'        => true,
+				'count'         => count( $findings ),
+				'added'         => $added,
+				'files_scanned' => (int) $files_scanned,
+				// 代表パスの件数は表示用の目安(性能に関わる値ではない)。
+				// detail 列(TEXT)に収まり、一覧で読める程度に絞っている.
+				'sample_paths'  => array_slice( $paths, 0, self::ROLLUP_SAMPLE_PATHS ),
+			),
+			// DB を直接見たときにパスが読めるよう、`/` と日本語をエスケープしない.
+			JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+		);
+
+		return $rollup;
+	}
+
+	/**
+	 * 集約 finding の `detail.sample_paths` に入れる代表パスの最大件数(表示用).
+	 *
+	 * @var int
+	 */
+	const ROLLUP_SAMPLE_PATHS = 10;
+
+	/**
 	 * 検出結果(finding)の1行を組み立てる(§5.5 のスキーマに準拠。id/run_id/target_run_id 無し).
 	 *
 	 * @param string      $target_id      target_id.
@@ -286,6 +492,25 @@ class WPCV_Verifier {
 			'actual_hash'    => $actual_hash,
 			'file_size'      => $file_size,
 		);
+	}
+
+	/**
+	 * コア照合の `missing` を、`wp-content/` 配下では finding にしない対象かどうかを
+	 * 判定する(v0.5後半プラン §0.1 U2・§0.4).
+	 *
+	 * WP-CLI の checksum-command(`Checksum_Core_Command.php`)は `wp-content/`
+	 * 配下のファイルを欠落・改変どちらの照合からも外すが、本プラグインは
+	 * **欠落だけ**を外す. hello.php は plugin 次元の照合から既に除外している
+	 * (`WPCV_Run_Planner::CORE_BUNDLED_PLUGIN_FILES`)ため、改変を拾えるのは
+	 * core 照合だけになる. `modified` を core 照合からも外すと、同梱ファイルの
+	 * 改ざんを一切検出できなくなってしまう.
+	 *
+	 * @param string $dimension     dimension.
+	 * @param string $finding_path  ABSPATH 相対パス(`WPCV_Path_Normalizer::to_relative()` 済み).
+	 * @return bool
+	 */
+	private static function is_core_wp_content_missing_exempt( $dimension, $finding_path ) {
+		return WPCV_Target_Resolver::DIMENSION_CORE === $dimension && 0 === strpos( $finding_path, 'wp-content/' );
 	}
 
 	/**

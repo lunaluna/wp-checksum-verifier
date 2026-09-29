@@ -6,14 +6,18 @@
  */
 
 require_once __DIR__ . '/wp-stubs.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-error-code.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-matcher.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-finding-key.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-generation-differ.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-chunk-result-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-file-state-repository.php';
 require_once __DIR__ . '/doubles.php';
 
 use PHPUnit\Framework\TestCase;
@@ -472,5 +476,146 @@ class ChunkResultRepositoryTest extends TestCase {
 
 		$this->assertNull( $saved_finding['suppressed_by'] );
 		$this->assertSame( $suppression_id, $saved_finding['suppression_id'] );
+	}
+
+	/**
+	 * `baseline_rows` を含む chunk 結果は、findings と同じトランザクションで
+	 * `wpcv_file_states` に upsert されることを確認する(v0.5 §Step6).
+	 *
+	 * @return void
+	 */
+	public function test_commit_chunk_upserts_baseline_rows_within_transaction() {
+		$wpdb                  = new WPCV_Test_Fake_WPDB();
+		$target_run_repository = new WPCV_Target_Run_Repository( $wpdb );
+		$repository            = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, new WPCV_Finding_Repository( $wpdb ), new WPCV_Suppression_Repository( $wpdb ), new WPCV_File_State_Repository( $wpdb ) );
+
+		$ids = $target_run_repository->save_target_runs( 1, array( wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::RUNNING ) ) ) );
+		$wpdb->rows['wp_wpcv_target_runs'][ $ids['core'] ]['lease_owner'] = 'lease-1';
+
+		$committed = $repository->commit_chunk( 1, $ids['core'], 'core', $this->stat_chunk_result(), 'lease-1' );
+
+		$this->assertTrue( $committed );
+		$this->assertCount( 1, $wpdb->rows['wp_wpcv_file_states'] );
+		$this->assertContains( 'COMMIT', $wpdb->query_calls );
+	}
+
+	/**
+	 * Fencing に負けた場合は ROLLBACK され、ベースラインの upsert も確定しないことを
+	 * 確認する(クエリ自体は発行されるが、実DBでは ROLLBACK で取り消される).
+	 *
+	 * @return void
+	 */
+	public function test_commit_chunk_rolls_back_baseline_upsert_when_fencing_fails() {
+		$wpdb                  = new WPCV_Test_Fake_WPDB();
+		$target_run_repository = new WPCV_Target_Run_Repository( $wpdb );
+		$repository            = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, new WPCV_Finding_Repository( $wpdb ), new WPCV_Suppression_Repository( $wpdb ), new WPCV_File_State_Repository( $wpdb ) );
+
+		$ids = $target_run_repository->save_target_runs( 1, array( wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::RUNNING ) ) ) );
+		$wpdb->rows['wp_wpcv_target_runs'][ $ids['core'] ]['lease_owner'] = 'lease-other';
+		// save_target_runs() 自身のトランザクション(START/COMMIT)を記録から除く.
+		$wpdb->query_calls = array();
+
+		$committed = $repository->commit_chunk( 1, $ids['core'], 'core', $this->stat_chunk_result(), 'lease-1' );
+
+		$this->assertFalse( $committed );
+		$this->assertContains( 'ROLLBACK', $wpdb->query_calls );
+		$this->assertNotContains( 'COMMIT', $wpdb->query_calls );
+	}
+
+	/**
+	 * `WPCV_File_State_Repository` を注入せずに `baseline_rows` を渡すと、
+	 * ROLLBACK したうえで LogicException になることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_commit_chunk_throws_when_baseline_rows_given_without_repository() {
+		$wpdb                  = new WPCV_Test_Fake_WPDB();
+		$target_run_repository = new WPCV_Target_Run_Repository( $wpdb );
+		$repository            = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, new WPCV_Finding_Repository( $wpdb ), new WPCV_Suppression_Repository( $wpdb ) );
+
+		$ids = $target_run_repository->save_target_runs( 1, array( wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::RUNNING ) ) ) );
+		$wpdb->rows['wp_wpcv_target_runs'][ $ids['core'] ]['lease_owner'] = 'lease-1';
+
+		try {
+			$repository->commit_chunk( 1, $ids['core'], 'core', $this->stat_chunk_result(), 'lease-1' );
+			$this->fail( 'LogicException was not thrown' );
+		} catch ( LogicException $e ) {
+			$this->assertContains( 'ROLLBACK', $wpdb->query_calls );
+		}
+	}
+
+	/**
+	 * ベースライン行を1件含む、完走済みの stat chunk 結果を組み立てる.
+	 *
+	 * @return array
+	 */
+	private function stat_chunk_result() {
+		return array(
+			'findings'             => array(),
+			'cursor_path'          => null,
+			'files_verified_delta' => 1,
+			'files_total'          => 1,
+			'completed'            => true,
+			'manifest_fingerprint' => 'fp',
+			'needs_retry'          => false,
+			'baseline_rows'        => array(
+				array(
+					'state_key'         => WPCV_File_State_Repository::compute_state_key( 'core', 'a.php' ),
+					'target_id'         => 'core',
+					'dimension'         => 'core',
+					'slug'              => 'wordpress',
+					'path'              => 'a.php',
+					'file_size'         => 1,
+					'ctime'             => 1,
+					'mtime'             => 1,
+					'content_hash'      => null,
+					'hash_algorithm'    => null,
+					'baseline_version'  => null,
+					'first_seen_run_id' => 1,
+					'last_seen_run_id'  => 1,
+				),
+			),
+		);
+	}
+
+	/**
+	 * `rebuild_baseline` が真なら、新しい行を upsert する前にその target の古い行を
+	 * 全部消し、`stale_state_ids` の行も消すことを確認する(v0.5 §Step7).
+	 *
+	 * @return void
+	 */
+	public function test_commit_chunk_rebuilds_baseline_and_deletes_stale_rows() {
+		$wpdb                  = new WPCV_Test_Fake_WPDB();
+		$target_run_repository = new WPCV_Target_Run_Repository( $wpdb );
+		$file_state_repository = new WPCV_File_State_Repository( $wpdb );
+		$repository            = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, new WPCV_Finding_Repository( $wpdb ), new WPCV_Suppression_Repository( $wpdb ), $file_state_repository );
+
+		$old_row         = $this->stat_chunk_result()['baseline_rows'][0];
+		$old_row['path'] = 'old.php';
+		$old_row['state_key'] = WPCV_File_State_Repository::compute_state_key( 'core', 'old.php' );
+		$file_state_repository->upsert_many( array( $old_row ) );
+
+		$ids = $target_run_repository->save_target_runs( 1, array( wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::RUNNING ) ) ) );
+		$wpdb->rows['wp_wpcv_target_runs'][ $ids['core'] ]['lease_owner'] = 'lease-1';
+
+		$chunk_result                     = $this->stat_chunk_result();
+		$chunk_result['rebuild_baseline'] = true;
+		$chunk_result['error_code']       = WPCV_Error_Code::BASELINE_REBUILT;
+
+		$this->assertTrue( $repository->commit_chunk( 1, $ids['core'], 'core', $chunk_result, 'lease-1' ) );
+		$this->assertSame( array( 'a.php' ), array_values( array_column( $wpdb->rows['wp_wpcv_file_states'], 'path' ) ) );
+		$this->assertSame( WPCV_Error_Code::BASELINE_REBUILT, $wpdb->rows['wp_wpcv_target_runs'][ $ids['core'] ]['error_code'] );
+
+		// stale_state_ids で指定した行だけが消える.
+		$wpdb->rows['wp_wpcv_target_runs'][ $ids['core'] ]['status']      = WPCV_Target_Status::RUNNING;
+		$wpdb->rows['wp_wpcv_target_runs'][ $ids['core'] ]['lease_owner'] = 'lease-2';
+
+		$a_id                                = (int) array_values( $wpdb->rows['wp_wpcv_file_states'] )[0]['id'];
+		$next_result                         = $this->stat_chunk_result();
+		$next_result['baseline_rows']        = array();
+		$next_result['stale_state_ids']      = array( $a_id );
+
+		$this->assertTrue( $repository->commit_chunk( 1, $ids['core'], 'core', $next_result, 'lease-2' ) );
+		$this->assertSame( array(), array_values( $wpdb->rows['wp_wpcv_file_states'] ) );
 	}
 }

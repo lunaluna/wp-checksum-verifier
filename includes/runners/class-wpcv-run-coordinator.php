@@ -76,9 +76,21 @@ class WPCV_Run_Coordinator {
 	/**
 	 * `dispatch()` の戻り値のうち、ループを終了させる `action` の一覧.
 	 *
+	 * `diff_alerted`/`diff_failed`(v0.5後半 §Step12・§Step14c)は差分処理が終端
+	 * (`done`/`failed`)に達したことを意味する。`diff_claimed`(1単位処理できた。
+	 * 続きがある)・`diff_not_claimable`(他プロセスがlease保持中)は含めない ――
+	 * 既存の`processed`/`waiting`と同じ考え方で、ループはそのまま継続する
+	 * (`WPCV_Chunk_Dispatcher::dispatch()`のクラスdocblock「§配線」参照).
+	 *
+	 * `diff_finalized`も含めない(コードレビュー指摘で修正): これは「全target完了・
+	 * `alerting`へ進んだ」だけで、アラート送信は次のdispatchで行われる.
+	 * ここで止めると、CLI同期実行がメール送信前に終わり、送信がAction Scheduler
+	 * 任せになってしまう(プランの「CLI同期は`diff_status`が`done`/`failed`に
+	 * なるまで回す」という契約に反する).
+	 *
 	 * @var string[]
 	 */
-	const TERMINAL_ACTIONS = array( 'run_finalized', 'aborted', 'run_not_found', 'run_already_terminal' );
+	const TERMINAL_ACTIONS = array( 'run_finalized', 'aborted', 'run_not_found', 'run_already_terminal', 'diff_alerted', 'diff_failed' );
 
 	/**
 	 * コンストラクタ.

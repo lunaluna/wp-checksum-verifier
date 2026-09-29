@@ -61,6 +61,10 @@ if ( ! defined( 'ABSPATH' ) ) {
  * `sweep_deadline_and_expired_leases()`のdocblock参照)。生存判定を
  * `deadline_at`+target leaseに一本化するため、それらの呼び出し元は
  * (削除済みの)`sweep_stale_running()`ではなくこのメソッドを使う.
+ *
+ * v0.5 §Step6: stat 差分検知 target(`{dimension}:{slug}:_stat`)の処理を追加した
+ * (`process_stat_target()` 参照)。本体 target の照合結果を見て、照合できなかった
+ * ものだけ stat 走査する.
  */
 class WPCV_Chunk_Dispatcher {
 
@@ -98,6 +102,27 @@ class WPCV_Chunk_Dispatcher {
 	 * @var int
 	 */
 	const DEFAULT_BUDGET_MAX_FILES = 500;
+
+	/**
+	 * Stat 差分検知で、変更 finding を1件にまとめる最小件数(rev.3 §3.7-c).
+	 *
+	 * 未実測: 暫定値(2026-09-26 ユーザー合意)。実際にプラグインを更新して変わる
+	 * ファイルの割合を実地検証で測ってから確定する(プラン rev.3 §9.3 #8).
+	 * `wpcv_stat_rollup_min_count` フィルターで変えられる(v0.5 §Step8).
+	 *
+	 * @var int
+	 */
+	const DEFAULT_STAT_ROLLUP_MIN_COUNT = 20;
+
+	/**
+	 * Stat 差分検知で、変更 finding を1件にまとめる割合(比較したファイル数に対する割合).
+	 *
+	 * 未実測: 暫定値(`DEFAULT_STAT_ROLLUP_MIN_COUNT` と同じ扱い).
+	 * `wpcv_stat_rollup_ratio` フィルターで変えられる(v0.5 §Step8).
+	 *
+	 * @var float
+	 */
+	const DEFAULT_STAT_ROLLUP_RATIO = 0.5;
 
 	/**
 	 * `wpcv_runs` の永続化層.
@@ -185,22 +210,63 @@ class WPCV_Chunk_Dispatcher {
 	private $now;
 
 	/**
+	 * `wpcv_file_states` の永続化層(v0.5 §Step6. stat 差分検知のベースライン).
+	 *
+	 * Stat target を処理するときだけ使う。既存のテスト・呼び出し元の引数を
+	 * 変えずに済むよう省略可能にしている。未設定のまま stat target を claim した
+	 * 場合は例外になり、`dispatch()` の catch でその target_run が failed になる.
+	 *
+	 * @var WPCV_File_State_Repository|null
+	 */
+	private $file_state_repository;
+
+	/**
+	 * 差分処理(v0.5後半 §Step12)のdispatcher。`dispatch()`が「runが終端に達した」と
+	 * 判定した際、差分処理がまだ残っていれば(`diff_status`が
+	 * `pending`/`processing`/`alerting`)ここへ委譲する(§配線参照)。`null`なら
+	 * 従来通り`run_already_terminal`を返すだけ(既存テストを壊さないための
+	 * 後方互換設計。`WPCV_File_State_Repository`と同じ導入パターン).
+	 *
+	 * @var WPCV_Diff_Dispatcher|null
+	 */
+	private $diff_dispatcher;
+
+	/**
+	 * Stat 差分検知を行う本体 target の `error_code`(rev.3 §3.4).
+	 *
+	 * 「照合元の配布物がそもそも無い」ことを示すものに限る。`http_error`/
+	 * `rate_limited` のような一時的な障害を含めると、wp.org 側の不調で
+	 * 数万件のベースラインが不意に作られてしまうため、意図的に含めない.
+	 *
+	 * @var string[]
+	 */
+	const STAT_ELIGIBLE_ERROR_CODES = array(
+		WPCV_Error_Code::MANIFEST_NOT_FOUND,
+		WPCV_Error_Code::UNKNOWN_SOURCE,
+		WPCV_Error_Code::VERSION_UNKNOWN,
+	);
+
+	/**
 	 * コンストラクタ.
 	 *
-	 * @param WPCV_Run_Repository          $run_repository           `wpcv_runs` の永続化層.
-	 * @param WPCV_Target_Run_Repository   $target_run_repository    `wpcv_target_runs` の永続化層.
-	 * @param WPCV_Chunk_Result_Repository $chunk_result_repository  Chunk結果の確定役.
-	 * @param WPCV_Chunk_Verifier          $chunk_verifier           Chunk単位の検証エンジン.
-	 * @param WPCV_Manifest_Source         $core_source              §3.2 コア照合ソース.
-	 * @param WPCV_Manifest_Source         $plugin_source            §3.4 公式プラグイン照合ソース.
-	 * @param WPCV_Unknown_File_Scanner    $scanner                  §3.3 未知ファイル走査エンジン.
-	 * @param callable|null                $lease_owner_factory      省略時は `uniqid( 'wpcv_', true )`.
-	 * @param callable|null                $continuation_scheduler   省略時は Action Scheduler の
-	 *                                                                `as_enqueue_async_action()`/
-	 *                                                                `as_schedule_single_action()`
-	 *                                                                (利用不可なら何もしない).
-	 * @param callable|null                $now                      現在時刻(Unix timestamp)を
-	 *                                                                返す callable. 省略時は `time()`.
+	 * @param WPCV_Run_Repository             $run_repository           `wpcv_runs` の永続化層.
+	 * @param WPCV_Target_Run_Repository      $target_run_repository    `wpcv_target_runs` の永続化層.
+	 * @param WPCV_Chunk_Result_Repository    $chunk_result_repository  Chunk結果の確定役.
+	 * @param WPCV_Chunk_Verifier             $chunk_verifier           Chunk単位の検証エンジン.
+	 * @param WPCV_Manifest_Source            $core_source              §3.2 コア照合ソース.
+	 * @param WPCV_Manifest_Source            $plugin_source            §3.4 公式プラグイン照合ソース.
+	 * @param WPCV_Unknown_File_Scanner       $scanner                  §3.3 未知ファイル走査エンジン.
+	 * @param callable|null                   $lease_owner_factory      省略時は `uniqid( 'wpcv_', true )`.
+	 * @param callable|null                   $continuation_scheduler   省略時は Action Scheduler の
+	 *                                                                   `as_enqueue_async_action()`/
+	 *                                                                   `as_schedule_single_action()`
+	 *                                                                   (利用不可なら何もしない).
+	 * @param callable|null                   $now                      現在時刻(Unix timestamp)を
+	 *                                                                   返す callable. 省略時は `time()`.
+	 * @param WPCV_File_State_Repository|null $file_state_repository `wpcv_file_states` の永続化層
+	 *                                                                (v0.5 §Step6).
+	 * @param WPCV_Diff_Dispatcher|null       $diff_dispatcher       差分処理(v0.5後半 §Step12)の
+	 *                                                               dispatcher.
 	 */
 	public function __construct(
 		WPCV_Run_Repository $run_repository,
@@ -212,7 +278,9 @@ class WPCV_Chunk_Dispatcher {
 		WPCV_Unknown_File_Scanner $scanner,
 		?callable $lease_owner_factory = null,
 		?callable $continuation_scheduler = null,
-		?callable $now = null
+		?callable $now = null,
+		?WPCV_File_State_Repository $file_state_repository = null,
+		?WPCV_Diff_Dispatcher $diff_dispatcher = null
 	) {
 		$this->run_repository          = $run_repository;
 		$this->target_run_repository   = $target_run_repository;
@@ -231,6 +299,9 @@ class WPCV_Chunk_Dispatcher {
 		$this->now = $now ?? static function () {
 			return time();
 		};
+
+		$this->file_state_repository = $file_state_repository;
+		$this->diff_dispatcher       = $diff_dispatcher;
 	}
 
 	/**
@@ -256,6 +327,12 @@ class WPCV_Chunk_Dispatcher {
 		}
 
 		if ( ! WPCV_Run_Status::is_active( $run['status'] ) ) {
+			// 検証(target_runs)自体は終端に達した。差分処理(v0.5後半 §Step12)が
+			// まだ残っていれば`WPCV_Diff_Dispatcher`へ委譲する(§配線).
+			if ( null !== $this->diff_dispatcher && in_array( $run['diff_status'] ?? null, array( WPCV_Diff_Status::PENDING, WPCV_Diff_Status::PROCESSING, WPCV_Diff_Status::ALERTING ), true ) ) {
+				return $this->delegate_to_diff_dispatcher( $run_id, $run['status'] );
+			}
+
 			// 既に終端に達している(他workerが先に確定させた、stale
 			// sweepでfailed化された等)。継続をenqueueしても意味が無いため、
 			// ここで静かに終わる(重複配送されたAS actionのno-op).
@@ -312,6 +389,40 @@ class WPCV_Chunk_Dispatcher {
 		return array(
 			'action'    => 'processed',
 			'target_id' => $claimed['target_id'],
+		);
+	}
+
+	/**
+	 * `WPCV_Diff_Dispatcher::dispatch_diff()` へ委譲し、結果に応じて継続予約の
+	 * 要否を判断する(v0.5後半 §Step12・§Step14c・§配線).
+	 *
+	 * `diff_claimed`(1単位処理できた。まだ続きがある可能性が高い)・
+	 * `diff_finalized`(全target完了・`alerting`へ進んだ直後。次のdispatchで
+	 * アラート送信〔手順6〕に進むためもう1回継続予約する。Step12時点は終端として
+	 * 継続予約しない設計だったが、Step14cで送信を接続するにあたり変更した)・
+	 * `diff_alerted`(送信して`done`へ進めた直後。次のdispatchで`run_already_terminal`
+	 * を確認して自然に止まる)は、いずれも即座に継続予約する。`diff_not_claimable`
+	 * (他プロセスがlease保持中)は`waiting`と同じ考え方で、lease有効期間相当の
+	 * 遅延で再チェックする(§配線)。`diff_failed`は終端のため継続予約しない.
+	 *
+	 * @param int    $run_id       対象の run の id.
+	 * @param string $run_status   `wpcv_runs.status`(呼び出し元が既に読んでいる値.
+	 *                              レスポンスに含めるためだけに使う).
+	 * @return array{action: string, status: string}
+	 */
+	private function delegate_to_diff_dispatcher( $run_id, $run_status ) {
+		$result = $this->diff_dispatcher->dispatch_diff( $run_id );
+		$action = $result['action'];
+
+		if ( in_array( $action, array( 'diff_claimed', 'diff_finalized', 'diff_alerted' ), true ) ) {
+			$this->schedule_continuation( $run_id, 0 );
+		} elseif ( 'diff_not_claimable' === $action ) {
+			$this->schedule_continuation( $run_id, WPCV_Run_Repository::DIFF_LEASE_SECONDS );
+		}
+
+		return array(
+			'action' => $action,
+			'status' => $run_status,
 		);
 	}
 
@@ -406,6 +517,19 @@ class WPCV_Chunk_Dispatcher {
 		$summary = WPCV_Verifier::summarize( $target_runs );
 		$this->run_repository->finish_run( $run_id, $summary );
 
+		// v0.5後半 §Step12: `finish_run()`が同じUPDATEで`diff_status=pending`を
+		// 書く(`WPCV_Run_Repository::finish_run()`のdocblock参照)。ここで
+		// `run_finalized`を無条件に返すと、同期ループ(`WPCV_Run_Coordinator`・
+		// CLI同期実行)は`run_finalized`がTERMINAL_ACTIONSに含まれるため即座に
+		// 停止してしまい、差分処理へ一切進めない(AS駆動の経路も、`run_finalized`
+		// では継続予約をしないため同様に止まる)。`diff_dispatcher`が注入されて
+		// いれば、検証完了の直後にこの同じ呼び出しの中で差分処理へ引き継ぐ
+		// (§配線。`diff_dispatcher`が無い〔既定null〕場合のみ従来通り
+		// `run_finalized`を返す ―― 既存テストとの後方互換のため).
+		if ( null !== $this->diff_dispatcher ) {
+			return $this->delegate_to_diff_dispatcher( $run_id, (string) $summary['status'] );
+		}
+
 		return array(
 			'action'  => 'run_finalized',
 			'summary' => $summary,
@@ -423,6 +547,13 @@ class WPCV_Chunk_Dispatcher {
 	private function process_claimed_target( $run_id, array $target_run, array $context ) {
 		$dimension = $target_run['dimension'];
 		$slug      = $target_run['slug'];
+
+		// v0.5 §Step6: stat target は本体と同じ dimension/slug を持つため、
+		// dimension/slug による振り分けより先に target_id の接尾辞で判定する.
+		if ( WPCV_Target_Resolver::is_stat_id( (string) $target_run['target_id'] ) ) {
+			$this->process_stat_target( $run_id, $target_run, $context );
+			return;
+		}
 
 		if ( WPCV_Target_Resolver::DIMENSION_CORE === $dimension && '_scan' === $slug ) {
 			$this->process_core_scan( $run_id, $target_run, $context );
@@ -623,8 +754,9 @@ class WPCV_Chunk_Dispatcher {
 	 *
 	 * @param array  $context `dispatch()` に渡された `$context`.
 	 * @param string $slug    探したい slug(target_run.slug).
-	 * @return array{version: string, plugin_root_dir: string}|null 見つからなければ `null`
+	 * @return array{version: string, plugin_root_dir: string, plugin_file: string}|null 見つからなければ `null`
 	 *               (plan時点では存在したが、実行時点でローカルから消えている. §Step4).
+	 *               `plugin_file` は v0.5 §Step6 で追加(単一ファイルプラグインの stat 走査用).
 	 */
 	private function resolve_current_plugin_context( array $context, $slug ) {
 		$plugins    = isset( $context['plugins'] ) ? (array) $context['plugins'] : array();
@@ -641,8 +773,327 @@ class WPCV_Chunk_Dispatcher {
 				return array(
 					'version'         => isset( $plugin_data['Version'] ) ? (string) $plugin_data['Version'] : '',
 					'plugin_root_dir' => $candidate['plugin_root_dir'],
+					'plugin_file'     => (string) $plugin_file,
 				);
 			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Stat 差分検知 target(`{dimension}:{slug}:_stat`)を処理する(v0.5 §Step6. rev.3 §3.4).
+	 *
+	 * 同じ run の本体 target_run の状態で振り分ける:
+	 *
+	 * | 本体 target_run の状態                                | stat target の扱い                          |
+	 * |-------------------------------------------------------|---------------------------------------------|
+	 * | 見つからない                                          | unverifiable / target_missing                |
+	 * | 非終端(まだ処理中)                                  | `defer_for_dependency()` で retry へ戻す     |
+	 * | success(照合できた)                                 | skipped / checksum_covered(stat I/O なし)   |
+	 * | unverifiable かつ STAT_ELIGIBLE_ERROR_CODES           | stat 走査を実行                              |
+	 * | それ以外(http_error/rate_limited/target_missing/failed 等) | skipped(error_code は本体の値を引き継ぐ) |
+	 *
+	 * @param int   $run_id     対象の run の id.
+	 * @param array $target_run claim済みのtarget_run行.
+	 * @param array $context    `dispatch()` に渡された `$context`.
+	 * @return void
+	 */
+	private function process_stat_target( $run_id, array $target_run, array $context ) {
+		$body_target_id = WPCV_Target_Resolver::body_id_of_stat( (string) $target_run['target_id'] );
+		$body           = null;
+
+		foreach ( $this->target_run_repository->find_all_by_run( $run_id ) as $candidate ) {
+			if ( $candidate['target_id'] === $body_target_id ) {
+				$body = $candidate;
+				break;
+			}
+		}
+
+		if ( null === $body ) {
+			$this->target_run_repository->finalize_immediate(
+				$target_run['id'],
+				array(
+					'status'     => WPCV_Target_Status::UNVERIFIABLE,
+					'error_code' => WPCV_Error_Code::TARGET_MISSING,
+				),
+				$target_run['lease_owner']
+			);
+			return;
+		}
+
+		if ( ! WPCV_Target_Status::is_terminal( $body['status'] ) ) {
+			// 本体がまだ処理中. 本体の lease が切れるまでの最大時間だけ待ってから
+			// 再 claim させる(それより早く見に来ても、本体の worker が生きている限り
+			// 状態は変わらない. 死んでいれば lease 切れ sweep で本体が retry に戻る).
+			$this->target_run_repository->defer_for_dependency( $target_run['id'], $target_run['lease_owner'], WPCV_Target_Run_Repository::DEFAULT_LEASE_SECONDS );
+			return;
+		}
+
+		if ( WPCV_Target_Status::SUCCESS === $body['status'] ) {
+			$this->target_run_repository->finalize_immediate(
+				$target_run['id'],
+				array(
+					'status'     => WPCV_Target_Status::SKIPPED,
+					'error_code' => WPCV_Error_Code::CHECKSUM_COVERED,
+				),
+				$target_run['lease_owner']
+			);
+			return;
+		}
+
+		$body_error_code = isset( $body['error_code'] ) ? (string) $body['error_code'] : '';
+
+		if ( WPCV_Target_Status::UNVERIFIABLE !== $body['status'] || ! in_array( $body_error_code, self::STAT_ELIGIBLE_ERROR_CODES, true ) ) {
+			$this->target_run_repository->finalize_immediate(
+				$target_run['id'],
+				array(
+					'status'        => WPCV_Target_Status::SKIPPED,
+					'error_code'    => '' === $body_error_code ? null : $body_error_code,
+					'error_message' => sprintf( '本体 target(%s)が %s のため stat 走査を行いませんでした.', $body_target_id, $body['status'] ),
+				),
+				$target_run['lease_owner']
+			);
+			return;
+		}
+
+		$this->run_stat_scan( $run_id, $target_run, $context );
+	}
+
+	/**
+	 * Stat 走査の対象ファイルを集めて `verify_stat_chunk()` に渡し、結果を確定する
+	 * (`process_stat_target()` 専用).
+	 *
+	 * 対象の決め方:
+	 * - ディレクトリ型プラグイン: プラグインのディレクトリ全体を再帰的に走査する
+	 * - 単一ファイルのプラグイン: そのファイル1つだけ(`WP_PLUGIN_DIR` 全体を走査しない)
+	 * - mu-plugin の loader: そのファイル1つだけ
+	 *
+	 * @param int   $run_id     対象の run の id.
+	 * @param array $target_run claim済みのtarget_run行.
+	 * @param array $context    `dispatch()` に渡された `$context`.
+	 * @return void
+	 *
+	 * @throws LogicException `WPCV_File_State_Repository` が注入されていない場合.
+	 */
+	private function run_stat_scan( $run_id, array $target_run, array $context ) {
+		if ( null === $this->file_state_repository ) {
+			throw new LogicException( 'WPCV_Chunk_Dispatcher requires a WPCV_File_State_Repository to process stat targets.' );
+		}
+
+		$scan = $this->collect_stat_items( $target_run, $context );
+
+		if ( null === $scan ) {
+			$this->target_run_repository->finalize_immediate(
+				$target_run['id'],
+				array(
+					'status'     => WPCV_Target_Status::UNVERIFIABLE,
+					'error_code' => WPCV_Error_Code::TARGET_MISSING,
+				),
+				$target_run['lease_owner']
+			);
+			return;
+		}
+
+		if ( $scan['truncated'] ) {
+			// core:_scan と同じ理由(process_core_scan() 参照)で、不完全な走査結果は
+			// 使わず retry へ戻す.
+			$this->target_run_repository->mark_scan_incomplete( $target_run['id'], $target_run['lease_owner'] );
+			return;
+		}
+
+		$target_id             = (string) $target_run['target_id'];
+		$file_state_repository = $this->file_state_repository;
+
+		// v0.5 §Step7(rev.3 §3.7-a): ベースラインが別の version で作られていれば捨てて
+		// 作り直す。run と run の間の通常の更新はこちらで拾う(target_run の version は
+		// plan 時点で既に新しい値のため、chunk 間の version 比較では気付けない).
+		$rebuild = $file_state_repository->has_rows_with_other_baseline_version( $target_id, $scan['version'] );
+
+		// 作り直しは最初の chunk で古い行を全部消すので、2つ目以降の chunk では
+		// 上の判定が偽になる。target_run に残した error_code で「作り直し中」を引き継ぐ.
+		$rebuilding = $rebuild || WPCV_Error_Code::BASELINE_REBUILT === ( $target_run['error_code'] ?? null );
+
+		// rev.3 §3.6: 今回の run より前に書かれた行が1件も無ければ初回とみなす
+		// (今回の run が書いた行は last_seen_run_id が同じなので含まれない).
+		$baseline_mode = $rebuild || ! $file_state_repository->has_baseline_before_run( $target_id, (int) $run_id );
+
+		$chunk_result = $this->chunk_verifier->verify_stat_chunk(
+			array(
+				'target_id'            => $target_id,
+				'dimension'            => $target_run['dimension'],
+				'slug'                 => $target_run['slug'],
+				'version'              => $scan['version'],
+				'source'               => 'stat',
+				'run_id'               => (int) $run_id,
+				'scan_items'           => $scan['items'],
+				'baseline_mode'        => $baseline_mode,
+				'load_previous_states' => static function ( array $paths ) use ( $file_state_repository, $target_id ) {
+					$keys = array();
+					foreach ( $paths as $path ) {
+						$keys[] = WPCV_File_State_Repository::compute_state_key( $target_id, $path );
+					}
+
+					$by_path = array();
+					foreach ( $file_state_repository->find_by_state_keys( $keys ) as $row ) {
+						$by_path[ $row['path'] ] = $row;
+					}
+
+					return $by_path;
+				},
+				'cursor_path'          => $target_run['cursor_path'] ?? null,
+				'previous_fingerprint' => $target_run['manifest_fingerprint'] ?? null,
+				'previous_version'     => $target_run['version'],
+				'budget'               => $this->default_budget(),
+				'rollup'               => array(
+					/**
+					 * Stat 差分検知で変更 finding を1件にまとめる最小件数を変える(v0.5 §Step8).
+					 *
+					 * 既定値は未実測の暫定値のため、設定画面ではなくフィルターだけで
+					 * 変えられるようにしている(2026-09-26 ユーザー判断).
+					 *
+					 * @param int    $min_count 既定 `DEFAULT_STAT_ROLLUP_MIN_COUNT`.
+					 * @param string $target_id stat target の target_id.
+					 */
+					'min_count' => (int) apply_filters( 'wpcv_stat_rollup_min_count', self::DEFAULT_STAT_ROLLUP_MIN_COUNT, $target_id ),
+					/**
+					 * Stat 差分検知で変更 finding を1件にまとめる割合(0〜1)を変える(v0.5 §Step8).
+					 *
+					 * @param float  $ratio     既定 `DEFAULT_STAT_ROLLUP_RATIO`.
+					 * @param string $target_id stat target の target_id.
+					 */
+					'ratio'     => (float) apply_filters( 'wpcv_stat_rollup_ratio', self::DEFAULT_STAT_ROLLUP_RATIO, $target_id ),
+				),
+				'target_root_path'     => $scan['root_path'],
+			)
+		);
+
+		if ( ! $chunk_result['needs_retry'] ) {
+			if ( $rebuild ) {
+				// 古いベースラインの削除は commit_chunk() が同じトランザクションで行う.
+				$chunk_result['rebuild_baseline'] = true;
+			}
+
+			if ( $rebuilding ) {
+				$chunk_result['error_code'] = WPCV_Error_Code::BASELINE_REBUILT;
+			}
+
+			if ( $chunk_result['completed'] && ! $baseline_mode ) {
+				$chunk_result = $this->add_missing_findings( $chunk_result, $target_run, (int) $run_id, $scan['version'] );
+			}
+		}
+
+		$this->chunk_result_repository->commit_chunk( $run_id, $target_run['id'], $target_id, $chunk_result, $target_run['lease_owner'], $scan['version'] );
+	}
+
+	/**
+	 * Stat target の最後の chunk で、前回のベースラインにあったのに今回の run で
+	 * 一度も見つからなかったファイルを `missing` finding にし、削除する行の id を
+	 * chunk 結果に載せる(v0.5 §Step7. rev.3 §3.3).
+	 *
+	 * この時点ではまだ今回の chunk の upsert をしていないため、`find_stale()` は
+	 * 今回の chunk で見つかったファイルも「古い」行として返す。それらは
+	 * `baseline_rows` の path で除外する(前の chunk で見つかったファイルは
+	 * 既に last_seen_run_id が今回の run になっているので最初から含まれない).
+	 *
+	 * 削除自体は `commit_chunk()` が findings と同じトランザクションで行う。
+	 * 消した行は次の run で古い行として出てこないため、同じ削除が2回 finding に
+	 * なることはない.
+	 *
+	 * @param array  $chunk_result `verify_stat_chunk()` の戻り値.
+	 * @param array  $target_run   claim済みのtarget_run行.
+	 * @param int    $run_id       今回の run の id.
+	 * @param string $version      本体の現在の version.
+	 * @return array `findings` と `stale_state_ids` を追加した chunk 結果.
+	 */
+	private function add_missing_findings( array $chunk_result, array $target_run, $run_id, $version ) {
+		$seen = array();
+		foreach ( $chunk_result['baseline_rows'] as $row ) {
+			$seen[ $row['path'] ] = true;
+		}
+
+		$stale_ids = array();
+
+		foreach ( $this->file_state_repository->find_stale( (string) $target_run['target_id'], $run_id ) as $row ) {
+			if ( isset( $seen[ $row['path'] ] ) ) {
+				continue;
+			}
+
+			$chunk_result['findings'][] = WPCV_Verifier::make_finding_for_stat_missing(
+				(string) $target_run['target_id'],
+				(string) $target_run['dimension'],
+				(string) $target_run['slug'],
+				(string) $version,
+				'stat',
+				(string) $row['path']
+			);
+
+			$stale_ids[] = (int) $row['id'];
+		}
+
+		$chunk_result['stale_state_ids'] = $stale_ids;
+
+		return $chunk_result;
+	}
+
+	/**
+	 * Stat 走査の対象ファイル(size/ctime/mtime 付き)と、本体の現在の version を返す
+	 * (`run_stat_scan()` 専用).
+	 *
+	 * @param array $target_run claim済みのtarget_run行.
+	 * @param array $context    `dispatch()` に渡された `$context`.
+	 * @return array{items: array, truncated: bool, version: string, root_path: string}|null 対象が
+	 *               実行時点で見つからなければ null. `root_path` は target のルートの
+	 *               ABSPATH 相対パス(大量変更をまとめた finding の path に使う. v0.5 §Step7).
+	 */
+	private function collect_stat_items( array $target_run, array $context ) {
+		if ( WPCV_Target_Resolver::DIMENSION_PLUGIN === $target_run['dimension'] ) {
+			$resolved = $this->resolve_current_plugin_context( $context, $target_run['slug'] );
+
+			if ( null === $resolved ) {
+				return null;
+			}
+
+			$plugin_dir = rtrim( WPCV_Path_Normalizer::to_forward_slashes( (string) $context['plugin_dir'] ), '/' );
+			$root_dir   = rtrim( WPCV_Path_Normalizer::to_forward_slashes( $resolved['plugin_root_dir'] ), '/' );
+
+			if ( $root_dir === $plugin_dir ) {
+				$scan              = $this->scanner->stat_file( $plugin_dir . '/' . $resolved['plugin_file'], 'high', 'medium' );
+				$scan['root_path'] = WPCV_Path_Normalizer::to_relative( $plugin_dir . '/' . $resolved['plugin_file'] );
+			} else {
+				$scan = $this->scanner->scan(
+					$root_dir,
+					array(),
+					array(
+						'recursive'        => true,
+						'php_severity'     => 'high',
+						'non_php_severity' => 'medium',
+						'budget'           => $this->walk_budget(),
+						'collect_stat'     => true,
+					)
+				);
+
+				$scan['root_path'] = WPCV_Path_Normalizer::to_relative( $root_dir );
+			}
+
+			$scan['version'] = $resolved['version'];
+
+			return $scan;
+		}
+
+		if ( WPCV_Target_Resolver::DIMENSION_MUPLUGIN === $target_run['dimension'] ) {
+			$mu_plugin_dir = isset( $context['mu_plugin_dir'] ) ? rtrim( WPCV_Path_Normalizer::to_forward_slashes( (string) $context['mu_plugin_dir'] ), '/' ) : '';
+
+			if ( '' === $mu_plugin_dir ) {
+				return null;
+			}
+
+			// §5.5: findings.version は NOT NULL のため空文字列にする(muplugin:_scan と同じ規約).
+			$scan              = $this->scanner->stat_file( $mu_plugin_dir . '/' . $target_run['slug'], 'high', 'medium' );
+			$scan['version']   = '';
+			$scan['root_path'] = WPCV_Path_Normalizer::to_relative( $mu_plugin_dir . '/' . $target_run['slug'] );
+
+			return $scan;
 		}
 
 		return null;
@@ -861,7 +1312,7 @@ class WPCV_Chunk_Dispatcher {
 	 * @throws RuntimeException `as_enqueue_async_action()`/`as_schedule_single_action()`
 	 *                          が正の action ID を返さなかった場合.
 	 */
-	private static function schedule_via_action_scheduler( $run_id, $delay_seconds ) {
+	public static function schedule_via_action_scheduler( $run_id, $delay_seconds ) {
 		if ( ! function_exists( 'as_enqueue_async_action' ) || ! class_exists( 'ActionScheduler' ) || ! ActionScheduler::is_initialized() ) {
 			return;
 		}

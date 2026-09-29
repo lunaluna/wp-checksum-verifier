@@ -81,6 +81,57 @@ class WPCV_Target_Resolver {
 	}
 
 	/**
+	 * Stat差分検知 target の target_id に付ける接尾辞(v0.5 §Step6. rev.3 §3.4).
+	 *
+	 * @var string
+	 */
+	const STAT_SUFFIX = ':_stat';
+
+	/**
+	 * 本体 target の target_id から、対応する stat 差分検知 target の target_id
+	 * (`{dimension}:{slug}:_stat`)を作る(v0.5 §Step6).
+	 *
+	 * Stat target は本体と同じ dimension/slug を持つ(target_runs・findings の
+	 * dimension/slug 列も本体と同じ値にする)。そうすることで、本体に対する
+	 * `exclude_target`/`exclude_path` 抑制ルールがそのまま stat target にも効く.
+	 * 本体と stat target は target_id の接尾辞だけで区別する.
+	 *
+	 * @param string $body_target_id 本体 target の target_id(`plugin:{slug}` 等).
+	 * @return string
+	 */
+	public static function build_stat_id( $body_target_id ) {
+		return $body_target_id . self::STAT_SUFFIX;
+	}
+
+	/**
+	 * Stat差分検知 target の target_id かどうかを判定する(v0.5 §Step6).
+	 *
+	 * @param string $target_id 判定対象.
+	 * @return bool
+	 */
+	public static function is_stat_id( $target_id ) {
+		$suffix_length = strlen( self::STAT_SUFFIX );
+
+		return strlen( $target_id ) > $suffix_length && self::STAT_SUFFIX === substr( $target_id, -$suffix_length );
+	}
+
+	/**
+	 * Stat差分検知 target の target_id から、本体 target の target_id を取り出す(v0.5 §Step6).
+	 *
+	 * @param string $stat_target_id `build_stat_id()` が作った target_id.
+	 * @return string
+	 *
+	 * @throws InvalidArgumentException Stat target の target_id でない場合.
+	 */
+	public static function body_id_of_stat( $stat_target_id ) {
+		if ( ! self::is_stat_id( $stat_target_id ) ) {
+			throw new InvalidArgumentException( esc_html( "Not a stat target_id: {$stat_target_id}" ) );
+		}
+
+		return substr( $stat_target_id, 0, -strlen( self::STAT_SUFFIX ) );
+	}
+
+	/**
 	 * 検証対象の target_id を dimension と identifier に分解する.
 	 *
 	 * @param string $target_id build_id() が生成した形式の文字列.

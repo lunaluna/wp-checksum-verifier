@@ -18,16 +18,23 @@ require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-sou
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-verifier.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-cursor.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-verifier.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-finding-key.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-matcher.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-chunk-result-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-file-state-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-planner.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-generation-differ.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-alert-composer.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-alert-sender.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-diff-dispatcher.php';
 require_once __DIR__ . '/doubles.php';
 
 use PHPUnit\Framework\TestCase;
@@ -102,17 +109,23 @@ class ChunkDispatcherTest extends TestCase {
 	 * 固定時刻でRun/Target_Run Repositoryを組み立てる.
 	 *
 	 * @param WPCV_Test_Fake_WPDB $wpdb フェイク wpdb.
-	 * @return array{run_repository: WPCV_Run_Repository, target_run_repository: WPCV_Target_Run_Repository, finding_repository: WPCV_Finding_Repository}
+	 * @return array{run_repository: WPCV_Run_Repository, target_run_repository: WPCV_Target_Run_Repository, finding_repository: WPCV_Finding_Repository, file_state_repository: WPCV_File_State_Repository}
 	 */
 	private function make_repositories( WPCV_Test_Fake_WPDB $wpdb ) {
 		$now = static function () {
 			return '2026-09-11 12:00:00';
 		};
 
+		$run_repository        = new WPCV_Run_Repository( $wpdb, $now );
+		$target_run_repository = new WPCV_Target_Run_Repository( $wpdb, $now );
+		$finding_repository    = new WPCV_Finding_Repository( $wpdb );
+
 		return array(
-			'run_repository'        => new WPCV_Run_Repository( $wpdb, $now ),
-			'target_run_repository' => new WPCV_Target_Run_Repository( $wpdb, $now ),
-			'finding_repository'    => new WPCV_Finding_Repository( $wpdb ),
+			'run_repository'        => $run_repository,
+			'target_run_repository' => $target_run_repository,
+			'finding_repository'    => $finding_repository,
+			'file_state_repository' => new WPCV_File_State_Repository( $wpdb, $now ),
+			'alert_sender'          => new WPCV_Alert_Sender( $run_repository, $target_run_repository, $finding_repository, $now ),
 		);
 	}
 
@@ -125,6 +138,8 @@ class ChunkDispatcherTest extends TestCase {
 	 *     @type WPCV_Manifest_Source      $core_source
 	 *     @type WPCV_Manifest_Source      $plugin_source
 	 *     @type WPCV_Unknown_File_Scanner $scanner
+	 *     @type WPCV_Diff_Dispatcher      $diff_dispatcher (v0.5後半 §Step12. 省略時は
+	 *                                                       `null`〔既存の後方互換動作〕).
 	 * }
 	 * @param array         $continuation_calls `$continuation_scheduler` の呼び出しを
 	 *                                          記録する配列(参照渡し).
@@ -164,7 +179,9 @@ class ChunkDispatcherTest extends TestCase {
 			},
 			static function () {
 				return strtotime( '2026-09-11 12:00:00' );
-			}
+			},
+			null,
+			$overrides['diff_dispatcher'] ?? null
 		);
 	}
 
@@ -203,7 +220,13 @@ class ChunkDispatcherTest extends TestCase {
 			$GLOBALS['_wpcv_test_as_enqueue_return_zero'],
 			$GLOBALS['_wpcv_test_as_schedule_single_calls'],
 			$GLOBALS['_wpcv_test_as_schedule_single_return_zero'],
-			$GLOBALS['_wpcv_test_action_scheduler_initialized']
+			$GLOBALS['_wpcv_test_action_scheduler_initialized'],
+			// v0.5後半 §Step14c: `WPCV_Diff_Dispatcher`が`WPCV_Alert_Sender`経由で
+			// `WPCV_Settings::get_alert_to()`を読むようになったため、他のテスト
+			// ファイル(`AlertSenderTest`等)が残した`alert_to`設定を引き継がない
+			// よう、このテストファイル自身の実行前にも消しておく.
+			$GLOBALS['_wpcv_test_options'],
+			$GLOBALS['_wpcv_test_wp_mail_calls']
 		);
 	}
 
@@ -254,6 +277,197 @@ class ChunkDispatcherTest extends TestCase {
 		$this->assertSame( 'run_already_terminal', $result['action'] );
 		$this->assertSame( 'success', $result['status'] );
 		$this->assertSame( array(), $continuation_calls );
+	}
+
+	/**
+	 * Run自体は終端(success)に達しているが差分処理(`diff_status`)がまだ
+	 * 残っている場合、`WPCV_Diff_Dispatcher::dispatch_diff()`へ委譲し、
+	 * `diff_claimed`のときは即座に継続予約することを確認する
+	 * (v0.5後半 §Step12・§配線).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_delegates_to_diff_dispatcher_and_schedules_immediate_continuation() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
+		$run_id       = $reservation['run_id'];
+
+		$repositories['run_repository']->finish_run(
+			$run_id,
+			array(
+				'status'               => 'success',
+				'targets_total'        => 1,
+				'targets_verified'     => 1,
+				'targets_unverifiable' => 0,
+				'targets_failed'       => 0,
+				'findings_total'       => 0,
+			)
+		);
+		// finish_run()でdiff_status=pendingになる。差分処理対象のtarget_runを1件用意する.
+		$wpdb->insert( 'wp_wpcv_target_runs', array_merge( wpcv_test_make_target_run(), array( 'run_id' => $run_id ) ) );
+
+		$diff_dispatcher = new WPCV_Diff_Dispatcher(
+			$repositories['run_repository'],
+			$repositories['target_run_repository'],
+			$repositories['finding_repository'],
+			$repositories['file_state_repository'],
+			$repositories['alert_sender']
+		);
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array( 'diff_dispatcher' => $diff_dispatcher ), $continuation_calls );
+
+		$result = $dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$this->assertSame( 'diff_claimed', $result['action'] );
+		$this->assertSame( 'success', $result['status'] );
+		$this->assertSame( array( array( 'run_id' => $run_id, 'delay_seconds' => 0 ) ), $continuation_calls );
+	}
+
+	/**
+	 * 差分処理が他プロセスのlease保持中で claim できない(`diff_not_claimable`)
+	 * 場合、`waiting`と同じ考え方でlease有効期間相当の遅延で継続予約することを
+	 * 確認する.
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_delegates_diff_not_claimable_with_delayed_continuation() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
+		$run_id       = $reservation['run_id'];
+
+		$repositories['run_repository']->finish_run(
+			$run_id,
+			array(
+				'status'               => 'success',
+				'targets_total'        => 1,
+				'targets_verified'     => 1,
+				'targets_unverifiable' => 0,
+				'targets_failed'       => 0,
+				'findings_total'       => 0,
+			)
+		);
+
+		// 他プロセスがlease有効中でclaim済み(diff_not_claimableになる)状態を作る.
+		$wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_status']           = 'processing';
+		$wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_owner']           = 'other-owner';
+		$wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_lease_expires_at'] = '2099-01-01 00:00:00';
+
+		$diff_dispatcher = new WPCV_Diff_Dispatcher(
+			$repositories['run_repository'],
+			$repositories['target_run_repository'],
+			$repositories['finding_repository'],
+			$repositories['file_state_repository'],
+			$repositories['alert_sender']
+		);
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array( 'diff_dispatcher' => $diff_dispatcher ), $continuation_calls );
+
+		$result = $dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$this->assertSame( 'diff_not_claimable', $result['action'] );
+		$this->assertSame( array( array( 'run_id' => $run_id, 'delay_seconds' => WPCV_Run_Repository::DIFF_LEASE_SECONDS ) ), $continuation_calls );
+	}
+
+	/**
+	 * 差分処理対象のtarget_runが1件も無ければ、委譲した1回の呼び出しで
+	 * `diff_finalized`(`alerting`への遷移)まで進み、次のdispatchでアラート
+	 * 送信〔手順6〕へ進めるため継続予約することを確認する(v0.5後半 §Step14c.
+	 * Step12時点は「終端のため継続予約しない」だったが、送信を接続するために
+	 * 変更した).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_delegates_diff_finalized_with_continuation() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
+		$run_id       = $reservation['run_id'];
+
+		$repositories['run_repository']->finish_run(
+			$run_id,
+			array(
+				'status'               => 'success',
+				'targets_total'        => 0,
+				'targets_verified'     => 0,
+				'targets_unverifiable' => 0,
+				'targets_failed'       => 0,
+				'findings_total'       => 0,
+			)
+		);
+
+		$diff_dispatcher = new WPCV_Diff_Dispatcher(
+			$repositories['run_repository'],
+			$repositories['target_run_repository'],
+			$repositories['finding_repository'],
+			$repositories['file_state_repository'],
+			$repositories['alert_sender']
+		);
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array( 'diff_dispatcher' => $diff_dispatcher ), $continuation_calls );
+
+		$result = $dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$this->assertSame( 'diff_finalized', $result['action'] );
+		$this->assertSame( array( array( 'run_id' => $run_id, 'delay_seconds' => 0 ) ), $continuation_calls );
+		$this->assertSame( 'alerting', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_status'] );
+	}
+
+	/**
+	 * `alerting`まで進んだrunに対する次のdispatchが、アラート送信〔手順6〕を
+	 * 実行して`done`へ進め、継続予約する(次のdispatchで`run_already_terminal`を
+	 * 確認して自然に止まる)ことを確認する(v0.5後半 §Step14c).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_delegates_diff_alerted_with_continuation() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
+		$run_id       = $reservation['run_id'];
+
+		$repositories['run_repository']->finish_run(
+			$run_id,
+			array(
+				'status'               => 'success',
+				'targets_total'        => 0,
+				'targets_verified'     => 0,
+				'targets_unverifiable' => 0,
+				'targets_failed'       => 0,
+				'findings_total'       => 0,
+			)
+		);
+
+		$diff_dispatcher = new WPCV_Diff_Dispatcher(
+			$repositories['run_repository'],
+			$repositories['target_run_repository'],
+			$repositories['finding_repository'],
+			$repositories['file_state_repository'],
+			$repositories['alert_sender']
+		);
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array( 'diff_dispatcher' => $diff_dispatcher ), $continuation_calls );
+
+		// 1回目: 全target完了→alertingへ(target_runs 0件のため即座に完了).
+		$dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		// 2回目: alertingをclaimしてアラート送信→done.
+		$result = $dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$this->assertSame( 'diff_alerted', $result['action'] );
+		$this->assertSame( 'done', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_status'] );
+
+		// 3回目: 既にdoneのため何もせず終わる(継続予約なし).
+		$continuation_calls_before_third = $continuation_calls;
+		$third                           = $dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$this->assertSame( 'run_already_terminal', $third['action'] );
+		$this->assertSame( $continuation_calls_before_third, $continuation_calls );
 	}
 
 	/**
@@ -492,6 +706,45 @@ class ChunkDispatcherTest extends TestCase {
 		$this->assertSame( 'partial', $result['summary']['status'] );
 		$this->assertSame( 'partial', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['status'] );
 		$this->assertSame( array(), $continuation_calls );
+	}
+
+	/**
+	 * `diff_dispatcher`が注入されている場合、検証完了(`finish_run()`)の直後、
+	 * `run_finalized`を返さず**同じdispatch()呼び出しの中で**差分処理へ
+	 * 引き継ぐことを確認する(v0.5後半 §Step12。これが無いと、同期ループ
+	 * 〔`WPCV_Run_Coordinator`・CLI同期実行〕は`run_finalized`で即座に停止し、
+	 * 差分処理へ一切進めなくなる).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_transitions_directly_into_diff_processing_when_verification_completes() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
+		$run_id       = $reservation['run_id'];
+
+		$repositories['target_run_repository']->save_target_runs(
+			$run_id,
+			array( wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::SUCCESS ) ) )
+		);
+
+		$diff_dispatcher = new WPCV_Diff_Dispatcher(
+			$repositories['run_repository'],
+			$repositories['target_run_repository'],
+			$repositories['finding_repository'],
+			$repositories['file_state_repository'],
+			$repositories['alert_sender']
+		);
+
+		$continuation_calls = array();
+		$dispatcher         = $this->make_dispatcher( $repositories, $wpdb, array( 'diff_dispatcher' => $diff_dispatcher ), $continuation_calls );
+
+		$result = $dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$this->assertNotSame( 'run_finalized', $result['action'] );
+		$this->assertSame( 'diff_claimed', $result['action'] );
+		$this->assertSame( 'success', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['status'] );
+		$this->assertSame( 'pending', $wpdb->rows['wp_wpcv_runs'][ $run_id ]['diff_status'], '1 targetのdiff_modeを確定したところで手放すため、まだpendingのまま' );
 	}
 
 	/**

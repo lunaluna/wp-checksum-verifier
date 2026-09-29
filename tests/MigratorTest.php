@@ -136,6 +136,137 @@ class MigratorTest extends TestCase {
 	}
 
 	/**
+	 * `wpcv_findings` に v0.5(rev.3 §3.5)で追加した `detail` 列が含まれることを
+	 * 確認する(stat差分検知の finding で size/ctime/mtime の差分を JSON で保持するため).
+	 *
+	 * @return void
+	 */
+	public function test_table_definitions_findings_includes_detail_column() {
+		$GLOBALS['wpdb'] = new WPCV_Test_Fake_WPDB();
+
+		$method = new ReflectionMethod( WPCV_Migrator::class, 'table_definitions' );
+		$method->setAccessible( true );
+
+		list( , , $sql_findings ) = $method->invoke( null );
+
+		$this->assertMatchesRegularExpression( '/detail\s+text\s+NULL/', $sql_findings );
+	}
+
+	/**
+	 * `table_definitions()` が5番目の要素として `wpcv_file_states`(v0.5・
+	 * rev.3 §3.3 で新設)の CREATE TABLE 文を返し、必要な列・indexを含むことを
+	 * 確認する.
+	 *
+	 * @return void
+	 */
+	public function test_table_definitions_include_file_states_table_columns_and_indexes() {
+		$GLOBALS['wpdb'] = new WPCV_Test_Fake_WPDB();
+
+		$method = new ReflectionMethod( WPCV_Migrator::class, 'table_definitions' );
+		$method->setAccessible( true );
+
+		$sqls = $method->invoke( null );
+
+		$this->assertCount( 5, $sqls, 'table_definitions() must return 5 CREATE TABLE statements from v0.5 onward' );
+
+		$sql_file_states = $sqls[4];
+
+		foreach ( array(
+			'state_key',
+			'target_id',
+			'dimension',
+			'slug',
+			'path',
+			'file_size',
+			'ctime',
+			'mtime',
+			'content_hash',
+			'hash_algorithm',
+			'baseline_version',
+			'first_seen_run_id',
+			'last_seen_run_id',
+			'updated_at',
+			'idx_state_key',
+			'idx_target_last_seen',
+			'idx_path',
+		) as $needle ) {
+			$this->assertStringContainsString( $needle, $sql_file_states, "wpcv_file_states is missing column/index: {$needle}" );
+		}
+
+		$this->assertMatchesRegularExpression( '/state_key\s+binary\(32\)\s+NOT NULL/', $sql_file_states );
+		$this->assertStringContainsString( 'UNIQUE KEY idx_state_key (state_key)', $sql_file_states );
+		$this->assertStringContainsString( 'KEY idx_target_last_seen (target_id, last_seen_run_id)', $sql_file_states );
+
+		// 層2(内容ハッシュ)専用の列は v0.5 では常に NULL 許容でなければならない
+		// (層1のみのインストールでは書き込まれないため. §3.8参照).
+		foreach ( array( 'content_hash', 'hash_algorithm', 'baseline_version' ) as $column ) {
+			$this->assertMatchesRegularExpression(
+				'/' . preg_quote( $column, '/' ) . '\s+[a-z0-9()]+\s+NULL/',
+				$sql_file_states,
+				"{$column} must be nullable"
+			);
+		}
+	}
+
+	/**
+	 * `wpcv_runs`/`wpcv_target_runs`/`wpcv_findings` に v0.5後半 §Step10(差分検出
+	 * 基盤・アラート. プラン§1)で追加した列・indexがすべて含まれることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_table_definitions_include_step10_diff_and_alert_columns() {
+		$GLOBALS['wpdb'] = new WPCV_Test_Fake_WPDB();
+
+		$method = new ReflectionMethod( WPCV_Migrator::class, 'table_definitions' );
+		$method->setAccessible( true );
+
+		list( $sql_runs, $sql_target_runs, $sql_findings ) = $method->invoke( null );
+
+		foreach ( array(
+			'diff_status',
+			'diff_owner',
+			'diff_lease_expires_at',
+			'diff_attempt_count',
+			'diff_cursor',
+			'findings_new',
+			'findings_resolved',
+			'findings_continuing',
+			'alert_status',
+			'alert_attempted_at',
+			'alert_error',
+			'alert_channel_failures',
+		) as $column ) {
+			$this->assertStringContainsString( $column, $sql_runs, "wpcv_runs is missing column: {$column}" );
+		}
+
+		foreach ( array( 'baseline_target_run_id', 'diff_mode', 'idx_target_status_run' ) as $needle ) {
+			$this->assertStringContainsString( $needle, $sql_target_runs, "wpcv_target_runs is missing column/index: {$needle}" );
+		}
+
+		foreach ( array(
+			'finding_key',
+			'diff_state',
+			'notified_at',
+			'ended_in_run_id',
+			'end_reason',
+			'idx_target_run_key',
+			'idx_run_diff',
+			'idx_key_notified',
+			'idx_ended_run',
+		) as $needle ) {
+			$this->assertStringContainsString( $needle, $sql_findings, "wpcv_findings is missing column/index: {$needle}" );
+		}
+
+		// finding_keyは char(64)(sha256のhex文字列. §1.5参照)で、v4より前の行を
+		// NULLのまま読める必要があるため NULL 許容でなければならない.
+		$this->assertMatchesRegularExpression( '/finding_key\s+char\(64\)\s+NULL/', $sql_findings );
+
+		// idx_target_run_key は複合index(target_run_id, finding_key). §1.5の
+		// 「基準・今回の各行に、同じキーが相手側にあるかを調べる」クエリ用.
+		$this->assertStringContainsString( 'KEY idx_target_run_key (target_run_id, finding_key)', $sql_findings );
+	}
+
+	/**
 	 * §Step1 で追加した列がすべて NULL 許容(または default 付き)である
 	 * ことを確認する。v0.3.1 以前に作成された既存行は新しい列の値を持たないため、
 	 * NOT NULL かつ default 無しの列を追加すると、既存行の読み取り互換
@@ -174,9 +305,12 @@ class MigratorTest extends TestCase {
 	/**
 	 * `parse_column_names()`(`schema_is_current()` 専用のヘルパー。v0.4.0コード
 	 * レビューCR-05是正)が、1列1行のCREATE TABLE文から列名だけを正しく抽出し、
-	 * `PRIMARY KEY`/`KEY` 行を除外することを確認する。手書きの独立したSQL片で
-	 * 検証することで、`table_definitions()` 自身の出力を使った他のテストとは
-	 * 独立に抽出ロジックの正しさを確認できるようにしている.
+	 * `PRIMARY KEY`/`KEY`/`UNIQUE KEY` 等のインデックス行を除外することを確認する。
+	 * 手書きの独立したSQL片で検証することで、`table_definitions()` 自身の出力を
+	 * 使った他のテストとは独立に抽出ロジックの正しさを確認できるようにしている.
+	 *
+	 * `UNIQUE KEY` 行は v0.5 で `wpcv_file_states` に追加した際に `UNIQUE` を
+	 * 列名と誤認し、有効化が必ず失敗する不具合の原因になった(回帰防止).
 	 *
 	 * @return void
 	 */
@@ -189,10 +323,80 @@ class MigratorTest extends TestCase {
 	name varchar(191) NOT NULL,
 	created_at datetime NULL,
 	PRIMARY KEY (id),
-	KEY idx_name (name)
+	UNIQUE KEY idx_unique_name (name),
+	unique index idx_lower (created_at),
+	KEY idx_name (name),
+	INDEX idx_created (created_at),
+	FULLTEXT KEY idx_ft (name)
 ) utf8mb4_general_ci;";
 
 		$this->assertSame( array( 'id', 'name', 'created_at' ), $method->invoke( null, $sql ) );
+	}
+
+	/**
+	 * `wpcv_file_states` の定義から抽出される列名が、実DBの `DESCRIBE` が返す
+	 * はずの列名と完全に一致することを、`parse_column_names()` に依存しない
+	 * 手書きの期待値で確認する.
+	 *
+	 * `test_schema_is_current_*` はフェイクwpdbの「正しいスキーマ」自体を
+	 * `parse_column_names()` で組み立てるため、パーサーが余計な列名
+	 * (`UNIQUE` 等)を返しても期待値側にも同じ誤りが入って打ち消し合い、
+	 * 検出できなかった. その穴を塞ぐための独立した検証.
+	 *
+	 * @return void
+	 */
+	public function test_parse_column_names_matches_explicit_file_states_columns() {
+		$GLOBALS['wpdb'] = new WPCV_Test_Fake_WPDB();
+
+		$definitions = new ReflectionMethod( WPCV_Migrator::class, 'table_definitions' );
+		$definitions->setAccessible( true );
+		$parse = new ReflectionMethod( WPCV_Migrator::class, 'parse_column_names' );
+		$parse->setAccessible( true );
+
+		$sqls = $definitions->invoke( null );
+
+		$this->assertSame(
+			array(
+				'id',
+				'state_key',
+				'target_id',
+				'dimension',
+				'slug',
+				'path',
+				'file_size',
+				'ctime',
+				'mtime',
+				'content_hash',
+				'hash_algorithm',
+				'baseline_version',
+				'first_seen_run_id',
+				'last_seen_run_id',
+				'updated_at',
+			),
+			$parse->invoke( null, $sqls[4] )
+		);
+	}
+
+	/**
+	 * 5テーブルすべてについて、抽出した列名にインデックス・制約のキーワードが
+	 * 紛れ込んでいないことを確認する(今後 `table_definitions()` に新しい種類の
+	 * インデックス行を追加した場合の回帰防止).
+	 *
+	 * @return void
+	 */
+	public function test_parse_column_names_never_returns_sql_keywords_for_table_definitions() {
+		$GLOBALS['wpdb'] = new WPCV_Test_Fake_WPDB();
+
+		$definitions = new ReflectionMethod( WPCV_Migrator::class, 'table_definitions' );
+		$definitions->setAccessible( true );
+		$parse = new ReflectionMethod( WPCV_Migrator::class, 'parse_column_names' );
+		$parse->setAccessible( true );
+
+		foreach ( $definitions->invoke( null ) as $sql ) {
+			foreach ( $parse->invoke( null, $sql ) as $column ) {
+				$this->assertNotContains( strtoupper( $column ), WPCV_Migrator::NON_COLUMN_LINE_KEYWORDS, "parsed SQL keyword as column: {$column}" );
+			}
+		}
 	}
 
 	/**
@@ -257,6 +461,7 @@ class MigratorTest extends TestCase {
 			$wpdb->base_prefix . 'wpcv_target_runs',
 			$wpdb->base_prefix . 'wpcv_findings',
 			$wpdb->base_prefix . 'wpcv_suppressions',
+			$wpdb->base_prefix . 'wpcv_file_states',
 		);
 		$sqls = $table_definitions_method->invoke( null );
 

@@ -87,9 +87,24 @@ class WPCV_Settings {
 	const DEFAULT_STRICT_MODE = false;
 
 	/**
+	 * Stat 差分検知(v0.5. rev.3 §3)の既定値.
+	 *
+	 * 2026-09-26 ユーザー判断で既定は有効(rev.3 §9.3 #11)。初回はベースラインを
+	 * 作るだけで finding は出ず、test-armfu.local では2回目以降の誤検知が0件だった.
+	 * 無効にすると stat target を列挙しなくなる(既存のベースライン行は消さない).
+	 *
+	 * @var bool
+	 */
+	const DEFAULT_STAT_DETECTION = true;
+
+	/**
 	 * 既定値.
 	 *
-	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool}
+	 * `alert_to`(v0.5後半 §Step14)の既定は空の配列. 空のときはアラートを送らず、
+	 * 管理画面に「宛先未設定」の警告を出す(プラン U1. admin_email へのフォールバックは
+	 * しない. WPMAR と同じ扱い).
+	 *
+	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool,stat_detection:bool,alert_to:string[]}
 	 */
 	public static function defaults() {
 		return array(
@@ -97,13 +112,15 @@ class WPCV_Settings {
 			'run_minute'                        => self::DEFAULT_RUN_MINUTE,
 			'external_http_time_budget_seconds' => self::DEFAULT_EXTERNAL_HTTP_TIME_BUDGET_SECONDS,
 			'strict_mode'                       => self::DEFAULT_STRICT_MODE,
+			'stat_detection'                    => self::DEFAULT_STAT_DETECTION,
+			'alert_to'                          => array(),
 		);
 	}
 
 	/**
 	 * 保存済みの設定値を既定値とマージして返す.
 	 *
-	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool}
+	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool,stat_detection:bool,alert_to:string[]}
 	 */
 	public static function get_all() {
 		$stored = self::read_option();
@@ -194,6 +211,94 @@ class WPCV_Settings {
 		$settings['strict_mode'] = (bool) $enabled;
 
 		return self::write_option( $settings );
+	}
+
+	/**
+	 * Stat 差分検知(v0.5)が有効かどうかを返す.
+	 *
+	 * @return bool
+	 */
+	public static function get_stat_detection_enabled() {
+		$settings = self::get_all();
+
+		return (bool) $settings['stat_detection'];
+	}
+
+	/**
+	 * Stat 差分検知の有効・無効を保存する.
+	 *
+	 * @param bool $enabled true で有効化.
+	 * @return bool `update_option()`/`update_site_option()` の戻り値.
+	 */
+	public static function update_stat_detection_enabled( $enabled ) {
+		$settings = self::get_all();
+
+		$settings['stat_detection'] = (bool) $enabled;
+
+		return self::write_option( $settings );
+	}
+
+	/**
+	 * アラートの宛先(v0.5後半 §Step14)を返す.
+	 *
+	 * 保存時に`parse_email_list()`で検証済みだが、option を直接書き換えられた場合にも
+	 * 不正な値を宛先に使わないよう、読み取り時にも同じ関数で検証し直す.
+	 *
+	 * @return string[] 重複なしのメールアドレス一覧(未設定なら空配列).
+	 */
+	public static function get_alert_to() {
+		// `get_all()`(docblock上は`alert_to`が`string[]`)ではなく生の値から読む.
+		// option が配列以外に書き換えられていても安全に空として扱うため.
+		$stored   = self::read_option();
+		$alert_to = is_array( $stored ) && isset( $stored['alert_to'] ) && is_array( $stored['alert_to'] ) ? $stored['alert_to'] : array();
+
+		return self::parse_email_list( implode( "\n", array_map( 'strval', $alert_to ) ) );
+	}
+
+	/**
+	 * アラートの宛先を保存する.
+	 *
+	 * @param string $raw 設定画面のテキストエリアの値(改行・`,`・`;` 区切り).
+	 * @return bool `update_option()`/`update_site_option()` の戻り値.
+	 */
+	public static function update_alert_to( $raw ) {
+		$settings = self::get_all();
+
+		$settings['alert_to'] = self::parse_email_list( $raw );
+
+		return self::write_option( $settings );
+	}
+
+	/**
+	 * 改行・`,`・`;` 区切りの文字列をメールアドレスの一覧にする.
+	 *
+	 * WPMAR `WPMAR_Settings::parse_email_list()`(wp-maintenance-audit-reporter
+	 * `includes/class-wpmar-settings.php`)からの移植(プラン §0.3). 分割 →
+	 * `sanitize_email()` → `is_email()` → 重複除去の順で、WPMAR と同じ結果になる.
+	 * テストも WPMAR の`SettingsTest`と同じ入力をそろえている(将来の共有ライブラリ化に
+	 * 備えるため. 挙動を変えるときは WPMAR 側との食い違いに注意すること).
+	 *
+	 * @param string $raw 入力.
+	 * @return string[] 重複なしのメールアドレス一覧.
+	 */
+	public static function parse_email_list( $raw ) {
+		$parts = preg_split( '/[\r\n,;]+/', (string) $raw, -1, PREG_SPLIT_NO_EMPTY );
+
+		if ( ! is_array( $parts ) ) {
+			return array();
+		}
+
+		$list = array();
+
+		foreach ( $parts as $part ) {
+			$clean = sanitize_email( trim( $part ) );
+
+			if ( is_email( $clean ) ) {
+				$list[] = $clean;
+			}
+		}
+
+		return array_values( array_unique( $list ) );
 	}
 
 	/**

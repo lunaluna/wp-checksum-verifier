@@ -167,4 +167,106 @@ class PageFindingsTest extends TestCase {
 
 		$this->assertInstanceOf( 'WP_Error', $data );
 	}
+
+	/**
+	 * `format_detail()` が stat_changed の前回値→今回値を、変わった項目だけ短い文にすることを
+	 * 確認する(v0.5 §Step8).
+	 *
+	 * @return void
+	 */
+	public function test_format_detail_describes_changed_stat_values() {
+		$text = WPCV_Page_Findings::format_detail(
+			array(
+				'detail' => wp_json_encode(
+					array(
+						'size'      => array(
+							'old' => 4021,
+							'new' => 4160,
+						),
+						'ctime'     => array(
+							'old' => 1757000000,
+							'new' => 1757600000,
+						),
+						'mtime'     => array(
+							'old' => 1740000000,
+							'new' => 1740000000,
+						),
+						'timestomp' => true,
+					)
+				),
+			)
+		);
+
+		$this->assertStringContainsString( 'size: 4021 → 4160', $text );
+		$this->assertStringContainsString( 'ctime: 2025-09-04 15:33:20 → 2025-09-11 14:13:20', $text );
+		$this->assertStringNotContainsString( 'mtime:', $text );
+		$this->assertStringContainsString( 'timestamp forgery', $text );
+	}
+
+	/**
+	 * まとめた finding は件数と代表パスを、detail を持たない finding は空文字を返すことを
+	 * 確認する(v0.5 §Step8).
+	 *
+	 * @return void
+	 */
+	public function test_format_detail_for_rollup_and_empty_detail() {
+		$text = WPCV_Page_Findings::format_detail(
+			array(
+				'detail' => wp_json_encode(
+					array(
+						'rollup'        => true,
+						'count'         => 24,
+						'added'         => 0,
+						'files_scanned' => 26,
+						'sample_paths'  => array( 'a.php', 'b.php' ),
+					)
+				),
+			)
+		);
+
+		$this->assertStringContainsString( '24 of 26 files changed', $text );
+		$this->assertStringContainsString( 'a.php, b.php', $text );
+		$this->assertSame( '', WPCV_Page_Findings::format_detail( array( 'detail' => null ) ) );
+		$this->assertSame( '', WPCV_Page_Findings::format_detail( array() ) );
+	}
+
+	/**
+	 * `format_diff_state()` が §1.1 の表の全行どおりに表示文字列を組み立てることを
+	 * 確認する(v0.5後半 §16).
+	 *
+	 * @return void
+	 */
+	public function test_format_diff_state_covers_all_table_rows() {
+		// new / notified_at無し.
+		$this->assertSame( 'new', WPCV_Page_Findings::format_diff_state( array( 'diff_state' => 'new', 'notified_at' => null ) ) );
+
+		// new / notified_atあり.
+		$this->assertSame(
+			'new (emailed 2026-09-28 00:00:00)',
+			WPCV_Page_Findings::format_diff_state( array( 'diff_state' => 'new', 'notified_at' => '2026-09-28 00:00:00' ) )
+		);
+
+		// continuing / notified_at無し.
+		$this->assertSame( 'continuing', WPCV_Page_Findings::format_diff_state( array( 'diff_state' => 'continuing', 'notified_at' => null ) ) );
+
+		// continuing / notified_atあり(前回の送信失敗により今回送り直した行).
+		$this->assertSame(
+			'continuing (emailed 2026-09-28 00:00:00)',
+			WPCV_Page_Findings::format_diff_state( array( 'diff_state' => 'continuing', 'notified_at' => '2026-09-28 00:00:00' ) )
+		);
+
+		// event / notified_at無し・あり.
+		$this->assertSame( 'event', WPCV_Page_Findings::format_diff_state( array( 'diff_state' => 'event', 'notified_at' => null ) ) );
+		$this->assertSame(
+			'event (emailed 2026-09-28 00:00:00)',
+			WPCV_Page_Findings::format_diff_state( array( 'diff_state' => 'event', 'notified_at' => '2026-09-28 00:00:00' ) )
+		);
+
+		// diff_stateが無い(NULL. 差分処理がまだの run・失敗した run・v4より前の run・抑制).
+		$this->assertSame( '—', WPCV_Page_Findings::format_diff_state( array( 'diff_state' => null, 'notified_at' => null ) ) );
+		$this->assertSame( '—', WPCV_Page_Findings::format_diff_state( array() ) );
+
+		// 未知の値はそのまま出す(target_run_reason_label()と同じ方針).
+		$this->assertSame( 'some_future_state', WPCV_Page_Findings::format_diff_state( array( 'diff_state' => 'some_future_state', 'notified_at' => null ) ) );
+	}
 }

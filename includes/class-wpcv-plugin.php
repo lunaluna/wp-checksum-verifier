@@ -39,6 +39,10 @@ if ( ! defined( 'ABSPATH' ) ) {
  * v0.4.0 §Step6で `sync_dispatcher()` を公開アクセサとして切り出し、
  * `WPCV_Rest_Run_Controller` の外部HTTP時間予算ループからも共有するようにした
  * (`sync_dispatcher()` のdocblock参照).
+ *
+ * v0.5後半 §Step12で `diff_dispatcher()` を追加し、`build_dispatcher()` が
+ * 組み立てる `WPCV_Chunk_Dispatcher`(AS向け・同期ループ向けの両方)に注入する
+ * ようにした(`diff_dispatcher()` のdocblock参照).
  */
 class WPCV_Plugin {
 
@@ -88,12 +92,28 @@ class WPCV_Plugin {
 	private static $suppression_repository = null;
 
 	/**
+	 * 組み立て済みの `WPCV_File_State_Repository`(1リクエスト内で使い回す。
+	 * v0.5 §Step2で追加).
+	 *
+	 * @var WPCV_File_State_Repository|null
+	 */
+	private static $file_state_repository = null;
+
+	/**
 	 * 組み立て済みの `WPCV_Chunk_Dispatcher`(1リクエスト内で使い回す。
 	 * v0.4.0 §Step4で追加).
 	 *
 	 * @var WPCV_Chunk_Dispatcher|null
 	 */
 	private static $chunk_dispatcher = null;
+
+	/**
+	 * 組み立て済みの `WPCV_Diff_Dispatcher`(1リクエスト内で使い回す。
+	 * v0.5後半 §Step12で追加).
+	 *
+	 * @var WPCV_Diff_Dispatcher|null
+	 */
+	private static $diff_dispatcher = null;
 
 	/**
 	 * Continuation schedulerをno-opにした `WPCV_Chunk_Dispatcher`(1リクエスト内で
@@ -103,6 +123,23 @@ class WPCV_Plugin {
 	 * @var WPCV_Chunk_Dispatcher|null
 	 */
 	private static $sync_dispatcher = null;
+
+	/**
+	 * 組み立て済みの `WPCV_Alert_Sender`(1リクエスト内で使い回す。
+	 * v0.5後半 §Step14で追加. この時点ではまだどこからも呼ばれない ―― 配線は
+	 * Step14cで`alerting`段階から行う).
+	 *
+	 * @var WPCV_Alert_Sender|null
+	 */
+	private static $alert_sender = null;
+
+	/**
+	 * 組み立て済みの `WPCV_Run_Failure_Alerter`(1リクエスト内で使い回す。
+	 * v0.5後半 §Step15aで追加).
+	 *
+	 * @var WPCV_Run_Failure_Alerter|null
+	 */
+	private static $run_failure_alerter = null;
 
 	/**
 	 * 本番用に配線された `WPCV_Run_Coordinator` を返す.
@@ -171,7 +208,7 @@ class WPCV_Plugin {
 		if ( null === self::$chunk_result_repository ) {
 			global $wpdb;
 
-			self::$chunk_result_repository = new WPCV_Chunk_Result_Repository( $wpdb, self::target_run_repository(), self::finding_repository(), self::suppression_repository() );
+			self::$chunk_result_repository = new WPCV_Chunk_Result_Repository( $wpdb, self::target_run_repository(), self::finding_repository(), self::suppression_repository(), self::file_state_repository() );
 		}
 
 		return self::$chunk_result_repository;
@@ -193,6 +230,21 @@ class WPCV_Plugin {
 	}
 
 	/**
+	 * 本番用に配線された `WPCV_File_State_Repository` を返す(v0.5 §Step2).
+	 *
+	 * @return WPCV_File_State_Repository
+	 */
+	public static function file_state_repository() {
+		if ( null === self::$file_state_repository ) {
+			global $wpdb;
+
+			self::$file_state_repository = new WPCV_File_State_Repository( $wpdb );
+		}
+
+		return self::$file_state_repository;
+	}
+
+	/**
 	 * 本番用に配線された `WPCV_Chunk_Dispatcher` を返す(v0.4.0 §Step4).
 	 *
 	 * @return WPCV_Chunk_Dispatcher
@@ -203,6 +255,30 @@ class WPCV_Plugin {
 		}
 
 		return self::$chunk_dispatcher;
+	}
+
+	/**
+	 * 本番用に配線された `WPCV_Diff_Dispatcher` を返す(v0.5後半 §Step12).
+	 *
+	 * `chunk_dispatcher()`/`sync_dispatcher()`の両方が(`build_dispatcher()`経由で)
+	 * 同じインスタンスを共有する(差分処理には`WPCV_Chunk_Dispatcher`のような
+	 * AS向け/同期ループ向けの使い分けが無いため。`WPCV_Diff_Dispatcher`のクラス
+	 * docblock「独自のcontinuation schedulerを持たない」参照).
+	 *
+	 * @return WPCV_Diff_Dispatcher
+	 */
+	public static function diff_dispatcher() {
+		if ( null === self::$diff_dispatcher ) {
+			self::$diff_dispatcher = new WPCV_Diff_Dispatcher(
+				self::run_repository(),
+				self::target_run_repository(),
+				self::finding_repository(),
+				self::file_state_repository(),
+				self::alert_sender()
+			);
+		}
+
+		return self::$diff_dispatcher;
 	}
 
 	/**
@@ -224,6 +300,52 @@ class WPCV_Plugin {
 		}
 
 		return self::$sync_dispatcher;
+	}
+
+	/**
+	 * 本番用に配線された `WPCV_Alert_Sender` を返す(v0.5後半 §Step14).
+	 *
+	 * @return WPCV_Alert_Sender
+	 */
+	public static function alert_sender() {
+		if ( null === self::$alert_sender ) {
+			self::$alert_sender = new WPCV_Alert_Sender(
+				self::run_repository(),
+				self::target_run_repository(),
+				self::finding_repository()
+			);
+		}
+
+		return self::$alert_sender;
+	}
+
+	/**
+	 * 本番用に配線された `WPCV_Run_Failure_Alerter` を返す(v0.5後半 §Step15a).
+	 *
+	 * @return WPCV_Run_Failure_Alerter
+	 */
+	public static function run_failure_alerter() {
+		if ( null === self::$run_failure_alerter ) {
+			self::$run_failure_alerter = new WPCV_Run_Failure_Alerter( self::run_repository(), self::alert_sender() );
+		}
+
+		return self::$run_failure_alerter;
+	}
+
+	/**
+	 * `wpcv_run_terminated`フックのハンドラ(v0.5後半 §Step15a.
+	 * `WPCV_Run_Failure_Alerter`が実際の判定・送信を行う.
+	 * `includes/runners/class-wpcv-run-failure-alerter.php`の末尾で登録する.
+	 * `dispatch_chunk()`と同じ理由〔クラスdocblock参照〕で、フック登録時点では
+	 * `WPCV_Plugin`自身がまだ定義されていなくても構わない ―― 実際に呼ばれるのは
+	 * runが終端に達した時点であり、その時点ではすべて読み込み済みのため).
+	 *
+	 * @param int    $run_id 終端に達した run の id.
+	 * @param string $status 遷移後の `wpcv_runs.status`.
+	 * @return void
+	 */
+	public static function handle_run_terminated( $run_id, $status ) {
+		self::run_failure_alerter()->handle( (int) $run_id, (string) $status );
 	}
 
 	/**
@@ -256,7 +378,7 @@ class WPCV_Plugin {
 	 */
 	private static function build_run_coordinator() {
 		return new WPCV_Run_Coordinator(
-			new WPCV_Run_Planner( self::suppression_repository() ),
+			new WPCV_Run_Planner( self::suppression_repository(), WPCV_Settings::get_stat_detection_enabled() ),
 			self::run_repository(),
 			self::target_run_repository(),
 			self::sync_dispatcher()
@@ -284,7 +406,10 @@ class WPCV_Plugin {
 			new WPCV_Source_Wporg_Plugin(),
 			new WPCV_Unknown_File_Scanner(),
 			null,
-			$continuation_scheduler
+			$continuation_scheduler,
+			null,
+			self::file_state_repository(),
+			self::diff_dispatcher()
 		);
 	}
 

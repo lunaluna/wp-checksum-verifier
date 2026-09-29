@@ -22,6 +22,18 @@ if ( ! function_exists( 'esc_html' ) ) {
 	}
 }
 
+if ( ! function_exists( 'esc_attr' ) ) {
+	/**
+	 * Stub esc_attr(v0.5後半 §Step14d. `WPCV_Admin_Notices`が使う).
+	 *
+	 * @param string $text Text.
+	 * @return string
+	 */
+	function esc_attr( $text ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return htmlspecialchars( (string) $text, ENT_QUOTES );
+	}
+}
+
 if ( ! function_exists( '__' ) ) {
 	/**
 	 * Stub __() — 翻訳せずそのまま返す(テストは文言の内容ではなく分岐ロジックだけを
@@ -182,6 +194,21 @@ if ( ! function_exists( 'wp_remote_retrieve_response_code' ) ) {
 	}
 }
 
+if ( ! function_exists( 'wp_json_encode' ) ) {
+	/**
+	 * Stub wp_json_encode() — plain json_encode() (the real one only adds charset
+	 * sanity checks, which are irrelevant for the ASCII/integer payloads under test).
+	 *
+	 * @param mixed $data    Data to encode.
+	 * @param int   $options json_encode() options.
+	 * @param int   $depth   Maximum depth.
+	 * @return string|false
+	 */
+	function wp_json_encode( $data, $options = 0, $depth = 512 ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return json_encode( $data, $options, $depth ); // phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
+	}
+}
+
 if ( ! function_exists( 'apply_filters' ) ) {
 	/**
 	 * Stub apply_filters() — returns $value unchanged unless a callback is
@@ -292,6 +319,33 @@ if ( ! function_exists( 'add_action' ) ) {
 	}
 }
 
+if ( ! function_exists( 'do_action' ) ) {
+	/**
+	 * Stub do_action() — records the call in
+	 * $GLOBALS['_wpcv_test_do_action_calls'][$hook][] and actually invokes any
+	 * callbacks registered via the add_action() stub above (mirrors the real
+	 * do_action()'s behavior, so tests can assert on both "was the hook fired"
+	 * and "did the registered handler actually run").
+	 *
+	 * @param string $hook Hook name.
+	 * @param mixed  ...$args Arguments passed to the hook.
+	 * @return void
+	 */
+	function do_action( $hook, ...$args ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_do_action_calls'][ $hook ][] = $args;
+
+		if ( empty( $GLOBALS['_wpcv_test_added_actions'][ $hook ] ) ) {
+			return;
+		}
+
+		foreach ( $GLOBALS['_wpcv_test_added_actions'][ $hook ] as $registration ) {
+			list( $callback, , $accepted_args ) = $registration;
+
+			call_user_func_array( $callback, array_slice( $args, 0, (int) $accepted_args ) );
+		}
+	}
+}
+
 if ( ! function_exists( 'as_enqueue_async_action' ) ) {
 	/**
 	 * Stub as_enqueue_async_action() — records the call in
@@ -376,6 +430,48 @@ if ( ! defined( 'DAY_IN_SECONDS' ) ) {
 
 if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
 	define( 'HOUR_IN_SECONDS', 3600 );
+}
+
+if ( ! class_exists( 'WP_Screen' ) ) {
+	/**
+	 * Minimal stub of WP_Screen — `get_current_screen()`が返すオブジェクトの
+	 * `id`プロパティだけを持つ(v0.5後半 §Step14d. `WPCV_Admin_Notices`が
+	 * 画面判定に使う).
+	 */
+	class WP_Screen {
+
+		/**
+		 * 画面id(`toplevel_page_wpcv-settings`等).
+		 *
+		 * @var string
+		 */
+		public $id;
+
+		/**
+		 * コンストラクタ.
+		 *
+		 * @param string $id 画面id.
+		 */
+		public function __construct( $id ) {
+			$this->id = $id;
+		}
+	}
+}
+
+if ( ! function_exists( 'get_current_screen' ) ) {
+	/**
+	 * Stub get_current_screen() — `$GLOBALS['_wpcv_test_current_screen_id']`が
+	 * 設定されていればその`WP_Screen`を、無ければ`null`を返す(v0.5後半 §Step14d).
+	 *
+	 * @return WP_Screen|null
+	 */
+	function get_current_screen() { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		if ( ! isset( $GLOBALS['_wpcv_test_current_screen_id'] ) ) {
+			return null;
+		}
+
+		return new WP_Screen( $GLOBALS['_wpcv_test_current_screen_id'] );
+	}
 }
 
 if ( ! function_exists( 'is_multisite' ) ) {
@@ -666,6 +762,57 @@ if ( ! function_exists( 'sanitize_text_field' ) ) {
 	}
 }
 
+if ( ! function_exists( 'wp_specialchars_decode' ) ) {
+	/**
+	 * Stub wp_specialchars_decode() — PHP標準の`htmlspecialchars_decode()`で代用する
+	 * (`WPCV_Alert_Composer`が件名のサイト名に使う. v0.5後半 §Step13).
+	 *
+	 * @param string     $text        入力値.
+	 * @param string|int $quote_style 本番と同じく`ENT_QUOTES`等.
+	 * @return string
+	 */
+	function wp_specialchars_decode( $text, $quote_style = ENT_NOQUOTES ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return htmlspecialchars_decode( (string) $text, (int) $quote_style );
+	}
+}
+
+if ( ! function_exists( 'sanitize_email' ) ) {
+	/**
+	 * Stub sanitize_email() — WPMAR の tests/wp-stubs.php と同じく前後の空白を除くだけ
+	 * (`WPCV_Settings::parse_email_list()`のテストを WPMAR と同じ条件にそろえるため).
+	 *
+	 * @param string $email 入力値.
+	 * @return string
+	 */
+	function sanitize_email( $email ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return trim( (string) $email );
+	}
+}
+
+if ( ! function_exists( 'is_email' ) ) {
+	/**
+	 * Stub is_email() — WPMAR の tests/wp-stubs.php と同じく`FILTER_VALIDATE_EMAIL`で判定する.
+	 *
+	 * @param string $email 入力値.
+	 * @return bool
+	 */
+	function is_email( $email ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return false !== filter_var( (string) $email, FILTER_VALIDATE_EMAIL );
+	}
+}
+
+if ( ! function_exists( 'sanitize_textarea_field' ) ) {
+	/**
+	 * Stub sanitize_textarea_field() — タグを除き、改行は残す(本番と同じ性質だけを模す).
+	 *
+	 * @param string $value 入力値.
+	 * @return string
+	 */
+	function sanitize_textarea_field( $value ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return trim( strip_tags( (string) $value ) );
+	}
+}
+
 if ( ! function_exists( 'wp_strip_all_tags' ) ) {
 	/**
 	 * Stub wp_strip_all_tags().
@@ -877,5 +1024,91 @@ if ( ! class_exists( 'WP_CLI' ) ) {
 		public static function line( $message = '' ) {
 			$GLOBALS['_wpcv_test_wp_cli_calls']['line'][] = $message;
 		}
+	}
+}
+
+if ( ! function_exists( 'remove_action' ) ) {
+	/**
+	 * Stub remove_action() — `add_action()`スタブが
+	 * `$GLOBALS['_wpcv_test_added_actions'][$hook]`に積んだ登録から、`$callback`
+	 * (`===`一致. クロージャは同一変数を渡す前提)と`$priority`が一致するものを
+	 * unsetする(v0.5後半 §Step14. `WPCV_Alert_Sender`のwp_mail_failedハンドラ解除用).
+	 *
+	 * @param string   $hook     Hook name.
+	 * @param callable $callback Callback.
+	 * @param int      $priority Priority.
+	 * @return true
+	 */
+	function remove_action( $hook, $callback, $priority = 10 ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		if ( empty( $GLOBALS['_wpcv_test_added_actions'][ $hook ] ) ) {
+			return true;
+		}
+
+		foreach ( $GLOBALS['_wpcv_test_added_actions'][ $hook ] as $index => $registration ) {
+			if ( $registration[0] === $callback && (int) $registration[1] === (int) $priority ) {
+				unset( $GLOBALS['_wpcv_test_added_actions'][ $hook ][ $index ] );
+			}
+		}
+
+		return true;
+	}
+}
+
+if ( ! function_exists( 'wp_mail' ) ) {
+	/**
+	 * Stub wp_mail() — 呼び出しを$GLOBALS['_wpcv_test_wp_mail_calls'][]に記録する.
+	 * `$GLOBALS['_wpcv_test_wp_mail_trigger_failed']`が(nullでなく)設定されていれば、
+	 * 返す前に`do_action( 'wp_mail_failed', ... )`を呼ぶ(実際のwp_mail()が
+	 * PHPMailerの例外時に`wp_mail_failed`を発火する挙動を模す).戻り値は
+	 * `$GLOBALS['_wpcv_test_wp_mail_return']`(既定true. v0.5後半 §Step14).
+	 *
+	 * @param string|string[] $to          宛先.
+	 * @param string          $subject     件名.
+	 * @param string          $message     本文.
+	 * @param string|string[] $headers     ヘッダー.
+	 * @param string|string[] $attachments 添付.
+	 * @return bool
+	 */
+	function wp_mail( $to, $subject, $message, $headers = '', $attachments = array() ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_wp_mail_calls'][] = array(
+			'to'          => $to,
+			'subject'     => $subject,
+			'message'     => $message,
+			'headers'     => $headers,
+			'attachments' => $attachments,
+		);
+
+		if ( array_key_exists( '_wpcv_test_wp_mail_trigger_failed', $GLOBALS ) && null !== $GLOBALS['_wpcv_test_wp_mail_trigger_failed'] ) {
+			do_action( 'wp_mail_failed', $GLOBALS['_wpcv_test_wp_mail_trigger_failed'] );
+		}
+
+		return array_key_exists( '_wpcv_test_wp_mail_return', $GLOBALS ) ? $GLOBALS['_wpcv_test_wp_mail_return'] : true;
+	}
+}
+
+if ( ! function_exists( 'admin_url' ) ) {
+	/**
+	 * Stub admin_url() — 固定の `http://example.com/wp-admin/` + $path を返す
+	 * (v0.5後半 §Step14. 実際のURLの形は問わない).
+	 *
+	 * @param string $path 相対パス.
+	 * @return string
+	 */
+	function admin_url( $path = '' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return 'http://example.com/wp-admin/' . ltrim( $path, '/' );
+	}
+}
+
+if ( ! function_exists( 'network_admin_url' ) ) {
+	/**
+	 * Stub network_admin_url() — 固定の `http://example.com/wp-admin/network/` + $path
+	 * を返す(v0.5後半 §Step14. マルチサイト分岐の確認は`is_multisite()`スタブの
+	 * 切り替えで行う).
+	 *
+	 * @param string $path 相対パス.
+	 * @return string
+	 */
+	function network_admin_url( $path = '' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return 'http://example.com/wp-admin/network/' . ltrim( $path, '/' );
 	}
 }

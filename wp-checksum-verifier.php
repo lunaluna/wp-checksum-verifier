@@ -3,7 +3,7 @@
  * Plugin Name:       WP Checksum Verifier
  * Plugin URI:        https://github.com/lunaluna/wp-checksum-verifier
  * Description:       WordPress コア・プラグイン・テーマ・MU プラグインの checksum を日次で検証し、改ざんを検出するプラグイン.
- * Version:           0.4.0
+ * Version:           0.5.0
  * Requires at least: 6.8
  * Tested up to:      7.1
  * Requires PHP:      7.4
@@ -27,8 +27,22 @@ if ( ! defined( 'ABSPATH' ) ) {
  *
  * チャンク分割実行・run deadline・抑制ルール参照のための列を runs/target_runs/
  * findingsへ追加したため、v0.4.0 §Step1で2へ更新した(`WPCV_Migrator::table_definitions()` 参照).
+ *
+ * stat 差分検知(rev.3 §3.3)用の `wpcv_file_states` テーブル新設と、
+ * `wpcv_findings.detail` 列の追加のため、v0.5 §4.2 Step1で3へ更新した.
+ *
+ * 差分検出基盤・アラート(v0.5後半プラン §1)用に、runs/target_runs/findingsへ
+ * finding_key・diff_state・diff_status等の列とインデックスを追加したため、
+ * v0.5後半 §Step10で4へ更新した.
+ *
+ * Step12の実地検証(test-armfu.local、1万・10万件規模)で、
+ * `WPCV_Finding_Repository::find_batch_by_target_run()`/`find_baseline_batch()`
+ * (`WHERE target_run_id=? AND id>? ORDER BY id ASC LIMIT ?`)が
+ * `(target_run_id, finding_key)`しか無いためPRIMARY(id)スキャンになり、
+ * テーブル全体の件数に比例してコストが増える性能上の懸念が見つかったため、
+ * `(target_run_id, id)`の複合indexを追加してv0.5後半 §Step12で5へ更新した.
  */
-define( 'WPCV_DB_VERSION', 2 );
+define( 'WPCV_DB_VERSION', 5 );
 
 /**
  * Public API contract のバージョン. 後方互換を維持する契約(§10).
@@ -107,6 +121,12 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-run-statu
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-target-status.php';
 
 /**
+ * `wpcv_runs.diff_status` の状態定数(v0.5後半 §Step12). `WPCV_Run_Repository` が
+ * 参照するため、他のstatus定数クラスと同じ位置(Repository群より前)に置く.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-diff-status.php';
+
+/**
  * 抑制ルールのtype定数(v0.4.0 §Step8). `WPCV_Suppression_Repository`/
  * `WPCV_Run_Planner` 等より前に読み込む必要がある.
  */
@@ -138,6 +158,12 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-unknown-f
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-verifier.php';
 
 /**
+ * Stat差分検知(rev.3 §3)の負荷実測ロジック(v0.5 §4.2 Step4)。
+ * `WPCV_Unknown_File_Scanner` に依存するため、その後に読み込む.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-stat-bench.php';
+
+/**
  * Chunk分割実行のための決定的な順序付け・fingerprint計算とchunk単位の検証本体
  * (v0.4.0 §Step3). `WPCV_Chunk_Dispatcher`(§Step4)が呼び出し元.
  */
@@ -149,6 +175,26 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-chunk-ver
  * `WPCV_Chunk_Result_Repository` が呼び出し元のため先に読み込む.
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-suppression-matcher.php';
+
+/**
+ * `finding` の差分キー計算(v0.5後半 §Step10). `WPCV_Finding_Repository::save_findings()`
+ * が呼び出し元のため先に読み込む.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-finding-key.php';
+
+/**
+ * 世代比較(NEW/CONTINUING/RESOLVED)の判定ロジック(v0.5後半 §Step11. DBに触れない
+ * 純粋ロジック). 差分処理の実行(Step12以降)が呼び出し元になる予定だが、
+ * `WPCV_Target_Status`/`WPCV_Error_Code` に依存するため、それらより後・
+ * 差分処理本体より前のこの位置で読み込む.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-generation-differ.php';
+
+/**
+ * アラートメールの件名・本文の組み立て(v0.5後半 §Step13. DBに触れない純粋ロジック).
+ * `WPCV_Target_Resolver`/`WPCV_Target_Status` に依存するため、それらより後に読み込む.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-alert-composer.php';
 
 /**
  * DB 永続化層(§4.2. v0.4.0 §Step1でrun/target_run/findingの3責務に分割)と、
@@ -163,6 +209,13 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-finding-reposito
  * `WPCV_Chunk_Result_Repository`・`WPCV_Run_Planner` より前に読み込む必要がある.
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-suppression-repository.php';
+
+/**
+ * Stat差分検知(rev.3 §3)のベースライン(`wpcv_file_states`)の永続化層
+ * (v0.5 §4.2 Step2)。他クラスからの依存はまだ無いため読み込み順の制約は無いが、
+ * 他のRepository群と同じ場所にまとめる.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-file-state-repository.php';
 
 /**
  * Chunk結果(cursor更新とfindings保存)をtransactionで確定する調整役(v0.4.0 §Step3).
@@ -182,6 +235,30 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-run-plan
  * がコンストラクタで型宣言するため先に読み込む必要がある.
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-chunk-dispatcher.php';
+
+/**
+ * 差分処理(v0.5後半 §Step12)のdispatcher。`WPCV_Generation_Differ`
+ * (`determine_diff_mode()`等)に依存するため、それより後に読み込む必要がある.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-diff-dispatcher.php';
+
+/**
+ * アラートの送信(v0.5後半 §Step14). `WPCV_Alert_Composer`(本文組み立て)・
+ * `WPCV_Generation_Differ`(通知要否の判定)・`WPCV_Run_Repository`/
+ * `WPCV_Target_Run_Repository`/`WPCV_Finding_Repository`に依存するため、
+ * いずれもそれより後に読み込む必要がある. このStep時点ではまだどこからも
+ * 呼ばれない(配線はStep14cで`alerting`段階から行う).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-alert-sender.php';
+
+/**
+ * Run の連続失敗アラート(v0.5後半 §Step15a)。`wpcv_run_terminated`フックの
+ * ハンドラをファイル末尾で登録するため、`WPCV_Run_Repository`(フックの発火元)・
+ * `WPCV_Alert_Sender`(送信先)より後に読み込む必要がある。`WPCV_Plugin`本体は
+ * まだ読み込まれていないが、フック登録は `array( 'WPCV_Plugin', ... )` という
+ * 遅延解決の形のため問題ない(`WPCV_Chunk_Dispatcher::HOOK` の登録と同じ理由).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-run-failure-alerter.php';
 
 /**
  * Run開始時の「列挙(plan)→保存」を失敗時の後始末込みで行う共通処理
@@ -248,6 +325,7 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/functions-api.php';
  */
 if ( defined( 'WP_CLI' ) && WP_CLI ) {
 	require_once plugin_dir_path( __FILE__ ) . 'includes/cli/class-wpcv-cli-command.php';
+	require_once plugin_dir_path( __FILE__ ) . 'includes/cli/class-wpcv-cli-bench-stat-command.php';
 }
 
 /**
@@ -258,6 +336,9 @@ if ( is_admin() ) {
 	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-page-run-history.php';
 	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-page-findings.php';
 	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-page-suppressions.php';
+	// v0.5後半 §Step14d: アラートの管理画面通知(§2.5). `WPCV_Admin_Menu`が
+	// `register()`を呼ぶため、それより先に読み込む必要がある.
+	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-admin-notices.php';
 	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-admin-menu.php';
 	WPCV_Admin_Menu::register();
 }

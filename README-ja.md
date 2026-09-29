@@ -4,12 +4,14 @@ WordPress のコア・プラグイン・MU プラグインの checksum を検証
 プラグイン。公式の checksum マニフェスト(wp.org のコア/プラグイン checksum)と
 実ファイルを突き合わせ、どのマニフェストにも存在しない未知のファイルも報告する。
 
-> **ステータス**: v0.4.0。検証エンジン、計画していた全ての実行モデル
+> **ステータス**: v0.5.0。検証エンジン、計画していた全ての実行モデル
 > (WP-CLI・WP-Cron・管理画面の「今すぐ実行」ボタン・REST API)、resume対応の
 > ファイル単位分割実行、抑制エンジン(`exclude_target`/`exclude_path`/
-> `allowlist_hash`とstrict mode)、検出結果・抑制一覧・実行履歴の管理画面を
-> 実装済み。公式テーマの照合と、GitHub Releases 上の非公式プラグイン/テーマの
-> 照合はまだ未実装。詳細は `CHANGELOG.md` を参照.
+> `allowlist_hash`とstrict mode)、公式checksumの無いプラグイン向けのstat
+> 差分検知、差分検知に基づくメールアラート(下記「アラート」参照)、
+> 検出結果・抑制一覧・実行履歴の管理画面を実装済み。公式テーマの照合と、
+> GitHub Releases 上の非公式プラグイン/テーマの照合はまだ未実装。詳細は
+> `CHANGELOG.md` を参照.
 
 ## 検証対象
 
@@ -18,7 +20,40 @@ WordPress のコア・プラグイン・MU プラグインの checksum を検証
 - **MU プラグイン**: 公式の checksum ソースが存在しないため、未知ファイルの検出のみ行う.
 - **未知ファイル**: 上記いずれの対象についても、マニフェストに存在しないファイルは
   finding として報告する.
+- **公式 checksum の無いプラグイン**(独自・有料プラグイン、MU プラグインの loader):
+  stat 差分検知で変更を追跡する(下記).
 - 未実装: 公式テーマの照合、GitHub Releases 上の非公式プラグイン/テーマの照合.
+
+### stat 差分検知
+
+checksum で「正しいファイルか」を確かめられるのは、比べる公式の配布物がある場合だけです。
+配布物が無いプラグインについては、各ファイルのサイズ・ctime・mtime を記録し
+(`lstat()` を使うので symlink はたどらず、ファイルの中身も読みません)、前回の run から
+変わったものを報告します。確認すべきファイルを指し示すための機能で、変更が悪意によるものか
+どうかは判定しません.
+
+- **対象**: checksum の取得結果が「配布物が無い」(`manifest_not_found`・`unknown_source`・
+  `version_unknown`)だったプラグインと、MU プラグインの loader だけです。checksum で照合
+  できたプラグインは省略します(`checksum_covered`)。取得が一時的に失敗したプラグイン
+  (`http_error`・`rate_limited`)もその run では省略し、wordpress.org の障害で不意に
+  ベースラインが作られないようにしています。対象のプラグインごとに `plugin:{slug}:_stat`
+  (loader は `muplugin:{file}:_stat`)という target が追加され、抑制ルールは本体と共有します.
+- **初回**: ベースラインを記録するだけで、何も報告しません.
+- **finding**: `stat_changed`(サイズ・ctime・mtime のいずれかが変化。`detail` に前回値と
+  今回値が入る)、`added`(新しいファイル)、`missing`(ベースラインにあったファイルが消えた。
+  1回だけ報告し、ベースラインから外す)。サイズが変わったのに mtime が変わっていない場合は
+  タイムスタンプ擬装の疑いとして severity を `high` に上げます.
+- **プラグインの更新**: プラグインの version がベースライン作成時の version と違う場合、
+  変更を報告せずにベースラインを作り直し、target に `baseline_rebuilt` を記録します
+  (比較しなかった run であることが実行履歴から分かるようにするため).
+- **version を上げない大量変更**: 最大 500 ファイルの処理単位の中で、変更が 20 件以上かつ
+  比較したファイルの 50% 以上なら、プラグインのルートを path にした1件の `stat_changed` に
+  まとめます(タイムスタンプ擬装の疑いがある finding は常に個別に残します)。閾値は暫定値で、
+  `wpcv_stat_rollup_min_count`・`wpcv_stat_rollup_ratio` フィルターで変えられます.
+- **無効にする**: 設定画面の「Stat-based change detection」のチェックを外します(既定は有効)。
+  既存のベースラインは残るため、あとで有効に戻すと古いベースラインと比較します.
+- **既知の制限**: 同じサイズで書き換えて mtime も元に戻された場合も ctime で検出できますが、
+  擬装ではなく通常の `stat_changed` として報告されます.
 
 ## 検証の実行方法
 
@@ -141,7 +176,12 @@ read scopeのトークンが必要。`current_run`(進行中のrun。無けれ�
 (`queued`・`retry`・`running`・`success`・`unverifiable`・`failed`・
 `skipped`・`aborted`・`total`)・`findings_total`・`scheduled_for`・
 `deadline_at`・`last_activity_at`(最後にtargetがclaim・確定された時刻。
-進捗が止まったrunを見つけるのに使える)を含む.
+進捗が止まったrunを見つけるのに使える)・`diff_status`(runごとの差分処理の
+状態。開始前は`null`。下記「アラート」参照)・`findings_new`/
+`findings_resolved`/`findings_continuing`(数えるまで`null`のまま。0には
+しない ―― 「まだ数えていない」と「0件」を区別する)・`alert_status`/
+`alert_attempted_at` を含む。`alert_error` 等の内部の値はここには出ない
+(実行履歴の管理画面を参照).
 
 応答例:
 
@@ -161,7 +201,13 @@ read scopeのトークンが必要。`current_run`(進行中のrun。無けれ�
     "targets": {
       "queued": 0, "retry": 0, "running": 0, "success": 36,
       "unverifiable": 7, "failed": 0, "skipped": 0, "aborted": 0, "total": 43
-    }
+    },
+    "diff_status": "done",
+    "findings_new": 5,
+    "findings_resolved": 0,
+    "findings_continuing": 1,
+    "alert_status": "sent",
+    "alert_attempted_at": "2026-09-11T05:46:13+00:00"
   },
   "next_scheduled_at": "2026-09-12T05:45:00+00:00"
 }
@@ -170,13 +216,20 @@ read scopeのトークンが必要。`current_run`(進行中のrun。無けれ�
 #### `GET /findings`
 
 read scopeのトークンが必要。1つのrun(既定は最新run。`run_id`クエリ
-パラメータで指定も可能)のfindingsを返す。`dimension`・`status`・
-`severity`(単一値または配列。例: `dimension[]=core&dimension[]=plugin`。
+パラメータで指定も可能)のfindingsを返す。`dimension`・`status`(`stat_changed`を含む)・
+`severity`・`diff_state`(`new`/`continuing`/`event`。下記「アラート」参照)
+(単一値または配列。例: `dimension[]=core&dimension[]=plugin`。
 それぞれ固定のallowlist外の値を渡すと`400`)・`sort`/`order`
 (allowlistされた列のみ)・`page`/`per_page`(小さい既定値・上限あり)の
 pagination に対応する。suppressed・closedなfindingは既定で除外し、
 `include_suppressed=1`/`include_closed=1` で含められる。応答には
-`findings`・`run_id`・`page`・`per_page`・`total`・`total_pages` を含む.
+`findings`・`run_id`・`page`・`per_page`・`total`・`total_pages` を含む。
+各findingの`detail`は、stat差分検知のfindingでのみ前回値・今回値のサイズ/ctime/mtime
+(まとめたfindingでは変更件数と代表パス)をJSON文字列で持ち、それ以外は`null`。
+各findingは`finding_key`(runをまたいで同一性を判定するキー)・`diff_state`・
+`notified_at`(最後にメール済みの日時。無ければ`null`)・`ended_in_run_id`・
+`end_reason`も持つ ―— 差分処理がまだ触れていないfinding(進行中のrun・
+failed/abortedのrun・差分検知導入前のrunに属するもの)ではすべて`null`.
 
 応答例:
 
@@ -188,7 +241,9 @@ pagination に対応する。suppressed・closedなfindingは既定で除外し�
       "dimension": "plugin", "slug": "hello-dolly", "version": "1.7.2",
       "path": "readme.txt", "status": "modified", "severity": "low",
       "hash_algorithm": "sha256", "expected_hash": "...", "actual_hash": "...",
-      "suppressed_by": "soft_change", "suppression_id": null
+      "suppressed_by": "soft_change", "suppression_id": null,
+      "finding_key": "...", "diff_state": "new", "notified_at": "2026-09-11T05:46:13+00:00",
+      "ended_in_run_id": null, "end_reason": null
     }
   ],
   "run_id": 37,
@@ -199,34 +254,140 @@ pagination に対応する。suppressed・closedなfindingは既定で除外し�
 }
 ```
 
+## アラート
+
+このプラグインは毎回のrunを基準(baseline)と比較し、注目に値する変化が
+あればメールで要約を送る。比較は target(コア・各プラグイン・各MU
+プラグイン)ごとに行う ―— あるtargetの基準は、そのtarget自身の直近の
+検証成功runであり、他のtargetがどうなったかとは独立している.
+
+- **`new`** — finding の同一性(おおむね target + path + hash)が基準に
+  無かったもの.
+- **`continuing`** — 基準にもあり、今回も引き続き存在するfinding。本文
+  では個別に再掲せず、件数だけをまとめて表示する.
+- **`resolved`** — 基準にはあったが今回は無くなったfinding.
+- **`event`** — stat差分検知のfinding(上記参照)は常にこの扱いで、毎回
+  報告され、再送抑制もかからない。公式のマニフェストと比較しているわけ
+  ではないため、stat差分検知が検出した変化はその時点で常に新しい情報
+  だから.
+
+プラグインの更新それ自体は`new`のfindingを生まない: targetのversionが
+基準のversionと異なる場合、古い基準は捨てられ、findingは(何とも比較
+せずに)`version_changed`として扱われる ―— 新規追加として報告される
+ことはない。version変更後にstatのベースラインを作り直しただけのrunや、
+`version_changed`/`excluded`/抑制済みのfindingを終わらせただけのrunは、
+それ単独ではメールを送らない ―— 次に実際に送られるメールの
+「Not verified today」節に同封される.
+
+同じ同一性の`new`finding は最大でも7日に1回しか再送しない。解決と再発を
+繰り返すファイルがrunのたびにメールを溢れさせないようにするため。メール
+送信が失敗した場合、そのfindingは「通知済み」にせず、次回のrunで再送する
+―— このプラグインは「厳密に1回だけ送る」ではなく「少なくとも1回は送る」
+ことを目指している(一時的な失敗のあとの重複送信のほうが、黙って
+findingを取りこぼすより望ましい).
+
+通常のfindingが無くても、次の2つの状況ではメールを送る:
+
+- あるtargetが3回連続(既定。未実測)で`unverifiable`になった(例:
+  wp.orgのchecksum取得が繰り返し失敗している)場合 ―— 下記
+  `wpcv_alert_unverifiable_streak` フィルター参照.
+- プラグイン自身の検証runが3回連続(既定。未実測)で失敗・中断した場合
+  ―— 下記 `wpcv_alert_run_failure_streak` 参照。このアラートはrunが
+  `failed`/`aborted`で終端に達した時点で評価され、上記の差分処理とは
+  独立している.
+
+両方の連続アラートとも、連続が続いている間に毎回ではなく1回だけ発火する。
+純粋にrunの履歴から評価するため、連続が途切れて再び始まっても、特別に
+リセットする必要はない.
+
+**宛先とテスト送信**: 設定画面の **Alert recipients**(1行1アドレス)に
+1つ以上のアドレスを設定する。空のままだとメールは送られず、代わりに
+警告の通知が表示される(黙って何もしないのではなく)。実運用の前に
+**Send test alert** で宛先が正しいか確認できる ―— 結果は同じ画面に
+その場で表示される.
+
+**アラートで検知できないこと**: WP-Cron自体が発火しなくなった場合(例:
+`DISABLE_WP_CRON`が未設定でアクセスの少ないサイト、サイト自体がダウン
+している等)、runそのものが一切起きず、プラグインの内側からはこれを
+検知できない ―— それが懸念なら外部スケジューラーから`POST /run`
+(上記参照)を叩くこと.
+
+メール以外にも、`wpcv_alert_channels` フィルターで追加のチャネル
+(Slack・webhook等)を登録できる:
+
+```php
+add_filter( 'wpcv_alert_channels', function ( $channels, $context ) {
+    $channels[] = array(
+        'name' => 'my-webhook',
+        'send' => function ( $context ) {
+            // $context には type('diff'または'run_failure')・run_id・
+            // subject・body・件数・管理画面の検出結果画面URLが入る。
+            // alert_error・トークン・サーバーのファイルパスは含まれない.
+            return true; // 失敗時は false を返すか例外を投げる.
+        },
+    );
+    return $channels;
+}, 10, 2 );
+```
+
+チャネルは、プラグインが実際にメール送信を試みたとき(宛先未設定の
+ときは実行しない)にだけ実行される。1つのチャネルの失敗はメールや他の
+チャネルに影響せず、再送もしない。また、runが終端状態に達するたびに
+発火する `wpcv_run_terminated` アクション(`do_action(
+'wpcv_run_terminated', $run_id, $status )`)もあり、run完了に直接反応
+したい連携先向けに使える.
+
+数値の閾値は意図的に設定画面には出していない(未実測の既定値であり、
+変える理由がある場合のみ調整する)。フィルターで変更できる:
+
+| フィルター | 既定値 | 内容 |
+| --- | --- | --- |
+| `wpcv_alert_max_items` | 20 | メール本文にseverity順で載せる上位件数 |
+| `wpcv_alert_resend_days` | 7 | 解決後に再発したfindingを再送するまでの日数 |
+| `wpcv_alert_unverifiable_streak` | 3 | targetへのアラートに必要な連続unverifiable回数 |
+| `wpcv_alert_run_failure_streak` | 3 | アラートに必要な連続failed/aborted回数 |
+
 ## 管理画面
 
 設定画面(下記)に加えて、同じ「Checksum Verifier」トップレベルメニュー配下
 (マルチサイトではネットワーク管理画面)に3つの読み書き画面がある:
 
 - **検出結果(Findings)** — 直近run(または指定した`run_id`)のfindingsを、
-  `GET /findings`と同じ`dimension`/`status`/`severity`/suppressed/closed
-  フィルタ付きで表示する。各行から理由入力必須の3操作をワンクリックで
+  `GET /findings`と同じ`dimension`/`status`/`severity`/`diff_state`/
+  suppressed/closedフィルタ付きで表示する。**Diff**列に`new`/`continuing`/
+  `event`(通知済みなら日時を添えて`new (emailed 2026-09-11 05:46:13)`の
+  ように表示)、差分処理がまだ触れていないfindingはダッシュを表示する。
+  各行から理由入力必須の3操作をワンクリックで
   実行できる: **パス除外**(そのtarget・pathに限定した`exclude_path`
   ルールを作成)、**このhashを承認**(表示中のhash/versionをそのまま
   `allowlist_hash`ルールとして作成。`added`/`modified`のfinding ―— 承認
   対象となるhashを実際に持つもの ―— にのみ表示)、**targetごと除外**
   (そのプラグイン・コア・MUプラグインを次回run以降まるごと検証対象外に
   する`exclude_target`ルールを作成)。いずれも画面に表示中のfindingを
-  遡って書き換えることはなく、次回run以降から適用される.
+  遡って書き換えることはなく、次回run以降から適用される。stat差分検知の
+  findingは**Details**列に何が変わったか(サイズ・時刻の前回値→今回値、
+  またはまとめた件数)を表示する.
 - **抑制一覧(Suppressions)** — これまでに作成された全ての抑制ルール
   (3種別すべて)を、対象・理由・作成者・作成日時・(`allowlist_hash`のみ)
   承認済みversionとhashの先頭部分とともに表示する。有効なルールは
   (理由入力必須で)取消でき、削除ではなく取消として記録・併記される.
-- **実行履歴(Run History)** — 全runを新しい順に表示し、run詳細では
-  各targetの状態・`error_code`(`unverifiable`/`retry`/`aborted`/`skipped`
-  なtargetの理由を人間可読なラベルに変換したもの)・ファイル件数・
-  試行回数を確認できる.
+- **実行履歴(Run History)** — 全runを新しい順に表示し、一覧には**Diff**
+  (`+新規 / −解消 / =継続`、差分処理が進行中のrunでは`diff_status`の
+  生の値)・**Alert**(`sent`/`not_needed`/`no_recipient`/`failed`)列を
+  持つ。run詳細では各targetの状態・`error_code`(`unverifiable`/`retry`/
+  `aborted`/`skipped`なtargetの理由を人間可読なラベルに変換したもの)・
+  ファイル件数・試行回数・**Diff mode**列(上記「アラート」参照)を確認
+  できる。run単位の詳細にも差分・アラートの状態、アラートのエラーや
+  失敗したチャネル(あれば。管理画面限定 ―— RESTには一切出さない)、
+  その runのfindingsへのリンクを表示する。**Findings ended in this run**
+  節には、そのrunが解消・除外等で終わらせたfindingを一覧表示する
+  (解消を先頭に並べ、基準が大きいrunでもページ分けする).
 
 ## 設定
 
 設定画面(マルチサイトではネットワーク管理画面)は**状態パネル**から
-始まる: 進行中のrunと直近完了run(それぞれのtarget集計・最終活動時刻)、
+始まる: 進行中のrunと直近完了run(それぞれのtarget集計・最終活動時刻・
+`diff: +5 / −0 / =1, alert: sent`のような差分・アラートの要約)、
 次回予定実行時刻、WP-Cronが有効かどうか、Action Schedulerが利用可能か
 どうか(利用不可の場合、非同期実行は黙って同期実行にフォールバックする)、
 このサイトで記録されている直近のWP-CLI実行(あくまで「ここに記録された
@@ -234,8 +395,9 @@ run」を反映するだけで、サーバーにWP-CLI自体がインストー�
 どうかを検出するものではない)。その下から、日次実行時刻
 (UTC。WP-CronとRESTの日次due判定が共通で使う)・RESTエンドポイントの
 時間予算・strict mode(readme.txt/readme.mdの変更を低リスクな「soft change」
-として抑制せず、通常のfindingとして報告する。既定は無効)・RESTトークンの
-発行を設定できる.
+として抑制せず、通常のfindingとして報告する。既定は無効)・stat差分検知
+(既定は有効)・アラートの宛先と「Send test alert」ボタン(上記「アラート」
+参照)・RESTトークンの発行を設定できる.
 
 ## 配布方針
 

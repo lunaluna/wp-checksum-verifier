@@ -87,6 +87,8 @@ class WPCV_Page_Run_History {
 							<th><?php echo esc_html__( 'Finished', 'wp-checksum-verifier' ); ?></th>
 							<th><?php echo esc_html__( 'Targets', 'wp-checksum-verifier' ); ?></th>
 							<th><?php echo esc_html__( 'Findings', 'wp-checksum-verifier' ); ?></th>
+							<th><?php echo esc_html__( 'Diff (New / Resolved / Continuing)', 'wp-checksum-verifier' ); ?></th>
+							<th><?php echo esc_html__( 'Alert', 'wp-checksum-verifier' ); ?></th>
 						</tr>
 					</thead>
 					<tbody>
@@ -103,6 +105,8 @@ class WPCV_Page_Run_History {
 								<td><?php echo esc_html( self::display_datetime( $run['finished_at'] ?? null ) ); ?></td>
 								<td><?php echo esc_html( (string) ( $run['targets_total'] ?? 0 ) ); ?></td>
 								<td><?php echo esc_html( (string) ( $run['findings_total'] ?? 0 ) ); ?></td>
+								<td><?php echo esc_html( self::format_diff_summary( $run ) ); ?></td>
+								<td><?php echo esc_html( self::format_alert_status( $run ) ); ?></td>
 							</tr>
 						<?php endforeach; ?>
 					</tbody>
@@ -191,6 +195,60 @@ class WPCV_Page_Run_History {
 					<th scope="row"><?php echo esc_html__( 'Deadline', 'wp-checksum-verifier' ); ?></th>
 					<td><?php echo esc_html( self::display_datetime( $run['deadline_at'] ?? null ) ); ?></td>
 				</tr>
+				<tr>
+					<th scope="row"><?php echo esc_html__( 'Diff', 'wp-checksum-verifier' ); ?></th>
+					<td>
+						<?php
+						echo esc_html(
+							sprintf(
+								/* translators: 1: diff_status (or a dash), 2: diff attempt count. */
+								__( '%1$s (attempts: %2$d)', 'wp-checksum-verifier' ),
+								empty( $run['diff_status'] ) ? '—' : (string) $run['diff_status'],
+								(int) ( $run['diff_attempt_count'] ?? 0 )
+							)
+						);
+						?>
+					</td>
+				</tr>
+				<tr>
+					<th scope="row"><?php echo esc_html__( 'New / Resolved / Continuing', 'wp-checksum-verifier' ); ?></th>
+					<td><?php echo esc_html( self::format_diff_counts( $run ) ); ?></td>
+				</tr>
+				<tr>
+					<th scope="row"><?php echo esc_html__( 'Alert', 'wp-checksum-verifier' ); ?></th>
+					<td>
+						<?php
+						echo esc_html(
+							sprintf(
+								/* translators: 1: alert_status (or a dash), 2: alert_attempted_at (or a dash). */
+								__( '%1$s (attempted: %2$s)', 'wp-checksum-verifier' ),
+								self::format_alert_status( $run ),
+								self::display_datetime( $run['alert_attempted_at'] ?? null )
+							)
+						);
+						?>
+					</td>
+				</tr>
+				<?php if ( ! empty( $run['alert_error'] ) ) : ?>
+					<tr>
+						<th scope="row"><?php echo esc_html__( 'Alert error', 'wp-checksum-verifier' ); ?></th>
+						<td><?php echo esc_html( (string) $run['alert_error'] ); ?></td>
+					</tr>
+				<?php endif; ?>
+				<?php if ( ! empty( $run['alert_channel_failures'] ) ) : ?>
+					<tr>
+						<th scope="row"><?php echo esc_html__( 'Failed alert channels', 'wp-checksum-verifier' ); ?></th>
+						<td><?php echo esc_html( (string) $run['alert_channel_failures'] ); ?></td>
+					</tr>
+				<?php endif; ?>
+				<tr>
+					<th scope="row"><?php echo esc_html__( 'Findings', 'wp-checksum-verifier' ); ?></th>
+					<td>
+						<a href="<?php echo esc_url( add_query_arg( 'run_id', (int) $run['id'], menu_page_url( 'wpcv-findings', false ) ) ); ?>">
+							<?php echo esc_html__( 'View findings for this run', 'wp-checksum-verifier' ); ?>
+						</a>
+					</td>
+				</tr>
 			</table>
 
 			<h3><?php echo esc_html__( 'Targets', 'wp-checksum-verifier' ); ?></h3>
@@ -208,6 +266,7 @@ class WPCV_Page_Run_History {
 							<th><?php echo esc_html__( 'Files', 'wp-checksum-verifier' ); ?></th>
 							<th><?php echo esc_html__( 'Findings', 'wp-checksum-verifier' ); ?></th>
 							<th><?php echo esc_html__( 'Attempts', 'wp-checksum-verifier' ); ?></th>
+							<th><?php echo esc_html__( 'Diff mode', 'wp-checksum-verifier' ); ?></th>
 						</tr>
 					</thead>
 					<tbody>
@@ -231,12 +290,91 @@ class WPCV_Page_Run_History {
 								</td>
 								<td><?php echo esc_html( (string) ( $target_run['findings_total'] ?? 0 ) ); ?></td>
 								<td><?php echo esc_html( (string) ( $target_run['attempt_count'] ?? 0 ) ); ?></td>
+								<td><?php echo esc_html( empty( $target_run['diff_mode'] ) ? '—' : (string) $target_run['diff_mode'] ); ?></td>
 							</tr>
 						<?php endforeach; ?>
 					</tbody>
 				</table>
 			<?php endif; ?>
+
+			<?php self::render_ended_findings( $run_id ); ?>
 		</div>
+		<?php
+	}
+
+	/**
+	 * 「Findings ended in this run」節(v0.5後半 §16・§1.3)を描画する.
+	 *
+	 * `WPCV_Finding_Repository::query_ended_by_run()`でpagination付きに取得する
+	 * (既存の一覧・詳細の`paged`と名前が衝突しないよう`ended_paged`を使う).
+	 *
+	 * @param int $run_id 対象のrunのid.
+	 * @return void
+	 */
+	private static function render_ended_findings( $run_id ) {
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- 読み取り専用のクエリ引数のため(`render()`と同じ理由).
+		$page = self::current_page_from_request( isset( $_GET['ended_paged'] ) ? wp_unslash( $_GET['ended_paged'] ) : null );
+
+		$result = WPCV_Plugin::finding_repository()->query_ended_by_run( $run_id, $page, WPCV_Finding_Repository::DEFAULT_PER_PAGE );
+		?>
+		<h3><?php echo esc_html__( 'Findings ended in this run', 'wp-checksum-verifier' ); ?></h3>
+		<?php if ( empty( $result['rows'] ) ) : ?>
+			<p><?php echo esc_html__( 'No findings ended in this run.', 'wp-checksum-verifier' ); ?></p>
+			<?php return; ?>
+		<?php endif; ?>
+		<table class="wp-list-table widefat fixed striped">
+			<thead>
+				<tr>
+					<th><?php echo esc_html__( 'Target', 'wp-checksum-verifier' ); ?></th>
+					<th><?php echo esc_html__( 'Path', 'wp-checksum-verifier' ); ?></th>
+					<th><?php echo esc_html__( 'Status', 'wp-checksum-verifier' ); ?></th>
+					<th><?php echo esc_html__( 'First seen in', 'wp-checksum-verifier' ); ?></th>
+					<th><?php echo esc_html__( 'Reason', 'wp-checksum-verifier' ); ?></th>
+				</tr>
+			</thead>
+			<tbody>
+				<?php foreach ( $result['rows'] as $row ) : ?>
+					<tr>
+						<td><?php echo esc_html( (string) $row['target_id'] ); ?></td>
+						<td><?php echo esc_html( (string) $row['path'] ); ?></td>
+						<td><?php echo esc_html( (string) $row['status'] ); ?></td>
+						<td>
+							<a href="<?php echo esc_url( add_query_arg( 'run_id', (int) $row['run_id'], self::page_url() ) ); ?>">
+								#<?php echo esc_html( (string) $row['run_id'] ); ?>
+							</a>
+						</td>
+						<td><?php echo esc_html( (string) $row['end_reason'] ); ?></td>
+					</tr>
+				<?php endforeach; ?>
+			</tbody>
+		</table>
+		<?php
+		$total_pages = self::total_pages( $result['total'], WPCV_Finding_Repository::DEFAULT_PER_PAGE );
+
+		if ( $total_pages > 1 ) :
+			$ended_base = add_query_arg( 'run_id', $run_id, self::page_url() );
+			?>
+			<p class="tablenav-pages">
+				<?php if ( $page > 1 ) : ?>
+					<a class="button" href="<?php echo esc_url( add_query_arg( 'ended_paged', $page - 1, $ended_base ) ); ?>">
+						<?php echo esc_html__( '« Previous', 'wp-checksum-verifier' ); ?>
+					</a>
+				<?php endif; ?>
+				<?php
+				printf(
+					/* translators: 1: current page, 2: total pages. */
+					esc_html__( 'Page %1$d of %2$d', 'wp-checksum-verifier' ),
+					(int) $page,
+					(int) $total_pages
+				);
+				?>
+				<?php if ( $page < $total_pages ) : ?>
+					<a class="button" href="<?php echo esc_url( add_query_arg( 'ended_paged', $page + 1, $ended_base ) ); ?>">
+						<?php echo esc_html__( 'Next »', 'wp-checksum-verifier' ); ?>
+					</a>
+				<?php endif; ?>
+			</p>
+		<?php endif; ?>
 		<?php
 	}
 
@@ -261,6 +399,77 @@ class WPCV_Page_Run_History {
 		$labels = WPCV_Error_Code::all();
 
 		return isset( $labels[ $error_code ] ) ? $labels[ $error_code ] : $error_code;
+	}
+
+	/**
+	 * 一覧・詳細の「Diff」列の表示文字列を組み立てる(v0.5後半 §16・§1.2).
+	 *
+	 * `alerting`/`done`(件数を持つ2状態)だけ`+新規 / −解消 / =継続`の形にする.
+	 * それ以外(pending/processing/failed/NULL/skipped/未知の値)は`diff_status`の
+	 * 値をそのまま出す(NULL・skippedは「—」にまとめる. `WPCV_Diff_Status`の
+	 * 定数一覧に無い値も、`target_run_reason_label()`と同じ方針でそのまま出す).
+	 *
+	 * @param array $run `WPCV_Run_Repository::find_all()`/`find_by_id()`の1行.
+	 * @return string
+	 */
+	public static function format_diff_summary( array $run ) {
+		$diff_status = isset( $run['diff_status'] ) ? (string) $run['diff_status'] : '';
+
+		if ( '' === $diff_status || WPCV_Diff_Status::SKIPPED === $diff_status ) {
+			return '—';
+		}
+
+		if ( WPCV_Diff_Status::ALERTING !== $diff_status && WPCV_Diff_Status::DONE !== $diff_status ) {
+			return $diff_status;
+		}
+
+		return sprintf(
+			'+%1$s / −%2$s / =%3$s',
+			self::nullable_count_label( $run, 'findings_new' ),
+			self::nullable_count_label( $run, 'findings_resolved' ),
+			self::nullable_count_label( $run, 'findings_continuing' )
+		);
+	}
+
+	/**
+	 * 「Alert」列の表示文字列を組み立てる(v0.5後半 §16・§1.2. `alert_status`の
+	 * 値をそのまま出す. failed/abortedのrunで`alert_status`がrunの連続失敗
+	 * アラート〔Step15a〕の結果でも、この列は分けない〔runのStatus列で区別できる〕).
+	 *
+	 * @param array $run `WPCV_Run_Repository::find_all()`/`find_by_id()`の1行.
+	 * @return string
+	 */
+	public static function format_alert_status( array $run ) {
+		return empty( $run['alert_status'] ) ? '—' : (string) $run['alert_status'];
+	}
+
+	/**
+	 * 実行履歴詳細の「New / Resolved / Continuing」行の表示文字列を組み立てる
+	 * (v0.5後半 §16・§1.3. 一覧の`format_diff_summary()`と異なり、`diff_status`に
+	 * 関わらず3つの件数(NULLなら「—」)をそのまま並べる).
+	 *
+	 * @param array $run `WPCV_Run_Repository::find_by_id()`の戻り値.
+	 * @return string
+	 */
+	public static function format_diff_counts( array $run ) {
+		return sprintf(
+			'%1$s / %2$s / %3$s',
+			self::nullable_count_label( $run, 'findings_new' ),
+			self::nullable_count_label( $run, 'findings_resolved' ),
+			self::nullable_count_label( $run, 'findings_continuing' )
+		);
+	}
+
+	/**
+	 * `format_diff_summary()`用: NULLは0にせず「—」を返す(件数がNULLなのは
+	 * 「まだ数えていない」であり、0件と区別するため).
+	 *
+	 * @param array  $run   Run行.
+	 * @param string $field カラム名(`findings_new`等).
+	 * @return string
+	 */
+	private static function nullable_count_label( array $run, $field ) {
+		return isset( $run[ $field ] ) ? (string) (int) $run[ $field ] : '—';
 	}
 
 	/**

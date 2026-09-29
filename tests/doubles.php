@@ -165,6 +165,14 @@ class WPCV_Test_Fake_WPDB {
 	public $get_var_calls = array();
 
 	/**
+	 * `get_results()` に渡されたクエリ文字列の記録(アサーション用.
+	 * コードレビュー指摘5: 全件取得のSELECTが発行されていないことを確かめるため).
+	 *
+	 * @var array<int, string>
+	 */
+	public $get_results_calls = array();
+
+	/**
 	 * `query()` に渡されたクエリ文字列の記録(`RELEASE_LOCK()` が確実に呼ばれた
 	 * ことをテストで確認できるようにするため).
 	 *
@@ -194,6 +202,18 @@ class WPCV_Test_Fake_WPDB {
 			return false;
 		}
 
+		if ( 'wp_wpcv_findings' === $table ) {
+			// 本番の `WPCV_Finding_Repository::save_findings()` は
+			// diff_state/ended_in_run_id/end_reason 等(差分処理が後から書く列)を
+			// insert時には一切渡さない ―― 実DBならNULL default列としてSELECT時に
+			// 返ってくるが、このダブルは渡されたキーしか保持しないため、後続の
+			// 差分処理コード(`WPCV_Finding_Repository`の各readメソッド)がこれらの
+			// キーへの直接アクセスで「Undefined array key」になる. 実スキーマの
+			// NULL defaultをここで模して補う(統合テストで`save_findings()`本体を
+			// 経由させたときに顕在化した欠落. 2026-09-26).
+			$data = array_merge( self::findings_column_defaults(), $data );
+		}
+
 		if ( ! isset( $this->next_id[ $table ] ) ) {
 			$this->next_id[ $table ] = 1;
 		}
@@ -205,6 +225,24 @@ class WPCV_Test_Fake_WPDB {
 		$this->insert_id             = $id;
 
 		return 1;
+	}
+
+	/**
+	 * `wp_wpcv_findings`のうち、`save_findings()`がinsert時に渡さない列の
+	 * NULL defaultを返す(`insert()`参照。列名は`wpcv_test_make_finding_row()`の
+	 * 追加分と同じ).
+	 *
+	 * @return array<string, null>
+	 */
+	private static function findings_column_defaults() {
+		return array(
+			'closed_at'       => null,
+			'closed_reason'   => null,
+			'diff_state'      => null,
+			'notified_at'     => null,
+			'ended_in_run_id' => null,
+			'end_reason'      => null,
+		);
 	}
 
 	/**
@@ -324,12 +362,24 @@ class WPCV_Test_Fake_WPDB {
 	}
 
 	/**
-	 * 行を読み取る(各Repositoryの `all_rows()` 系メソッド向けの簡易フェイク).
+	 * 行を読み取る(各Repositoryの読み取りメソッド向けの簡易フェイク).
 	 *
-	 * 実 `$wpdb` と異なり SQL を解釈しない。クエリ文字列から `FROM {table}` の
-	 * テーブル名だけを正規表現で拾い、そのテーブルの全行をそのまま返す
-	 * (WHERE 句によるフィルタリングは呼び出し側の PHP コードが行う設計になって
-	 * いるため、フェイク側で再現する必要が無い).
+	 * 次の単純な形のSELECTだけは解釈して、WHERE・ORDER BY・LIMIT/OFFSETを反映する
+	 * (`select_simple()`. コードレビュー指摘5で追加.本番のRepositoryが全件取得を
+	 * やめてSQLで絞り込めるようにするため):
+	 *
+	 *     SELECT * | 列名, ... FROM {table} [FORCE INDEX (...)]
+	 *       [WHERE 条件 AND 条件 ...]
+	 *       [ORDER BY 列 ASC|DESC [, 列 ASC|DESC ...]]
+	 *       [LIMIT n [OFFSET m]]
+	 *
+	 * 条件は `parse_where_conditions_strict()` が扱える形のみ.それ以外の形
+	 * (集計関数・GROUP BY・OR・FIELD() など)は従来どおりSQLを解釈せず、
+	 * テーブルの全行をそのまま返す(その場合、絞り込みは呼び出し側のPHPコードが行う.
+	 * 既存のRepositoryメソッドの多くがこの前提で書かれている).
+	 *
+	 * 列名を指定したSELECTでも、行は全列を持ったまま返す(呼び出し側は必要な列しか
+	 * 読まないため、絞り込む必要が無い).
 	 *
 	 * @param string $query  SQL文字列(`FROM {table}` を含む前提).
 	 * @param string $output 無視する(本プラグインは常に `ARRAY_A` で呼ぶ).
@@ -337,6 +387,14 @@ class WPCV_Test_Fake_WPDB {
 	 */
 	public function get_results( $query, $output = 'ARRAY_A' ) {
 		unset( $output );
+
+		$this->get_results_calls[] = $query;
+
+		$selected = $this->select_simple( $query );
+
+		if ( null !== $selected ) {
+			return $selected;
+		}
 
 		if ( 1 !== preg_match( '/FROM\s+(\S+)/i', $query, $matches ) ) {
 			return array();
@@ -348,16 +406,155 @@ class WPCV_Test_Fake_WPDB {
 	}
 
 	/**
-	 * 単一の値を返す(`WPCV_Repository::reserve_run()` の `GET_LOCK()` 専用の
-	 * 簡易フェイク)。実 SQL は実行せず、`$this->get_var_return` をそのまま返す.
+	 * 単一の値を返す.
 	 *
-	 * @param string $query クエリ文字列(記録のみ。実行はしない).
+	 * `SELECT COUNT(*) FROM {table} [WHERE ...]` の形(条件は `get_results()` と同じ
+	 * 範囲)だけは、実際に行を数えて返す(コードレビュー指摘5で追加.実行履歴一覧の
+	 * 総件数に使う).それ以外(`WPCV_Repository::reserve_run()` の `GET_LOCK()` 等)は
+	 * 実 SQL を実行せず、`$this->get_var_return` をそのまま返す.どちらの場合も
+	 * クエリは `get_var_calls` に記録する.
+	 *
+	 * @param string $query クエリ文字列.
 	 * @return string|null
 	 */
 	public function get_var( $query ) {
 		$this->get_var_calls[] = $query;
 
+		if ( 1 === preg_match( '/^\s*SELECT\s+COUNT\(\s*\*\s*\)\s+FROM\s+(\S+)(?:\s+WHERE\s+(.+?))?\s*$/is', $query, $matches ) ) {
+			$conditions = isset( $matches[2] ) ? $this->parse_where_conditions_strict( $matches[2] ) : array();
+
+			if ( null !== $conditions ) {
+				return (string) count( $this->filter_rows( $matches[1], $conditions ) );
+			}
+		}
+
 		return $this->get_var_return;
+	}
+
+	/**
+	 * `get_results()` 専用: 単純な形のSELECTを解釈して結果を返す
+	 * (解釈できない形なら `null`.`get_results()` のdocblock参照).
+	 *
+	 * @param string $query SQL文字列.
+	 * @return array<int, array>|null
+	 */
+	private function select_simple( $query ) {
+		// `FORCE INDEX (...)` は本番のoptimizer向けのヒントのため、読み飛ばす.
+		$pattern = '/^\s*SELECT\s+(\*|\w+(?:\s*,\s*\w+)*)\s+FROM\s+(\S+)(?:\s+FORCE\s+INDEX\s*\(\s*\w+\s*\))?'
+			. '(?:\s+WHERE\s+(.+?))?'
+			. '(?:\s+ORDER\s+BY\s+(\w+\s+(?:ASC|DESC)(?:\s*,\s*\w+\s+(?:ASC|DESC))*))?'
+			. '(?:\s+LIMIT\s+(\d+)(?:\s+OFFSET\s+(\d+))?)?\s*$/is';
+
+		if ( 1 !== preg_match( $pattern, $query, $matches ) ) {
+			return null;
+		}
+
+		$where_str  = isset( $matches[3] ) ? $matches[3] : '';
+		$conditions = '' === $where_str ? array() : $this->parse_where_conditions_strict( $where_str );
+
+		if ( null === $conditions ) {
+			return null;
+		}
+
+		$rows = $this->filter_rows( $matches[2], $conditions );
+
+		if ( ! empty( $matches[4] ) ) {
+			// `列 ASC|DESC, 列 ASC|DESC, ...` を左から順に比べる.
+			$order_by = array();
+
+			foreach ( explode( ',', $matches[4] ) as $piece ) {
+				$parts      = preg_split( '/\s+/', trim( $piece ) );
+				$order_by[] = array( $parts[0], 0 === strcasecmp( $parts[1], 'DESC' ) );
+			}
+
+			usort(
+				$rows,
+				static function ( $a, $b ) use ( $order_by ) {
+					foreach ( $order_by as list( $column, $descending ) ) {
+						$cmp = ( $a[ $column ] ?? null ) <=> ( $b[ $column ] ?? null );
+
+						if ( 0 !== $cmp ) {
+							return $descending ? -$cmp : $cmp;
+						}
+					}
+
+					return 0;
+				}
+			);
+		}
+
+		if ( isset( $matches[5] ) && '' !== $matches[5] ) {
+			$offset = isset( $matches[6] ) && '' !== $matches[6] ? (int) $matches[6] : 0;
+			$rows   = array_slice( $rows, $offset, (int) $matches[5] );
+		}
+
+		return $rows;
+	}
+
+	/**
+	 * 指定テーブルのうち、すべての条件を満たす行を返す(`select_simple()`・
+	 * `get_var()` の COUNT で共有する).
+	 *
+	 * @param string $table      テーブル名.
+	 * @param array  $conditions `parse_where_conditions_strict()` の戻り値.
+	 * @return array<int, array>
+	 */
+	private function filter_rows( $table, array $conditions ) {
+		$rows = array();
+
+		foreach ( $this->rows[ $table ] ?? array() as $row ) {
+			if ( $this->row_matches_conditions( $row, $conditions ) ) {
+				$rows[] = $row;
+			}
+		}
+
+		return $rows;
+	}
+
+	/**
+	 * `parse_where_conditions()` の厳密版: 1つでも扱えない条件があれば `null` を返す
+	 * (黙って条件を落とすと、本番と異なる行を返してしまうため).`select_simple()`・
+	 * `get_var()` 専用.
+	 *
+	 * `parse_where_conditions()` が扱う3種(`=`・`IN (...)`・`IS NULL`)に加えて、
+	 * `IS NOT NULL` と比較演算子(`<`・`<=`・`>`・`>=`)も扱う(日時文字列の範囲指定・
+	 * idのカーソル用).
+	 * `OR`・括弧のネストは扱わない.
+	 *
+	 * @param string $where_str `WHERE` 句.
+	 * @return array<int, array>|null
+	 */
+	private function parse_where_conditions_strict( $where_str ) {
+		// `<>`/`!=` は扱わない(比較演算子の正規表現が `<` と誤って解釈するのを防ぐ).
+		if ( 1 === preg_match( '/\sOR\s|<>|!=/i', $where_str ) ) {
+			return null;
+		}
+
+		$conditions = array();
+
+		foreach ( preg_split( '/\s+AND\s+/i', trim( $where_str ) ) as $piece ) {
+			$piece = trim( $piece );
+
+			if ( 1 === preg_match( '/^(\w+)\s+IS\s+NOT\s+NULL$/i', $piece, $matches ) ) {
+				$conditions[] = array( 'is_not_null', $matches[1] );
+				continue;
+			}
+
+			if ( 1 === preg_match( '/^(\w+)\s*(<=|>=|<|>)\s*(.+)$/s', $piece, $matches ) ) {
+				$conditions[] = array( 'cmp', $matches[1], $this->parse_sql_value_literal( trim( $matches[3] ) ), $matches[2] );
+				continue;
+			}
+
+			$parsed = $this->parse_where_conditions( $piece );
+
+			if ( 1 !== count( $parsed ) ) {
+				return null;
+			}
+
+			$conditions[] = $parsed[0];
+		}
+
+		return $conditions;
 	}
 
 	/**
@@ -369,6 +566,13 @@ class WPCV_Test_Fake_WPDB {
 	 * `$query_should_fail` が真の場合、呼び出しの記録(`query_calls`)はそのまま
 	 * 行いつつ戻り値のみ `false` にする(本番の `$wpdb->query()` がSQLエラー時に
 	 * 返す値を模す。v0.4.0コードレビューCR-03是正).
+	 *
+	 * v0.5 §Step2: `WPCV_File_State_Repository::upsert_many()` が発行する
+	 * `INSERT ... VALUES (...), (...) ON DUPLICATE KEY UPDATE ...` のみ、
+	 * `apply_bulk_upsert()` で `$rows` へ反映する(このテーブルは全件取得方式が
+	 * 使えない規模のため、`upsert_many()` はテストダブルでもSQL経由でデータを
+	 * 反映する必要がある。`WPCV_File_State_Repository` のクラスdocblock参照)。
+	 * それ以外のクエリ(`START TRANSACTION`等)は従来どおり記録のみ.
 	 *
 	 * @param string $query クエリ文字列(記録のみ).
 	 * @return bool `$query_should_fail` が真なら `false`。それ以外は常に `true`.
@@ -382,7 +586,286 @@ class WPCV_Test_Fake_WPDB {
 			return false;
 		}
 
+		if ( 1 === preg_match( '/^INSERT INTO\s+(\S+)\s*\(([^)]+)\)\s*VALUES\s*(.+?)\s*ON DUPLICATE KEY UPDATE/is', $query, $matches ) ) {
+			$this->apply_bulk_upsert( $matches[1], $matches[2], $matches[3] );
+		} elseif ( 1 === preg_match( '/^UPDATE\s+(\S+)\s+SET\s+(.+?)\s+WHERE\s+(.+)$/is', $query, $matches ) ) {
+			$this->apply_bulk_update( $matches[1], $matches[2], $matches[3] );
+		}
+
 		return true;
+	}
+
+	/**
+	 * `UPDATE {table} SET col = val, ... WHERE cond AND cond ...` を解釈し、
+	 * `$this->rows` へ反映する(`query()` 専用のヘルパー. v0.5後半 §Step12:
+	 * `WPCV_Finding_Repository` の一括終了処理・一括 diff_state 設定が、
+	 * `$wpdb->update()` では組み立てられない `IN (...)`/`IS NULL` 条件のWHEREを
+	 * 生SQLで発行するようになったため追加した。`apply_bulk_upsert()` と同じ
+	 * 「本プラグインが実際に発行する形だけを解釈する簡易パーサー」であり、
+	 * 汎用SQLパーサーではない ―― WHERE は `AND` で結んだ
+	 * `column = literal` / `column IN (literal, ...)` / `column IS NULL` の
+	 * 3種のみ(`OR`・括弧のネストは非対応).
+	 *
+	 * @param string $table      テーブル名.
+	 * @param string $set_str    `SET` 直後、`WHERE` 直前までのカラム=値のカンマ区切り文字列.
+	 * @param string $where_str  `WHERE` 直後の条件文字列(`AND` 区切り).
+	 * @return void
+	 */
+	private function apply_bulk_update( $table, $set_str, $where_str ) {
+		if ( ! isset( $this->rows[ $table ] ) ) {
+			return;
+		}
+
+		$assignments = $this->parse_set_assignments( $set_str );
+		$conditions  = $this->parse_where_conditions( $where_str );
+
+		foreach ( $this->rows[ $table ] as $id => $row ) {
+			if ( $this->row_matches_conditions( $row, $conditions ) ) {
+				$this->rows[ $table ][ $id ] = array_merge( $row, $assignments );
+			}
+		}
+	}
+
+	/**
+	 * `apply_bulk_update()` 専用: `SET` 句(`col1 = 'a', col2 = 2` のような
+	 * カンマ区切り)をカラム => 値の配列に変換する。値がカンマを含まない
+	 * (このプラグインが実際にSETへ渡す値は整数・NULL・短い列挙文字列のみ)
+	 * 前提のため、単純な `explode( ',', ... )` で十分.
+	 *
+	 * @param string $set_str `SET` 句.
+	 * @return array<string, mixed>
+	 */
+	private function parse_set_assignments( $set_str ) {
+		$assignments = array();
+
+		foreach ( explode( ',', $set_str ) as $piece ) {
+			if ( 1 === preg_match( '/^\s*(\w+)\s*=\s*(.+?)\s*$/s', $piece, $matches ) ) {
+				$assignments[ $matches[1] ] = $this->parse_sql_value_literal( $matches[2] );
+			}
+		}
+
+		return $assignments;
+	}
+
+	/**
+	 * `apply_bulk_update()` 専用: `WHERE` 句(`AND` 区切り)を条件の配列に変換する.
+	 * 各条件は `array( 'eq'|'in'|'is_null', column, value )` の形(`is_null` は
+	 * 3要素目を持たない).
+	 *
+	 * @param string $where_str `WHERE` 句.
+	 * @return array<int, array>
+	 */
+	private function parse_where_conditions( $where_str ) {
+		$conditions = array();
+
+		foreach ( preg_split( '/\s+AND\s+/i', trim( $where_str ) ) as $piece ) {
+			$piece = trim( $piece );
+
+			if ( 1 === preg_match( '/^(\w+)\s+IS\s+NULL$/i', $piece, $matches ) ) {
+				$conditions[] = array( 'is_null', $matches[1] );
+				continue;
+			}
+
+			if ( 1 === preg_match( '/^(\w+)\s+IN\s*\((.+)\)$/is', $piece, $matches ) ) {
+				$conditions[] = array(
+					'in',
+					$matches[1],
+					array_map( array( $this, 'parse_sql_value_literal' ), $this->split_sql_value_literals( $matches[2] ) ),
+				);
+				continue;
+			}
+
+			if ( 1 === preg_match( '/^(\w+)\s*=\s*(.+)$/s', $piece, $matches ) ) {
+				$conditions[] = array( 'eq', $matches[1], $this->parse_sql_value_literal( trim( $matches[2] ) ) );
+			}
+		}
+
+		return $conditions;
+	}
+
+	/**
+	 * `apply_bulk_update()` 専用: 1行が `parse_where_conditions()` の全条件を
+	 * 満たすかどうかを判定する(すべて `AND`).
+	 *
+	 * @param array $row        行.
+	 * @param array $conditions `parse_where_conditions()` の戻り値.
+	 * @return bool
+	 */
+	private function row_matches_conditions( array $row, array $conditions ) {
+		foreach ( $conditions as $condition ) {
+			$type   = $condition[0];
+			$column = $condition[1];
+			$value  = array_key_exists( $column, $row ) ? $row[ $column ] : null;
+
+			if ( 'is_null' === $type && null !== $value ) {
+				return false;
+			}
+
+			// `parse_where_conditions_strict()` のみが作る.
+			if ( 'is_not_null' === $type && null === $value ) {
+				return false;
+			}
+
+			if ( 'eq' === $type && $value !== $condition[2] ) {
+				return false;
+			}
+
+			if ( 'in' === $type && ! in_array( $value, $condition[2], true ) ) {
+				return false;
+			}
+
+			// 比較演算子(`parse_where_conditions_strict()` のみが作る).
+			// SQLと同じく、NULLとの比較は常に偽とする.
+			if ( 'cmp' === $type ) {
+				if ( null === $value ) {
+					return false;
+				}
+
+				$cmp = $value <=> $condition[2];
+				$ok  = array(
+					'<'  => $cmp < 0,
+					'<=' => $cmp <= 0,
+					'>'  => $cmp > 0,
+					'>=' => $cmp >= 0,
+				);
+
+				if ( ! $ok[ $condition[3] ] ) {
+					return false;
+				}
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * `INSERT ... VALUES (...), (...) ON DUPLICATE KEY UPDATE ...` を解釈し、
+	 * `$this->rows` へ反映する(`query()` 専用のヘルパー. v0.5 §Step2).
+	 *
+	 * 本プラグインが実際に発行する形(1行1タプル、値はクォート済み文字列/整数/
+	 * `NULL`リテラルのいずれか)だけを解釈する簡易パーサーであり、汎用SQL
+	 * パーサーではない。一意キー(`state_key`)が既存行と一致すれば
+	 * `first_seen_run_id`以外の列をマージ更新し(本番の`ON DUPLICATE KEY UPDATE`
+	 * 句が`first_seen_run_id`を含まないのと同じ意味)、一致しなければ新規行として
+	 * 追加する.
+	 *
+	 * @param string $table       テーブル名.
+	 * @param string $columns_str カラム名のカンマ区切り文字列(括弧の中身).
+	 * @param string $values_str  `VALUES`直後のタプル列全体(先頭・末尾の丸括弧込み).
+	 * @return void
+	 */
+	private function apply_bulk_upsert( $table, $columns_str, $values_str ) {
+		$columns = array_map( 'trim', explode( ',', $columns_str ) );
+
+		$values_str = trim( $values_str );
+		$values_str = substr( $values_str, 1, -1 ); // 先頭 "(" と末尾 ")" を除去する.
+		$tuples     = preg_split( '/\)\s*,\s*\(/', $values_str );
+
+		if ( ! isset( $this->next_id[ $table ] ) ) {
+			$this->next_id[ $table ] = 1;
+		}
+
+		if ( ! isset( $this->rows[ $table ] ) ) {
+			$this->rows[ $table ] = array();
+		}
+
+		foreach ( $tuples as $tuple ) {
+			$literals = $this->split_sql_value_literals( $tuple );
+			$row      = array();
+
+			foreach ( $columns as $index => $column ) {
+				$row[ $column ] = $this->parse_sql_value_literal( $literals[ $index ] );
+			}
+
+			$existing_id = null;
+
+			foreach ( $this->rows[ $table ] as $id => $existing_row ) {
+				if ( isset( $existing_row['state_key'] ) && $existing_row['state_key'] === $row['state_key'] ) {
+					$existing_id = $id;
+					break;
+				}
+			}
+
+			if ( null !== $existing_id ) {
+				// 本番の ON DUPLICATE KEY UPDATE 句が first_seen_run_id を
+				// 含まない(`WPCV_File_State_Repository::upsert_many()` 参照)のと
+				// 同じ意味で、既存行の first_seen_run_id は上書きしない.
+				unset( $row['first_seen_run_id'] );
+				$this->rows[ $table ][ $existing_id ] = array_merge( $this->rows[ $table ][ $existing_id ], $row );
+			} else {
+				$id                         = $this->next_id[ $table ]++;
+				$row['id']                  = $id;
+				$this->rows[ $table ][ $id ] = $row;
+			}
+		}
+	}
+
+	/**
+	 * SQLの値リテラル列("'a', 123, NULL, 'b'" のような文字列)を、各要素の
+	 * 生文字列表現の配列に分割する(`apply_bulk_upsert()` 専用のヘルパー).
+	 *
+	 * `'...'`(シングルクォート文字列。`prepare()`が行う`\'`/`\\`エスケープを
+	 * 許容する正規表現にしてある。`state_key`のような生バイト値はシングル
+	 * クォート・バックスラッシュを含みうるため、これが無いと値の途中で
+	 * クォートが閉じたと誤認しタプルの区切りを見失う)・整数・`NULL`の
+	 * 3種のみを解釈する.
+	 *
+	 * @param string $literal_list カンマ区切りのSQLリテラル列(1タプル分).
+	 * @return string[]
+	 */
+	private function split_sql_value_literals( $literal_list ) {
+		preg_match_all( "/'(?:[^'\\\\]|\\\\.)*'|-?[0-9]+|NULL/i", $literal_list, $matches );
+
+		return $matches[0];
+	}
+
+	/**
+	 * SQLの値リテラル1つを、対応するPHPの値(文字列/整数/`null`)へ変換する
+	 * (`apply_bulk_upsert()` 専用のヘルパー)。文字列値は `prepare()` が施した
+	 * `\'`/`\\` エスケープを解除してから返す(`prepare()` のdocblock参照).
+	 *
+	 * @param string $literal `split_sql_value_literals()` が返す1要素.
+	 * @return string|int|null
+	 */
+	private function parse_sql_value_literal( $literal ) {
+		if ( 0 === strcasecmp( $literal, 'NULL' ) ) {
+			return null;
+		}
+
+		if ( 1 === preg_match( "/^'(.*)'$/s", $literal, $matches ) ) {
+			return $this->unescape_sql_string( $matches[1] );
+		}
+
+		return (int) $literal;
+	}
+
+	/**
+	 * `prepare()` が `%s` の値に施したエスケープ(`\'` → `'`、`\\` → `\`)を
+	 * 解除する(`parse_sql_value_literal()` 専用のヘルパー).
+	 *
+	 * `str_replace()` を2回連続で適用する素朴な実装は、変換順序によって
+	 * 二重エスケープを誤って壊す(例: 元の値が `\\` 1個だった場合、
+	 * `\'`→`'` の変換を先に行うと安全だが、`\\`→`\` を先に行うと `\\'` を
+	 * `\'`→`'` に変換し損ねる)。そのため先頭から1文字ずつ走査し、`\` が
+	 * 出たら次の1文字をエスケープ対象として無条件に採用する一般的な
+	 * デコード方式にしてある.
+	 *
+	 * @param string $escaped `prepare()` がエスケープ済みの文字列(引用符の中身).
+	 * @return string
+	 */
+	private function unescape_sql_string( $escaped ) {
+		$result = '';
+		$length = strlen( $escaped );
+
+		for ( $i = 0; $i < $length; $i++ ) {
+			if ( '\\' === $escaped[ $i ] && $i + 1 < $length ) {
+				++$i;
+			}
+
+			$result .= $escaped[ $i ];
+		}
+
+		return $result;
 	}
 
 	/**
@@ -398,9 +881,15 @@ class WPCV_Test_Fake_WPDB {
 
 	/**
 	 * プレースホルダーを実引数へ置換する(実 `$wpdb->prepare()` の簡易フェイク)。
-	 * このダブルは実 SQL を実行しないため、エスケープ処理は行わず `%s`/`%d` を
-	 * `vsprintf()` で単純に置換するだけで十分(呼び出し引数の確認は
-	 * `get_var_calls`/`query_calls` に記録された最終文字列で行う).
+	 *
+	 * `WPCV_File_State_Repository`(v0.5 §Step2)が `state_key`(sha256の生バイト)を
+	 * `%s` で渡すようになったため、単純な `vsprintf()` 置換では成立しなくなった
+	 * (生バイトにシングルクォート `'` やバックスラッシュ `\` が含まれる確率は
+	 * 32バイトあれば無視できない大きさになり、実際にテストで踏んだ)。
+	 * `%s` の値はシングルクォート・バックスラッシュを最小限エスケープしてから
+	 * 引用符で囲む(本番の `$wpdb->prepare()` の簡易近似). `apply_bulk_upsert()`
+	 * 側の `split_sql_value_literals()`/`unescape_sql_string()` がこのエスケープに
+	 * 対応する形でVALUES句を読み戻す(対称性が必要).
 	 *
 	 * @param string $query    クエリ(`%s`/`%d` プレースホルダーを含む).
 	 * @param mixed  ...$args  プレースホルダーに対応する値.
@@ -411,7 +900,24 @@ class WPCV_Test_Fake_WPDB {
 			$args = $args[0];
 		}
 
-		return vsprintf( str_replace( '%s', "'%s'", $query ), $args );
+		$index = 0;
+
+		return preg_replace_callback(
+			'/%[sd]/',
+			function ( $matches ) use ( &$index, $args ) {
+				$value = $args[ $index ] ?? '';
+				++$index;
+
+				if ( '%d' === $matches[0] ) {
+					return (string) (int) $value;
+				}
+
+				$escaped = str_replace( array( '\\', "'" ), array( '\\\\', "\\'" ), (string) $value );
+
+				return "'{$escaped}'";
+			},
+			$query
+		);
 	}
 }
 
@@ -459,6 +965,7 @@ class WPCV_Test_Fake_WPDB {
  *     finding_repository: WPCV_Finding_Repository,
  *     chunk_result_repository: WPCV_Chunk_Result_Repository,
  *     suppression_repository: WPCV_Suppression_Repository,
+ *     file_state_repository: WPCV_File_State_Repository,
  *     wpdb: WPCV_Test_Fake_WPDB,
  * }
  */
@@ -486,7 +993,8 @@ function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = 
 	$target_run_repository   = new WPCV_Target_Run_Repository( $wpdb, $now );
 	$finding_repository      = new WPCV_Finding_Repository( $wpdb );
 	$suppression_repository  = new WPCV_Suppression_Repository( $wpdb, $now );
-	$chunk_result_repository = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, $finding_repository, $suppression_repository );
+	$file_state_repository   = new WPCV_File_State_Repository( $wpdb, $now );
+	$chunk_result_repository = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, $finding_repository, $suppression_repository, $file_state_repository );
 
 	$dispatcher = new WPCV_Chunk_Dispatcher(
 		$run_repository,
@@ -504,7 +1012,8 @@ function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = 
 		// `aborted` になる).
 		static function () use ( $now ) {
 			return strtotime( call_user_func( $now ) );
-		}
+		},
+		$file_state_repository
 	);
 
 	$coordinator = new WPCV_Run_Coordinator( new WPCV_Run_Planner( $suppression_repository ), $run_repository, $target_run_repository, $dispatcher );
@@ -517,6 +1026,7 @@ function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = 
 		'finding_repository'      => $finding_repository,
 		'chunk_result_repository' => $chunk_result_repository,
 		'suppression_repository'  => $suppression_repository,
+		'file_state_repository'   => $file_state_repository,
 		'wpdb'                    => $wpdb,
 	);
 }
@@ -704,6 +1214,14 @@ function wpcv_test_make_finding_row( array $overrides = array() ) {
 			'suppression_id'  => null,
 			'closed_at'       => null,
 			'closed_reason'   => null,
+			// v0.5後半 §Step10で追加した列(WPCV_Finding_Repositoryの差分処理系
+			// メソッドが読み書きする。既定は「差分処理がまだ触れていない finding」).
+			'detail'          => null,
+			'finding_key'     => null,
+			'diff_state'      => null,
+			'notified_at'     => null,
+			'ended_in_run_id' => null,
+			'end_reason'      => null,
 		),
 		$overrides
 	);

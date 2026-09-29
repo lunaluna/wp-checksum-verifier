@@ -18,8 +18,9 @@ if ( ! defined( 'ABSPATH' ) ) {
  * クエリパラメータで対象runを明示的に指定することもできる(Step9の実行履歴UIから
  * 過去のrunを閲覧する用途を見越して、コストの低い今のうちに対応しておく).
  *
- * `dimension`/`status`/`severity`/`sort`/`order` はすべてallowlist方式で検証し、
- * 許可されない値は `400` を返す(§Step7プラン「allowlist方式のfilter/sort」)。
+ * `dimension`/`status`/`severity`/`diff_state`/`sort`/`order` はすべてallowlist方式で
+ * 検証し、許可されない値は `400` を返す(§Step7プラン「allowlist方式のfilter/sort」。
+ * `diff_state` はv0.5後半 §16・Q1で追加).
  * `suppressed`/`closed` は既定で除外し、`include_suppressed`/`include_closed`
  * (`'1'`/`'true'`/`'yes'` のいずれかで真)で含められる(§7「APIの既定では除外し、
  * `include_suppressed`で取得可能にする」).
@@ -52,9 +53,12 @@ class WPCV_Rest_Findings_Controller {
 	 * `verify_manifest_chunk()` 等が実際に作るfinding.statusの値。単一の定数
 	 * クラスに集約されていないため、ここに直接列挙する).
 	 *
+	 * `stat_changed` は v0.5 §Step8 で追加(stat 差分検知. 応答の `detail` 列に
+	 * 前回値→今回値の JSON 文字列が入る).
+	 *
 	 * @var string[]
 	 */
-	const VALID_STATUSES = array( 'added', 'modified', 'missing', 'unreadable' );
+	const VALID_STATUSES = array( 'added', 'modified', 'missing', 'unreadable', 'stat_changed' );
 
 	/**
 	 * `severity` クエリパラメータのallowlist.
@@ -69,6 +73,14 @@ class WPCV_Rest_Findings_Controller {
 	 * @var string[]
 	 */
 	const VALID_ORDERS = array( 'asc', 'desc' );
+
+	/**
+	 * `diff_state` クエリパラメータのallowlist(`WPCV_Page_Findings::VALID_DIFF_STATES`と
+	 * 同じ一覧.複製の理由は`VALID_STATUSES`と同じ.v0.5後半 §16・Q1).
+	 *
+	 * @var string[]
+	 */
+	const VALID_DIFF_STATES = array( 'new', 'continuing', 'event' );
 
 	/**
 	 * ルートを登録する. `rest_api_init` フックから呼ぶ.
@@ -135,6 +147,11 @@ class WPCV_Rest_Findings_Controller {
 			return $severity;
 		}
 
+		$diff_state = self::validate_allowlist( $request->get_param( 'diff_state' ), self::VALID_DIFF_STATES, 'diff_state' );
+		if ( is_wp_error( $diff_state ) ) {
+			return $diff_state;
+		}
+
 		$sort = self::validate_one_of( $request->get_param( 'sort' ), WPCV_Finding_Repository::SORTABLE_COLUMNS, 'id', 'sort' );
 		if ( is_wp_error( $sort ) ) {
 			return $sort;
@@ -157,6 +174,7 @@ class WPCV_Rest_Findings_Controller {
 				'dimension'          => $dimension,
 				'status'             => $status,
 				'severity'           => $severity,
+				'diff_state'         => $diff_state,
 				'include_suppressed' => self::to_bool( $request->get_param( 'include_suppressed' ) ),
 				'include_closed'     => self::to_bool( $request->get_param( 'include_closed' ) ),
 				'sort'               => $sort,

@@ -5,11 +5,13 @@ tampering by comparing installed files against official checksum manifests
 (wp.org core/plugin checksums) and reports unknown files not present in any
 manifest.
 
-> **Status**: v0.4.0. The verification engine, all planned execution model
+> **Status**: v0.5.0. The verification engine, all planned execution model
 > entry points (WP-CLI, WP-Cron, admin "Run now" button, REST API),
 > file-level chunked execution with resume, the suppression engine
-> (`exclude_target`/`exclude_path`/`allowlist_hash` plus strict mode), and
-> the Findings/Suppressions/Run History admin screens are implemented.
+> (`exclude_target`/`exclude_path`/`allowlist_hash` plus strict mode),
+> stat-based change detection for plugins without official checksums,
+> diff-based email alerts (see Alerts below), and the
+> Findings/Suppressions/Run History admin screens are implemented.
 > Official theme verification and GitHub-hosted plugin/theme verification
 > are not implemented yet. See `CHANGELOG.md` for details.
 
@@ -23,8 +25,50 @@ manifest.
   source exists for MU plugins).
 - **Unknown files**: files present on disk but absent from the relevant
   manifest are reported as findings, for every target above.
+- **Plugins without official checksums** (custom or premium plugins, and
+  MU-plugin loaders): tracked by stat-based change detection (see below).
 - Not yet implemented: official theme verification, and checksum
   verification for unofficial plugins/themes hosted on GitHub Releases.
+
+### Stat-based change detection
+
+Checksums can only prove a file is correct when an official copy exists to
+compare against. For plugins that have none, the plugin instead records
+each file's size, ctime, and mtime (via `lstat()`, so symlinks are not
+followed and file contents are never read) and reports what changed since
+the previous run. It points you at files worth reviewing; it does not judge
+whether a change is malicious.
+
+- **Which targets**: only plugins whose checksum lookup came back as
+  "no checksums exist" (`manifest_not_found`, `unknown_source`,
+  `version_unknown`) and MU-plugin loaders. Plugins that verified against
+  checksums are skipped (`checksum_covered`), and plugins whose lookup failed
+  temporarily (`http_error`, `rate_limited`) are skipped for that run so an
+  outage on wordpress.org never creates baselines by accident. Each such
+  plugin gets an extra target named `plugin:{slug}:_stat`
+  (`muplugin:{file}:_stat` for loaders) that shares its suppression rules.
+- **First run**: only records a baseline; nothing is reported.
+- **Findings**: `stat_changed` (size, ctime, or mtime differ — the `detail`
+  field holds the old and new values), `added` (a new file), and `missing`
+  (a file from the baseline is gone; reported once, then dropped from the
+  baseline). A size change with an unchanged mtime is flagged as possible
+  timestamp forgery and raised to `high` severity.
+- **Plugin updates**: when a plugin's version differs from the version its
+  baseline was built with, the baseline is discarded and rebuilt without
+  reporting changes, and the target is marked `baseline_rebuilt` so the
+  unchecked run stays visible in Run History.
+- **Mass changes without a version bump**: when a batch of up to 500 files
+  has at least 20 changed files and at least 50% of the files compared,
+  they are rolled up into a single `stat_changed` finding for the plugin
+  root (timestamp-forgery findings are always kept individually). These
+  thresholds are provisional; adjust them with the
+  `wpcv_stat_rollup_min_count` and `wpcv_stat_rollup_ratio` filters.
+- **Turning it off**: uncheck "Stat-based change detection" in Settings
+  (on by default). Existing baselines are kept, so turning it back on later
+  compares against the old baseline.
+- **Known limitations**: a same-size edit that also restores the original
+  mtime is still caught by ctime, but it is reported as an ordinary
+  `stat_changed` rather than as forgery.
 
 ## Running a verification
 
@@ -152,9 +196,15 @@ none yet), and `next_scheduled_at` (the next daily due time, computed from
 the Settings screen's run time regardless of which mode actually triggers
 it). Each run object includes its target-status tally (`queued`, `retry`,
 `running`, `success`, `unverifiable`, `failed`, `skipped`, `aborted`,
-`total`), `findings_total`, `scheduled_for`, `deadline_at`, and
+`total`), `findings_total`, `scheduled_for`, `deadline_at`,
 `last_activity_at` (the most recent target claim/finish timestamp — useful
-for spotting a run that has stopped making progress).
+for spotting a run that has stopped making progress), `diff_status` (the
+per-run diff pipeline's state, `null` before it starts — see Alerts below),
+`findings_new`/`findings_resolved`/`findings_continuing` (`null` until
+counted, not zeroed, so "not yet counted" and "zero" stay distinguishable),
+and `alert_status`/`alert_attempted_at`. Internal fields (`alert_error`, the
+diff worker's lease/owner/cursor) are never exposed here; see the Run
+History admin screen for those.
 
 Example response:
 
@@ -174,7 +224,13 @@ Example response:
     "targets": {
       "queued": 0, "retry": 0, "running": 0, "success": 36,
       "unverifiable": 7, "failed": 0, "skipped": 0, "aborted": 0, "total": 43
-    }
+    },
+    "diff_status": "done",
+    "findings_new": 5,
+    "findings_resolved": 0,
+    "findings_continuing": 1,
+    "alert_status": "sent",
+    "alert_attempted_at": "2026-09-11T05:46:13+00:00"
   },
   "next_scheduled_at": "2026-09-12T05:45:00+00:00"
 }
@@ -184,14 +240,22 @@ Example response:
 
 Requires a read-scope token. Returns findings for one run — the most
 recent one by default, or a specific `run_id` query parameter. Supports
-`dimension`, `status`, and `severity` filters (a single value or an array,
-e.g. `dimension[]=core&dimension[]=plugin`; each value must be from a fixed
-allowlist or the request returns `400`), `sort`/`order` (allowlisted
-columns only), and `page`/`per_page`
+`dimension`, `status` (including `stat_changed`), `severity`, and
+`diff_state` (`new`/`continuing`/`event` — see Alerts below) filters (a
+single value or an array, e.g. `dimension[]=core&dimension[]=plugin`; each
+value must be from a fixed allowlist or the request returns `400`),
+`sort`/`order` (allowlisted columns only), and `page`/`per_page`
 pagination (small default, capped maximum). Suppressed and closed findings
 are excluded by default; pass `include_suppressed=1`/`include_closed=1` to
 include them. The response includes `findings`, `run_id`, `page`,
-`per_page`, `total`, and `total_pages`.
+`per_page`, `total`, and `total_pages`. Each finding's `detail` is `null`
+except for stat-based findings, where it is a JSON string with the old and
+new size/ctime/mtime (or, for a rolled-up finding, the change count and
+sample paths). Each finding also carries `finding_key` (the identity used to
+match it across runs), `diff_state`, `notified_at` (when this finding was
+last emailed, or `null`), `ended_in_run_id`, and `end_reason` — `null` for
+any finding the diff pipeline has not touched yet (a run still in progress,
+a failed/aborted run, or a run from before this plugin tracked diffs).
 
 Example response:
 
@@ -203,7 +267,9 @@ Example response:
       "dimension": "plugin", "slug": "hello-dolly", "version": "1.7.2",
       "path": "readme.txt", "status": "modified", "severity": "low",
       "hash_algorithm": "sha256", "expected_hash": "...", "actual_hash": "...",
-      "suppressed_by": "soft_change", "suppression_id": null
+      "suppressed_by": "soft_change", "suppression_id": null,
+      "finding_key": "...", "diff_state": "new", "notified_at": "2026-09-11T05:46:13+00:00",
+      "ended_in_run_id": null, "end_reason": null
     }
   ],
   "run_id": 37,
@@ -214,6 +280,103 @@ Example response:
 }
 ```
 
+## Alerts
+
+The plugin compares each run against a baseline and emails a summary when
+something worth looking at changed. The comparison is per target (core,
+each plugin, each MU plugin) — a target's own most recent successfully
+verified run is its baseline, independent of what happened to other
+targets.
+
+- **`new`** — a finding whose identity (target + path + hash, roughly) was
+  not present in the baseline.
+- **`continuing`** — a finding that was already present in the baseline and
+  still is; summarized as a single count rather than re-listed in full.
+- **`resolved`** — a finding present in the baseline but gone from this run.
+- **`event`** — stat-based findings (see above) are always reported this
+  way, every run, with no re-send suppression: there is no official
+  manifest to diff against, so every stat-detected change is new
+  information by definition.
+
+A plugin update does not, by itself, produce `new` findings: when a
+target's version differs from its baseline's version, the old baseline is
+discarded and findings are compared against nothing (marked
+`version_changed`) rather than reported as newly added. A run that only
+rebuilt a stat baseline after a version change, or only closed
+`version_changed`/`excluded`/suppressed findings, does not trigger an
+email by itself — it is folded into the next email that does go out
+("Not verified today" section).
+
+A `new` finding is re-sent at most once every 7 days for the same
+identity, so a file that keeps flipping between resolved and re-appearing
+does not spam every run. If sending the email fails, the finding is not
+marked as notified, so it is retried on the next run — the plugin aims for
+"emailed at least once", not "emailed exactly once" (a redundant retry
+after a transient failure is preferable to silently dropping a finding).
+
+Two additional situations trigger an email even with no ordinary findings:
+
+- A target has been `unverifiable` for 3 runs in a row (default; e.g.
+  wp.org checksum lookups failing repeatedly) — see the
+  `wpcv_alert_unverifiable_streak` filter below.
+- The plugin's own verification run has failed or aborted 3 times in a row
+  (default) — see `wpcv_alert_run_failure_streak` below. This alert is
+  evaluated as soon as a run terminates in `failed`/`aborted`, independent
+  of the diff pipeline above.
+
+Both streak alerts fire once per streak (not on every run while the streak
+continues) and are evaluated purely from run history, so there is nothing
+to reset if the streak breaks and starts again later.
+
+**Recipients and testing**: set one or more addresses in **Alert
+recipients** on the Settings screen (one per line). If it is left empty, no
+email is sent and a warning notice is shown instead of silently doing
+nothing. Use **Send test alert** to confirm the configured recipients are
+correct before relying on it — the result is shown immediately on the same
+page.
+
+**What alerts cannot detect**: if WP-Cron itself stops firing (e.g. no
+traffic to a low-traffic site with `DISABLE_WP_CRON` unset, or the site is
+down), no run happens at all, and this plugin has no way to notice from
+the inside — point an external scheduler at `POST /run` (see above) if
+that is a concern.
+
+Beyond email, additional channels (Slack, a webhook, etc.) can be
+registered via the `wpcv_alert_channels` filter:
+
+```php
+add_filter( 'wpcv_alert_channels', function ( $channels, $context ) {
+    $channels[] = array(
+        'name' => 'my-webhook',
+        'send' => function ( $context ) {
+            // $context includes: type ('diff' or 'run_failure'), run_id,
+            // subject, body, counts, and the admin Findings-screen URL.
+            // It never includes alert_error, tokens, or server file paths.
+            return true; // or false/throw on failure.
+        },
+    );
+    return $channels;
+}, 10, 2 );
+```
+
+A channel only runs when the plugin actually attempts to send an email
+(i.e. not when there is no recipient configured); one channel's failure
+does not affect the email or other channels, and is not retried. There is
+also a `wpcv_run_terminated` action (`do_action( 'wpcv_run_terminated',
+$run_id, $status )`) fired whenever a run reaches a terminal status, for
+integrations that want to react to run completion directly.
+
+Numeric thresholds are intentionally not exposed on the Settings screen
+(they are unmeasured defaults, adjust only if you have a reason to) and
+can be changed with filters:
+
+| Filter | Default | Controls |
+| --- | --- | --- |
+| `wpcv_alert_max_items` | 20 | Top items listed in the email body by severity |
+| `wpcv_alert_resend_days` | 7 | Days before a resolved-then-recurring finding is re-sent |
+| `wpcv_alert_unverifiable_streak` | 3 | Consecutive unverifiable runs before alerting on a target |
+| `wpcv_alert_run_failure_streak` | 3 | Consecutive failed/aborted runs before alerting |
+
 ## Admin screens
 
 Alongside the Settings screen (see below), the plugin adds three read/write
@@ -221,9 +384,12 @@ screens under the same top-level "Checksum Verifier" menu (network admin
 menu on multisite):
 
 - **Findings** — the findings for the most recent run (or a specific
-  `run_id`), with the same `dimension`/`status`/`severity`/suppressed/closed
-  filters as `GET /findings`. Each row offers three one-click actions, each
-  requiring a reason: **Exclude this path** (creates an `exclude_path`
+  `run_id`), with the same `dimension`/`status`/`severity`/`diff_state`/
+  suppressed/closed filters as `GET /findings`. A **Diff** column shows
+  `new`/`continuing`/`event` (with the emailed timestamp when notified, e.g.
+  `new (emailed 2026-09-11 05:46:13)`), or a dash for findings the diff
+  pipeline has not touched yet. Each row offers three one-click actions,
+  each requiring a reason: **Exclude this path** (creates an `exclude_path`
   suppression rule scoped to that target and path), **Approve this hash**
   (creates an `allowlist_hash` rule for the exact hash/version shown — only
   offered for `added`/`modified` findings, which are the ones that actually
@@ -231,31 +397,43 @@ menu on multisite):
   `exclude_target` rule, skipping verification of that plugin/core/MU-plugin
   entirely from the next run onward). None of these retroactively change
   the findings currently on screen — the rule takes effect starting with
-  the next run.
+  the next run. A **Details** column shows what changed for stat-based
+  findings (old → new size and timestamps, or the rolled-up count).
 - **Suppressions** — every suppression rule ever created (all three types),
   with its target, reason, creator, creation time, and (for `allowlist_hash`
   rules) the approved version and hash prefix. Active rules can be revoked
   (also requiring a reason), which is recorded and shown alongside the rule
   rather than deleting it.
-- **Run History** — every run, newest first, with a detail view per run
-  showing each target's status, `error_code` (translated to a human-readable
-  reason for `unverifiable`/`retry`/`aborted`/`skipped` targets), file
-  counts, and attempt count.
+- **Run History** — every run, newest first, with **Diff** (`+new / −resolved
+  / =continuing`, or the raw `diff_status` while the diff pipeline is still
+  working through a run) and **Alert** (`sent`/`not_needed`/`no_recipient`/
+  `failed`) columns. The detail view per run shows each target's status,
+  `error_code` (translated to a human-readable reason for
+  `unverifiable`/`retry`/`aborted`/`skipped` targets), file counts, attempt
+  count, and a **Diff mode** column (see Alerts above); the run-level detail
+  also shows the diff/alert state, the alert error and any failed alert
+  channels when present (admin-only — never exposed over REST), and a link
+  to that run's findings. A **Findings ended in this run** section lists
+  every finding this run resolved, excluded, or otherwise closed out
+  (ordered resolved-first, paginated for runs with a large baseline).
 
 ## Settings
 
 The plugin's settings screen (network admin menu on multisite) opens with a
 **status panel**: the current run and last completed run (with their target
-tallies and last-activity timestamp), the next scheduled run time, whether
-WP-Cron is enabled, whether Action Scheduler is available (async runs
-silently fall back to synchronous execution when it isn't), and the most
-recent WP-CLI-triggered run recorded on this site (this only reflects runs
+tallies, last-activity timestamp, and a diff/alert summary, e.g. `diff: +5 /
+−0 / =1, alert: sent`), the next scheduled run time, whether WP-Cron is
+enabled, whether Action Scheduler is available (async runs silently fall
+back to synchronous execution when it isn't), and the most recent
+WP-CLI-triggered run recorded on this site (this only reflects runs
 actually recorded here — it cannot detect whether WP-CLI itself is
 installed on the server). Below that, you can configure: the daily run time
 (UTC, shared by WP-Cron and the REST endpoint's due check), the REST
 endpoint's per-request time budget, strict mode (reports readme.txt/readme.md
 changes as findings instead of suppressing them as a low-risk "soft change";
-off by default), and REST token issuance.
+off by default), stat-based change detection (on by default), alert
+recipients and the "Send test alert" button (see Alerts above), and REST
+token issuance.
 
 ## Distribution
 

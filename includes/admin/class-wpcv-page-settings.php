@@ -29,6 +29,9 @@ if ( ! defined( 'ABSPATH' ) ) {
  * update_strict_mode()`/`WPCV_Suppression_Matcher`)はAPI・matcher側は実装済み
  * だったが、この保存フォームにチェックボックスと保存処理が無く通常操作では
  * 既定値`false`のまま変更できなかったため、実行時刻フォームの下に追加した.
+ * v0.5後半 §Step14aでアラートの宛先(`alert_to`)フォームを追加し、§Step14dで
+ * 「Send test alert」ボタン(`WPCV_Alert_Sender::send_test()`を同期的に呼ぶ)を
+ * 追加した.
  */
 class WPCV_Page_Settings {
 
@@ -89,6 +92,20 @@ class WPCV_Page_Settings {
 	const READ_TOKEN_NONCE_NAME = 'wpcv_read_token_nonce';
 
 	/**
+	 * 「Send test alert」フォームの nonce action(v0.5後半 §Step14d).
+	 *
+	 * @var string
+	 */
+	const SEND_TEST_ALERT_NONCE_ACTION = 'wpcv_send_test_alert';
+
+	/**
+	 * 「Send test alert」フォームの nonce name(v0.5後半 §Step14d).
+	 *
+	 * @var string
+	 */
+	const SEND_TEST_ALERT_NONCE_NAME = 'wpcv_send_test_alert_nonce';
+
+	/**
 	 * 画面を描画する.
 	 *
 	 * @return void
@@ -102,10 +119,13 @@ class WPCV_Page_Settings {
 		$run_now_result       = self::maybe_handle_run_now();
 		$generated_run_token  = self::maybe_handle_generate_token( self::TOKEN_NONCE_NAME, self::TOKEN_NONCE_ACTION, WPCV_Rest_Token::SCOPE_RUN );
 		$generated_read_token = self::maybe_handle_generate_token( self::READ_TOKEN_NONCE_NAME, self::READ_TOKEN_NONCE_ACTION, WPCV_Rest_Token::SCOPE_READ );
+		$test_alert_result    = self::maybe_handle_send_test_alert();
 
 		$run_time                          = WPCV_Settings::get_run_time();
 		$external_http_time_budget_seconds = WPCV_Settings::get_external_http_time_budget_seconds();
 		$strict_mode                       = WPCV_Settings::get_strict_mode();
+		$stat_detection                    = WPCV_Settings::get_stat_detection_enabled();
+		$alert_to                          = WPCV_Settings::get_alert_to();
 		$button_state                      = self::run_now_button_state( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON );
 		?>
 		<div class="wrap">
@@ -174,8 +194,71 @@ class WPCV_Page_Settings {
 							</p>
 						</td>
 					</tr>
+					<?php // v0.5 §Step8: stat 差分検知の有効・無効. ?>
+					<tr>
+						<th scope="row">
+							<?php echo esc_html__( 'Stat-based change detection', 'wp-checksum-verifier' ); ?>
+						</th>
+						<td>
+							<label for="wpcv_stat_detection">
+								<input type="checkbox" name="wpcv_stat_detection" id="wpcv_stat_detection" value="1" <?php checked( $stat_detection ); ?> />
+								<?php echo esc_html__( 'Track file size and timestamps of plugins that cannot be verified against checksums, and report changes since the previous run.', 'wp-checksum-verifier' ); ?>
+							</label>
+							<p class="description">
+								<?php echo esc_html__( 'Applies to custom or premium plugins and mu-plugin loaders that have no official checksums. The first run only records a baseline. When a plugin version changes, its baseline is rebuilt without reporting changes. File contents are not read.', 'wp-checksum-verifier' ); ?>
+							</p>
+						</td>
+					</tr>
+					<?php // v0.5後半 §Step14: アラートの宛先. 空なら送らず、管理画面に警告を出す(プラン U1). ?>
+					<tr>
+						<th scope="row">
+							<label for="wpcv_alert_to"><?php echo esc_html__( 'Alert recipients', 'wp-checksum-verifier' ); ?></label>
+						</th>
+						<td>
+							<textarea name="wpcv_alert_to" id="wpcv_alert_to" rows="3" cols="50" class="large-text code"><?php echo esc_textarea( implode( "\n", $alert_to ) ); ?></textarea>
+							<p class="description">
+								<?php echo esc_html__( 'Email addresses that receive an alert when new or resolved findings appear. One per line (commas and semicolons also work). Invalid addresses are dropped when saving. If empty, no alert is sent and a warning is shown in the admin screens.', 'wp-checksum-verifier' ); ?>
+							</p>
+						</td>
+					</tr>
 				</table>
 				<?php submit_button( __( 'Save Changes', 'wp-checksum-verifier' ) ); ?>
+			</form>
+
+			<h2><?php echo esc_html__( 'Send test alert', 'wp-checksum-verifier' ); ?></h2>
+			<?php if ( null !== $test_alert_result ) : ?>
+				<?php if ( 'sent' === $test_alert_result['action'] ) : ?>
+					<div class="notice notice-success is-dismissible">
+						<p><?php echo esc_html__( 'Test alert sent successfully.', 'wp-checksum-verifier' ); ?></p>
+					</div>
+				<?php elseif ( 'no_recipient' === $test_alert_result['action'] ) : ?>
+					<div class="notice notice-warning is-dismissible">
+						<p><?php echo esc_html__( 'Alert recipients is empty. Set at least one address above and save, then try again.', 'wp-checksum-verifier' ); ?></p>
+					</div>
+				<?php else : ?>
+					<div class="notice notice-error is-dismissible">
+						<p>
+							<?php
+							echo esc_html(
+								null === $test_alert_result['error']
+									? __( 'Test alert failed to send.', 'wp-checksum-verifier' )
+									: sprintf(
+										/* translators: %s: error message from wp_mail(). */
+										__( 'Test alert failed to send: %s', 'wp-checksum-verifier' ),
+										$test_alert_result['error']
+									)
+							);
+							?>
+						</p>
+					</div>
+				<?php endif; ?>
+			<?php endif; ?>
+			<form method="post">
+				<?php wp_nonce_field( self::SEND_TEST_ALERT_NONCE_ACTION, self::SEND_TEST_ALERT_NONCE_NAME ); ?>
+				<p class="description">
+					<?php echo esc_html__( 'Send a test email to the alert recipients above, to confirm the address is correct before relying on it.', 'wp-checksum-verifier' ); ?>
+				</p>
+				<?php submit_button( __( 'Send test alert', 'wp-checksum-verifier' ), 'secondary', 'wpcv_send_test_alert_submit' ); ?>
 			</form>
 
 			<h2><?php echo esc_html__( 'Run now', 'wp-checksum-verifier' ); ?></h2>
@@ -318,6 +401,18 @@ class WPCV_Page_Settings {
 		// 不要).
 		WPCV_Settings::update_strict_mode( isset( $_POST['wpcv_strict_mode'] ) );
 
+		// v0.5 §Step8: strict mode と同じく、未チェック時はキー自体が送られてこない.
+		WPCV_Settings::update_stat_detection_enabled( isset( $_POST['wpcv_stat_detection'] ) );
+
+		// v0.5後半 §Step14: アラートの宛先. プラン §6 の順序(nonce → capability →
+		// `wp_unslash()` → 再サニタイズ)どおり. `sanitize_textarea_field()`は改行を残す
+		// ため区切りが保たれ、そのあと`parse_email_list()`がアドレス単位で検証し直す.
+		// テキストエリアは空でもキーごと送られてくるので、キーが無いとき(このフォーム
+		// 以外からの POST)だけは既存の値を変えない.
+		if ( isset( $_POST['wpcv_alert_to'] ) ) {
+			WPCV_Settings::update_alert_to( sanitize_textarea_field( wp_unslash( $_POST['wpcv_alert_to'] ) ) );
+		}
+
 		return true;
 	}
 
@@ -393,6 +488,32 @@ class WPCV_Page_Settings {
 		spawn_cron();
 
 		return true;
+	}
+
+	/**
+	 * 「Send test alert」フォームが POST されていれば nonce・capability を
+	 * 検証したうえで `WPCV_Alert_Sender::send_test()` を呼ぶ(v0.5後半 §Step14d.
+	 * プラン §4.4「宛先の誤りを運用前に見つけるため」).
+	 *
+	 * `maybe_handle_run_now()`と異なりWP-Cronの非同期発火を経由せず、この
+	 * リクエストの中で同期的に`wp_mail()`まで完了させる(テスト送信1通だけ
+	 * であり、検証runのように時間がかかる処理ではないため).
+	 *
+	 * @return array{action: string, error: string|null}|null POSTされていない・
+	 *         capability検証に失敗した場合は`null`(何もnoticeを表示しない).
+	 */
+	private static function maybe_handle_send_test_alert() {
+		if ( ! isset( $_POST[ self::SEND_TEST_ALERT_NONCE_NAME ] ) ) {
+			return null;
+		}
+
+		check_admin_referer( self::SEND_TEST_ALERT_NONCE_ACTION, self::SEND_TEST_ALERT_NONCE_NAME );
+
+		if ( ! current_user_can( self::required_capability() ) ) {
+			return null;
+		}
+
+		return WPCV_Plugin::alert_sender()->send_test();
 	}
 
 	/**
@@ -504,6 +625,12 @@ class WPCV_Page_Settings {
 	 * が返す`current_run`/`last_run`の形)を1行の表示文字列へ整形する
 	 * (`render()`から分離してテスト可能にする).
 	 *
+	 * 末尾に差分・アラートを足した(v0.5後半 §16・§1.4).`describe_run()`が返す
+	 * 連想配列は`diff_status`/`findings_new`等を`WPCV_Run_Repository`の行と
+	 * 同じキー名で持つため、`WPCV_Page_Run_History::format_diff_summary()`/
+	 * `format_alert_status()`をそのまま再利用できる(同じ表を2か所に持たない).
+	 * `current_run`(検証中のrun)は`diff_status`がNULLのため必ず「—」になる.
+	 *
 	 * @param array|null $run `null`・`current_run`・`last_run`のいずれか.
 	 * @return string
 	 */
@@ -515,14 +642,16 @@ class WPCV_Page_Settings {
 		$targets = $run['targets'];
 
 		return sprintf(
-			/* translators: 1: run id, 2: status, 3: pending (queued) target count, 4: retry target count, 5: findings count, 6: last activity timestamp or dash. */
-			__( '#%1$d (%2$s) — pending: %3$d, retry: %4$d, findings: %5$d, last activity: %6$s', 'wp-checksum-verifier' ),
+			/* translators: 1: run id, 2: status, 3: pending (queued) target count, 4: retry target count, 5: findings count, 6: last activity timestamp or dash, 7: diff summary, 8: alert status. */
+			__( '#%1$d (%2$s) — pending: %3$d, retry: %4$d, findings: %5$d, last activity: %6$s — diff: %7$s, alert: %8$s', 'wp-checksum-verifier' ),
 			(int) $run['run_id'],
 			(string) $run['status'],
 			(int) $targets['queued'],
 			(int) $targets['retry'],
 			(int) $run['findings_total'],
-			null === $run['last_activity_at'] ? '—' : (string) $run['last_activity_at']
+			null === $run['last_activity_at'] ? '—' : (string) $run['last_activity_at'],
+			WPCV_Page_Run_History::format_diff_summary( $run ),
+			WPCV_Page_Run_History::format_alert_status( $run )
 		);
 	}
 
@@ -543,9 +672,13 @@ class WPCV_Page_Settings {
 	/**
 	 * この画面に必要な capability を返す.
 	 *
+	 * `WPCV_Admin_Notices`(v0.5後半 §Step14d)からも同じ判定を使うため
+	 * publicにしてある(WPCVの各画面と同じcapabilityでアラート通知の表示可否を
+	 * 揃えるため. 重複を避ける).
+	 *
 	 * @return string
 	 */
-	private static function required_capability() {
+	public static function required_capability() {
 		return is_multisite() ? 'manage_network_options' : 'manage_options';
 	}
 }

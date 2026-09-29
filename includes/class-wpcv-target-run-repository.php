@@ -79,6 +79,17 @@ class WPCV_Target_Run_Repository {
 	const DEFAULT_BACKOFF_MAX_SECONDS = 3600;
 
 	/**
+	 * `find_streak_for_target()` が1回に読む target_run の件数(v0.5後半
+	 * §Step15b設計§3.1「1回に読む件数は未実測の暫定値を置き、コメントに
+	 * 『未実測』と書く」).`WPCV_Run_Repository::FAILURE_STREAK_BATCH_SIZE`と
+	 * 同じ値を流用する(通常は最初の1バッチで途切れる〔success等に遭遇する〕
+	 * ため、ほとんどの呼び出しは1回のクエリで終わる).
+	 *
+	 * @var int
+	 */
+	const UNVERIFIABLE_STREAK_BATCH_SIZE = 50;
+
+	/**
 	 * `$wpdb` 相当のオブジェクト(`insert()` / `update()` / `get_results()` / `query()` /
 	 * `base_prefix` / `insert_id` / `last_error` を持つもの).
 	 *
@@ -288,13 +299,17 @@ class WPCV_Target_Run_Repository {
 		// `update_chunk_progress()`が呼ばれる=chunk_verifierが実際に走って結果を
 		// 返した(=以前の`error_code`は陳腐化した)ことを意味するため、
 		// `completed`の真偽に関わらず常にクリアする.
+		//
+		// v0.5 §Step7: ただし chunk 結果が `error_code` を持つ場合はそれを書く.
+		// stat target のベースラインを作り直した run では `baseline_rebuilt` を
+		// 完走後も残す必要がある(rev.3 §3.7-b. 「見ていない日」を監査可能にする).
 		$data   = array(
 			'cursor_path'          => $chunk_result['cursor_path'],
 			'manifest_fingerprint' => $chunk_result['manifest_fingerprint'],
 			'files_total'          => (int) $chunk_result['files_total'],
 			'files_verified'       => $files_verified,
 			'findings_total'       => $findings_total,
-			'error_code'           => null,
+			'error_code'           => isset( $chunk_result['error_code'] ) ? (string) $chunk_result['error_code'] : null,
 		);
 		$format = array( '%s', '%s', '%d', '%d', '%d', '%s' );
 
@@ -519,6 +534,60 @@ class WPCV_Target_Run_Repository {
 	}
 
 	/**
+	 * 依存先の target_run(stat 差分検知 target にとっての本体 target)がまだ
+	 * 終わっていないため、処理せずに retry へ戻し、指定秒数だけ claim されない
+	 * ようにする(v0.5 §Step6. rev.3 §3.4).
+	 *
+	 * `mark_scan_incomplete()` を使わない理由は2つ。1つは `error_code` に
+	 * `timeout` が入り「時間予算切れ」と誤解させること。もう1つは `retry_after` を
+	 * 空にするため直後の `claim_next()` ですぐ再 claim され、本体が別 worker で
+	 * 処理中の間 continuation が空回りし続けること.
+	 *
+	 * `attempt_count` は加算しない(正常な待機であり異常系ではないため).
+	 * fencing は `mark_scan_incomplete()` と同じ(`status = running AND lease_owner`).
+	 *
+	 * @param int    $target_run_id       対象の target_run の id.
+	 * @param string $lease_owner         `claim_next()` がこの処理エピソードに割り当てた lease owner.
+	 * @param int    $retry_after_seconds 何秒後から再 claim を許すか.
+	 * @return bool 更新できたら true(false は fencing 失敗).
+	 *
+	 * @throws RuntimeException `$wpdb->update()` がSQLエラーで `false` を返した場合.
+	 */
+	public function defer_for_dependency( $target_run_id, $lease_owner, $retry_after_seconds ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
+
+		$updated = $this->wpdb->update(
+			$table,
+			array(
+				'status'           => WPCV_Target_Status::RETRY,
+				'lease_owner'      => null,
+				'lease_expires_at' => null,
+				'retry_after'      => gmdate( 'Y-m-d H:i:s', strtotime( (string) call_user_func( $this->now ) ) + (int) $retry_after_seconds ),
+			),
+			array(
+				'id'          => (int) $target_run_id,
+				'status'      => WPCV_Target_Status::RUNNING,
+				'lease_owner' => (string) $lease_owner,
+			),
+			array( '%s', '%s', '%s', '%s' ),
+			array( '%d', '%s', '%s' )
+		);
+
+		if ( false === $updated ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf(
+						'WPCV_Target_Run_Repository::defer_for_dependency() の update に失敗しました: %s',
+						(string) $this->wpdb->last_error
+					)
+				)
+			);
+		}
+
+		return $updated > 0;
+	}
+
+	/**
 	 * 指定 run に属する、claim可能(`WPCV_Target_Status::SCHEDULABLE`。かつ
 	 * `retry_after` が未来でない)な target_run を1件、原子的に claim する
 	 * (v0.4.0 §Step4: `WPCV_Chunk_Dispatcher` から呼ぶ).
@@ -529,12 +598,15 @@ class WPCV_Target_Run_Repository {
 	 * 2つの worker が同じ行を同時に claim しようとしても、先に成功した側だけが
 	 * 影響行数1を得て、後発は影響行数0(=claim失敗。呼び出し元は次の候補を
 	 * 探すのではなく `null` を返し、次の dispatch 呼び出しに委ねる)を得る。
-	 * 候補の選定(SELECT)自体は原子的ではない(`ORDER BY ... LIMIT 1` 相当を
-	 * 使わず、`WPCV_Run_Repository::find_active_run()` と同じ「全行取得してPHPで
-	 * 絞り込む」方式。テストダブル `WPCV_Test_Fake_WPDB::get_results()` がWHERE句を
-	 * 解釈しないため)が、claim の安全性は上記のCASのみに依存しており、候補選定の
-	 * 非原子性は「同じ行を2 workerが同時に選ぶ」ことはあっても「2 workerが両方とも
-	 * claimに成功する」ことは無い、という性質を壊さない.
+	 * 候補の選定(SELECT)自体は原子的ではないが、claim の安全性は上記のCASのみに
+	 * 依存しており、候補選定の非原子性は「同じ行を2 workerが同時に選ぶ」ことは
+	 * あっても「2 workerが両方ともclaimに成功する」ことは無い、という性質を壊さない.
+	 *
+	 * 候補は `run_id` と `status`(schedulable)をSQLで絞り込み、id順に読む
+	 * (`idx_run_status` を使う.コードレビュー指摘5. 以前は全runのtarget_runを
+	 * 読んでPHPで絞り込んでおり、dispatchのたびに全履歴を読んでいた).
+	 * `retry_after`(NULL、または現在時刻以前)の判定だけはPHPで行う
+	 * (NULLを含む条件をSQLの1つの条件にまとめにくく、1 run分の候補は少ないため).
 	 *
 	 * @param int    $run_id        対象の run の id.
 	 * @param string $lease_owner   claim した worker を識別する一意な文字列
@@ -547,35 +619,25 @@ class WPCV_Target_Run_Repository {
 		$table      = $this->wpdb->base_prefix . 'wpcv_target_runs';
 		$now_string = call_user_func( $this->now );
 
-		$candidates = array();
-		foreach ( $this->all_rows() as $row ) {
-			if ( (int) $row['run_id'] !== (int) $run_id ) {
-				continue;
-			}
+		$statuses = "'" . implode( "', '", WPCV_Target_Status::SCHEDULABLE ) . "'";
+		$sql      = "SELECT * FROM {$table} WHERE run_id = %d AND status IN ( {$statuses} ) ORDER BY id ASC";
 
-			if ( ! WPCV_Target_Status::is_schedulable( $row['status'] ) ) {
-				continue;
-			}
+		$target = null;
 
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name and hardcoded enums only) built above; dynamic values are bound via prepare().
+		foreach ( $this->select_rows( $this->wpdb->prepare( $sql, (int) $run_id ) ) as $row ) {
 			if ( ! empty( $row['retry_after'] ) && (string) $row['retry_after'] > $now_string ) {
 				continue;
 			}
 
-			$candidates[] = $row;
+			$target = $row;
+			break;
 		}
 
-		if ( empty( $candidates ) ) {
+		if ( null === $target ) {
 			return null;
 		}
 
-		usort(
-			$candidates,
-			static function ( $a, $b ) {
-				return (int) $a['id'] <=> (int) $b['id'];
-			}
-		);
-
-		$target           = $candidates[0];
 		$lease_expires_at = gmdate( 'Y-m-d H:i:s', strtotime( $now_string ) + (int) $lease_seconds );
 		$new_fields       = array(
 			'status'           => WPCV_Target_Status::RUNNING,
@@ -637,19 +699,13 @@ class WPCV_Target_Run_Repository {
 		$now_string   = call_user_func( $this->now );
 		$swept        = 0;
 
-		foreach ( $this->all_rows() as $row ) {
-			if ( (int) $row['run_id'] !== (int) $run_id ) {
-				continue;
-			}
+		// `running` のまま lease 期限を過ぎた行だけをSQLで絞り込む(コードレビュー
+		// 指摘5. `idx_run_status` を使う).`lease_expires_at` がNULLの行は
+		// SQLの比較で偽になるため、以前の「空なら対象外」と同じ結果になる.
+		$sql = "SELECT * FROM {$table} WHERE run_id = %d AND status = %s AND lease_expires_at <= %s";
 
-			if ( WPCV_Target_Status::RUNNING !== $row['status'] ) {
-				continue;
-			}
-
-			if ( empty( $row['lease_expires_at'] ) || (string) $row['lease_expires_at'] > $now_string ) {
-				continue;
-			}
-
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name and hardcoded enums only) built above; dynamic values are bound via prepare().
+		foreach ( $this->select_rows( $this->wpdb->prepare( $sql, (int) $run_id, WPCV_Target_Status::RUNNING, $now_string ) ) as $row ) {
 			$new_attempt_count = (int) $row['attempt_count'] + 1;
 
 			if ( $new_attempt_count > $max_attempts ) {
@@ -720,15 +776,298 @@ class WPCV_Target_Run_Repository {
 	 * @return array<int, array>
 	 */
 	public function find_all_by_run( $run_id ) {
-		$rows = array();
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
 
-		foreach ( $this->all_rows() as $row ) {
-			if ( (int) $row['run_id'] === (int) $run_id ) {
-				$rows[] = $row;
+		// `idx_run_id` で1 run分だけを読む(コードレビュー指摘5. 以前は全履歴を読んで
+		// PHPで絞り込んでいた).id順は以前の`all_rows()`の並び(挿入順)と同じ.
+		return $this->select_rows( $this->wpdb->prepare( "SELECT * FROM {$table} WHERE run_id = %d ORDER BY id ASC", (int) $run_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name only.
+	}
+
+	/**
+	 * これまでに1回でも検証対象になったことがある target_id の一覧を返す
+	 * (v0.5後半 §Step12: `WPCV_Diff_Dispatcher` の target_removed〔アンインストール〕
+	 * 検出用. 今回の run の target_run 一覧に含まれない target_id が見つかれば、
+	 * その target はアンインストールされたとみなせる).
+	 *
+	 * 当初は`WPCV_Finding_Repository::find_unresolved_target_ids()`
+	 * (`wpcv_findings`から`ended_in_run_id IS NULL`の行を全件取得して絞り込む
+	 * 設計)だったが、実地検証(test-armfu.local、1万・10万件規模)でこれが
+	 * インストール全体の累積findings件数に比例して重くなる(LIMIT無しの
+	 * 全件取得)ことが判明したため、schema v5でこちらへ置き換えた. こちらは
+	 * `wpcv_target_runs`(target_idの種類数だけに比例する。既存の
+	 * `idx_target_id`が使える)を見るため、target_idが「まだ未解決のfindingを
+	 * 持つか」を問わない(=戻り値は旧実装よりわずかに広い集合になりうるが、
+	 * 呼び出し元の`end_all_for_target_run()`は対象が0件でも安全なno-opのため
+	 * 実害は無い).
+	 *
+	 * @return string[] 重複なしの target_id 一覧.
+	 */
+	public function find_all_known_target_ids() {
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
+		$sql   = "SELECT DISTINCT target_id FROM {$table}";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only, no bound values) built above.
+		$rows = $this->wpdb->get_results( $sql, ARRAY_A );
+		$rows = is_array( $rows ) ? $rows : array();
+
+		$target_ids = array();
+
+		foreach ( $rows as $row ) {
+			$target_ids[ $row['target_id'] ] = true;
+		}
+
+		return array_keys( $target_ids );
+	}
+
+	/**
+	 * 指定 target の「基準」target_run を探す(v0.5後半プラン §2.1: その target の
+	 * 直近の `status = success` の target_run〔今回の run より前〕.Step12の
+	 * 差分処理〔`WPCV_Diff_Dispatcher`〕が呼び出し元).
+	 *
+	 * `usable` は §1.4「v4 より前の行(finding_key を持たない行)しか無い基準は
+	 * 基準なし(first)として扱う」の判定材料であり、このメソッド自身は判定しない
+	 * (finding の有無を知らないため.呼び出し元が
+	 * `WPCV_Finding_Repository::is_baseline_usable()` の結果を渡してこの戻り値に
+	 * 合成し `WPCV_Generation_Differ::determine_diff_mode()` へ渡す設計).
+	 *
+	 * 実地検証(test-armfu.local)で見つかった性能上の懸念への対応(v0.5後半 §Step12.
+	 * schema変更は不要): `all_rows()`(`SELECT * FROM wpcv_target_runs`. テーブル
+	 * 全件取得)を使わず、`target_id`/`status`/`run_id`をSQLのWHERE句に含めた
+	 * クエリに変更した. これは既存の`idx_target_status_run(target_id, status,
+	 * run_id)`(Step10で「基準target_runの検索に使う」目的で追加済みだったが、
+	 * 実装がSQL側で絞り込んでおらず未使用のまま埋もれていた)を使わせるため.
+	 * 特に、target_removed検出(`WPCV_Diff_Dispatcher::handle_target_removed()`)が
+	 * 「今回runに現れない既知target」1件ごとにこのメソッドを呼ぶため、既知target数
+	 * だけ`all_rows()`の全件取得を繰り返す形になっており、実測でtarget_runs
+	 * 2,934行×既知target86件分の取得が1回のfinalizeで発生し4.5秒かかっていた.
+	 *
+	 * @param string $target_id      対象の target_id.
+	 * @param int    $before_run_id  この run より前の target_run だけを対象にする.
+	 * @return array{id: int, version: string|null}|null 見つからなければ `null`.
+	 */
+	public function find_baseline_target_run( $target_id, $before_run_id ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
+		$sql   = "SELECT * FROM {$table} WHERE target_id = %s AND status = %s AND run_id < %d ORDER BY run_id DESC LIMIT 1";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via prepare() below.
+		$rows = $this->select_rows( $this->wpdb->prepare( $sql, (string) $target_id, WPCV_Target_Status::SUCCESS, (int) $before_run_id ) );
+
+		// 以前はテストダブルがSQLを解釈しなかったため、ここでPHP側でも絞り込み・
+		// 並べ替えをやり直していた.コードレビュー指摘5でテストダブルがこの形の
+		// SQLを解釈するようになったため、SQLの結果をそのまま使う.
+		if ( empty( $rows ) ) {
+			return null;
+		}
+
+		return array(
+			'id'      => (int) $rows[0]['id'],
+			'version' => $rows[0]['version'],
+		);
+	}
+
+	/**
+	 * 連続unverifiable(v0.5後半 §Step15b設計§2.1・§2.2)を、指定targetについて
+	 * `$current_run_id`から遡って求める.`WPCV_Alert_Sender::send_for_run()`が、
+	 * 今回の run で「数える」に該当したtarget_runについてのみ呼ぶ想定
+	 * (設計書§3.2「今回のtarget_runのうち『数える』に当たるものについて呼び」).
+	 *
+	 * `WPCV_Run_Repository::find_failure_streak()`と同じ考え方(そちらの
+	 * docblock参照)だが、次の点が異なる:
+	 *
+	 * - 「数える/途切れさせる」の分類対象はrunではなくtarget_run(§2.1の表)。
+	 *   分類そのものはDBに触れない`WPCV_Generation_Differ::
+	 *   is_unverifiable_streak_member()`に委ねる.
+	 * - 「見ない」経路が2つある: (1) 所属するrunがfailed/abortedのとき(この
+	 *   メソッドがrunのstatusを見て判定する)、(2) その target のtarget_runが
+	 *   対象のrunにそもそも存在しないとき(アンインストール等)。こちらは、
+	 *   このtarget_idで絞り込んだ`wpcv_target_runs`のクエリにその run の行が
+	 *   現れないだけで自然に実現される ―― 全runを列挙する必要は無い.
+	 *
+	 * 読み方: 無制限の全件取得はしない.新しい順に
+	 * `UNVERIFIABLE_STREAK_BATCH_SIZE`件ずつ読み、途切れる行が出るか、
+	 * それ以上のtarget_runが無くなるまで続ける.「属するrun」の行
+	 * (status/alert_status)は、target_runとJOINせず別クエリで`id IN (...)`
+	 * により一括で読む(テストダブルがJOINを解釈しないため.設計書§3.1
+	 * 「target_runを読む→属するrunをid IN(...)で読む」).
+	 *
+	 * 「通知済み」の判定は`WPCV_Run_Repository::find_failure_streak()`と全く
+	 * 同じ式(そちらのdocblock参照.連続の長さL・閾値Nに対し、今回を除く
+	 * 2件目〜`L - N + 1`件目のいずれかに`alert_status = sent`があれば通知済み).
+	 *
+	 * @param string $target_id      対象のtarget_id.
+	 * @param int    $current_run_id 起点のrun(今回のrun)のid.
+	 * @param int    $threshold      閾値N(`wpcv_alert_unverifiable_streak`.
+	 *                               下限1は呼び出し元が適用済みの前提だが、
+	 *                               念のためここでも適用する).
+	 * @return array{length: int, notified: bool} `length`は数えた件数(今回を含む).
+	 */
+	public function find_streak_for_target( $target_id, $current_run_id, $threshold ) {
+		$target_id      = (string) $target_id;
+		$current_run_id = (int) $current_run_id;
+		$threshold      = max( 1, (int) $threshold );
+
+		$counted   = array();
+		$before_id = $current_run_id + 1;
+
+		while ( true ) {
+			$batch = $this->fetch_target_run_streak_batch( $target_id, $before_id );
+
+			if ( empty( $batch ) ) {
+				break; // これ以上遡るtarget_runが無い(連続はここで終わる).
+			}
+
+			$runs_by_id = $this->fetch_runs_by_id( array_column( $batch, 'run_id' ) );
+			$broke      = false;
+
+			foreach ( $batch as $target_run ) {
+				$run_id = (int) $target_run['run_id'];
+
+				if ( $run_id >= $before_id ) {
+					// テストダブルがWHEREを解釈せず全件を返した場合の保険.
+					continue;
+				}
+
+				$run = $runs_by_id[ $run_id ] ?? null;
+
+				if ( null === $run ) {
+					// 属するrunが見つからない(通常起こらない). 安全側で見ない.
+					continue;
+				}
+
+				if ( in_array( (string) ( $run['status'] ?? '' ), array( WPCV_Run_Status::FAILED, WPCV_Run_Status::ABORTED ), true ) ) {
+					continue; // §2.1: runがfailed/abortedなら見ない.
+				}
+
+				if ( ! WPCV_Generation_Differ::is_unverifiable_streak_member( $target_run ) ) {
+					$broke = true;
+					break;
+				}
+
+				$counted[] = array( 'alert_status' => $run['alert_status'] ?? null );
+			}
+
+			if ( $broke ) {
+				break;
+			}
+
+			$before_id = (int) $batch[ count( $batch ) - 1 ]['run_id'];
+
+			if ( count( $batch ) < self::UNVERIFIABLE_STREAK_BATCH_SIZE ) {
+				break; // このtargetのtarget_run履歴を読み切った.
 			}
 		}
 
-		return $rows;
+		$length   = count( $counted );
+		$notified = false;
+
+		for ( $i = 1; $i <= $length - $threshold; $i++ ) {
+			if ( 'sent' === (string) ( $counted[ $i ]['alert_status'] ?? '' ) ) {
+				$notified = true;
+				break;
+			}
+		}
+
+		return array(
+			'length'   => $length,
+			'notified' => $notified,
+		);
+	}
+
+	/**
+	 * `find_streak_for_target()`が1バッチ分のtarget_run(`run_id`/`target_id`/
+	 * `status`/`error_code`)を読む.
+	 *
+	 * @param string $target_id 対象のtarget_id.
+	 * @param int    $before_id この値未満の`run_id`だけを対象にする.
+	 * @return array<int, array>
+	 */
+	private function fetch_target_run_streak_batch( $target_id, $before_id ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
+
+		return $this->select_rows(
+			$this->wpdb->prepare(
+				"SELECT run_id, target_id, status, error_code FROM {$table} WHERE target_id = %s AND run_id < %d ORDER BY run_id DESC LIMIT %d", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name only.
+				(string) $target_id,
+				(int) $before_id,
+				self::UNVERIFIABLE_STREAK_BATCH_SIZE
+			)
+		);
+	}
+
+	/**
+	 * `run_id`の一覧から、対応する`wpcv_runs`の行(`id`/`status`/`alert_status`)を
+	 * まとめて読む(`find_streak_for_target()`専用.クラスdocblock相当の理由で
+	 * JOINせず別クエリにする).
+	 *
+	 * @param array $run_ids 読み取る run の id 一覧(空なら空配列を返す).
+	 * @return array<int, array> `id` => 行.
+	 */
+	private function fetch_runs_by_id( array $run_ids ) {
+		$run_ids = array_values( array_unique( array_map( 'intval', $run_ids ) ) );
+
+		if ( empty( $run_ids ) ) {
+			return array();
+		}
+
+		$table        = $this->wpdb->base_prefix . 'wpcv_runs';
+		$placeholders = implode( ', ', array_fill( 0, count( $run_ids ), '%d' ) );
+		$sql          = "SELECT id, status, alert_status FROM {$table} WHERE id IN ( {$placeholders} )";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name + placeholder count matches $run_ids) built above; all values are bound via prepare().
+		$rows = $this->select_rows( $this->wpdb->prepare( $sql, $run_ids ) );
+
+		$by_id = array();
+
+		foreach ( $rows as $row ) {
+			$by_id[ (int) $row['id'] ] = $row;
+		}
+
+		return $by_id;
+	}
+
+	/**
+	 * 差分処理(v0.5後半 §Step12)が決定した `diff_mode`/`baseline_target_run_id` を
+	 * 書き込む.
+	 *
+	 * このメソッド自身にfencingは無い(差分処理は run 単位の
+	 * `WPCV_Run_Repository::claim_diff()` が排他制御を担い、この書き込みは
+	 * そのlease保持中にだけ行われる前提のため.`WPCV_Target_Run_Repository`の
+	 * 他メソッドが行うtarget単位のlease fencing〔`lease_owner`〕とは異なる層の
+	 * 排他である).
+	 *
+	 * @param int      $target_run_id          対象の target_run の id.
+	 * @param string   $diff_mode              `WPCV_Generation_Differ::DIFF_MODE_*`
+	 *                                          のいずれか(stat targetは `event`).
+	 * @param int|null $baseline_target_run_id 比較に使った基準の target_run の id
+	 *                                          (基準が無ければ `null`).
+	 * @return void
+	 *
+	 * @throws RuntimeException `$wpdb->update()` がSQLエラーで `false` を返した場合.
+	 */
+	public function update_diff_mode( $target_run_id, $diff_mode, $baseline_target_run_id ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
+
+		$updated = $this->wpdb->update(
+			$table,
+			array(
+				'diff_mode'              => (string) $diff_mode,
+				'baseline_target_run_id' => null === $baseline_target_run_id ? null : (int) $baseline_target_run_id,
+			),
+			array( 'id' => (int) $target_run_id ),
+			array( '%s', '%d' ),
+			array( '%d' )
+		);
+
+		if ( false === $updated ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf(
+						'WPCV_Target_Run_Repository::update_diff_mode() の update に失敗しました: %s',
+						(string) $this->wpdb->last_error
+					)
+				)
+			);
+		}
 	}
 
 	/**
@@ -816,18 +1155,19 @@ class WPCV_Target_Run_Repository {
 	}
 
 	/**
-	 * `find_by_id()`/`claim_next()`/`sweep_expired_leases()`/`find_all_by_run()`で
-	 * 共有する「テーブルの全行を読み取る」処理(v0.4.0 §Step4で `find_by_id()` から
-	 * 抽出).テストダブル(`WPCV_Test_Fake_WPDB::get_results()`)がWHERE句を
-	 * 解釈しないための設計は `find_by_id()` の docblock と同じ理由.
+	 * 組み立て済みのSELECT文を実行して行の配列を返す(`find_by_id()`/`claim_next()`/
+	 * `sweep_expired_leases()`/`find_all_by_run()`/`find_baseline_target_run()`で共有する.
+	 * コードレビュー指摘5で、テーブル全件を読む`all_rows()`を置き換えた).
 	 *
-	 * @return array<int, array>
+	 * `$sql`は呼び出し元が組み立て済みのもの(動的な値は`prepare()`済み、または
+	 * `WPCV_Target_Status`の固定enumのみ)に限る.
+	 *
+	 * @param string $sql 実行するSELECT文.
+	 * @return array<int, array> エラー時・0件時は空配列.
 	 */
-	private function all_rows() {
-		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
-
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- static table literal, no user input.
-		$rows = $this->wpdb->get_results( "SELECT * FROM {$table}", ARRAY_A );
+	private function select_rows( $sql ) {
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- $sql is built by the callers above (table name + prepare()d values or hardcoded enums only).
+		$rows = $this->wpdb->get_results( $sql, ARRAY_A );
 
 		return is_array( $rows ) ? $rows : array();
 	}
@@ -839,12 +1179,9 @@ class WPCV_Target_Run_Repository {
 	 * @return array|null 見つからなければ null.
 	 */
 	private function find_by_id( $target_run_id ) {
-		foreach ( $this->all_rows() as $row ) {
-			if ( (int) $row['id'] === (int) $target_run_id ) {
-				return $row;
-			}
-		}
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
+		$rows  = $this->select_rows( $this->wpdb->prepare( "SELECT * FROM {$table} WHERE id = %d LIMIT 1", (int) $target_run_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name only.
 
-		return null;
+		return empty( $rows ) ? null : $rows[0];
 	}
 }
