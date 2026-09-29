@@ -400,6 +400,23 @@ if ( ! function_exists( 'as_schedule_single_action' ) ) {
 	}
 }
 
+if ( ! function_exists( 'as_unschedule_all_actions' ) ) {
+	/**
+	 * Stub as_unschedule_all_actions() — records the call in
+	 * $GLOBALS['_wpcv_test_as_unschedule_all_calls'][]. Added for v0.5.1
+	 * (`WPCV_Chunk_Dispatcher::deactivate()` の継続アクションキャンセルのテスト用).
+	 *
+	 * @param string $hook  Hook name(空文字も許容. 実関数はhookが空かつgroupが
+	 *                      非空なら `cancel_actions_by_group()` に委譲する).
+	 * @param array  $args  Args.
+	 * @param string $group Group.
+	 * @return void
+	 */
+	function as_unschedule_all_actions( $hook, $args = array(), $group = '' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_as_unschedule_all_calls'][] = array( $hook, $args, $group );
+	}
+}
+
 if ( ! class_exists( 'ActionScheduler' ) ) {
 	/**
 	 * Minimal stub of ActionScheduler(実クラスは `lib/action-scheduler/classes/abstracts/ActionScheduler.php`)。
@@ -596,6 +613,40 @@ if ( ! function_exists( 'update_site_option' ) ) {
 	function update_site_option( $name, $value ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
 		$GLOBALS['_wpcv_test_site_options'][ $name ]      = $value;
 		$GLOBALS['_wpcv_test_update_site_option_calls'][] = array( $name, $value );
+
+		return true;
+	}
+}
+
+if ( ! function_exists( 'delete_option' ) ) {
+	/**
+	 * Stub delete_option() — $GLOBALS['_wpcv_test_options'][$name] を消す(v0.5.1
+	 * uninstall修正のテスト用. 呼び出し自体を $GLOBALS['_wpcv_test_delete_option_calls'][]
+	 * に記録する).
+	 *
+	 * @param string $name オプション名.
+	 * @return true
+	 */
+	function delete_option( $name ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		unset( $GLOBALS['_wpcv_test_options'][ $name ] );
+		$GLOBALS['_wpcv_test_delete_option_calls'][] = $name;
+
+		return true;
+	}
+}
+
+if ( ! function_exists( 'delete_site_option' ) ) {
+	/**
+	 * Stub delete_site_option() — $GLOBALS['_wpcv_test_site_options'][$name] を消す
+	 * (v0.5.1 uninstall修正のテスト用. 呼び出し自体を
+	 * $GLOBALS['_wpcv_test_delete_site_option_calls'][] に記録する).
+	 *
+	 * @param string $name オプション名.
+	 * @return true
+	 */
+	function delete_site_option( $name ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		unset( $GLOBALS['_wpcv_test_site_options'][ $name ] );
+		$GLOBALS['_wpcv_test_delete_site_option_calls'][] = $name;
 
 		return true;
 	}

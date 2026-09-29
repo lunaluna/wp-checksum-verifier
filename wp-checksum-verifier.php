@@ -3,7 +3,7 @@
  * Plugin Name:       WP Checksum Verifier
  * Plugin URI:        https://github.com/lunaluna/wp-checksum-verifier
  * Description:       WordPress コア・プラグイン・テーマ・MU プラグインの checksum を日次で検証し、改ざんを検出するプラグイン.
- * Version:           0.5.0
+ * Version:           0.5.1
  * Requires at least: 6.8
  * Tested up to:      7.1
  * Requires PHP:      7.4
@@ -235,6 +235,9 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-run-plan
  * がコンストラクタで型宣言するため先に読み込む必要がある.
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-chunk-dispatcher.php';
+// 無効化時にAction Schedulerの継続アクション(chunk継続・async起動)を
+// キャンセルする(v0.5.1. WPCV_Chunk_Dispatcher::deactivate()のdocblock参照).
+register_deactivation_hook( __FILE__, array( 'WPCV_Chunk_Dispatcher', 'deactivate' ) );
 
 /**
  * 差分処理(v0.5後半 §Step12)のdispatcher。`WPCV_Generation_Differ`

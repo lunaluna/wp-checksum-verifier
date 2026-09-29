@@ -4,7 +4,7 @@ WordPress のコア・プラグイン・MU プラグインの checksum を検証
 プラグイン。公式の checksum マニフェスト(wp.org のコア/プラグイン checksum)と
 実ファイルを突き合わせ、どのマニフェストにも存在しない未知のファイルも報告する。
 
-> **ステータス**: v0.5.0。検証エンジン、計画していた全ての実行モデル
+> **ステータス**: v0.5.1。検証エンジン、計画していた全ての実行モデル
 > (WP-CLI・WP-Cron・管理画面の「今すぐ実行」ボタン・REST API)、resume対応の
 > ファイル単位分割実行、抑制エンジン(`exclude_target`/`exclude_path`/
 > `allowlist_hash`とstrict mode)、公式checksumの無いプラグイン向けのstat

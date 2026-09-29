@@ -220,6 +220,7 @@ class ChunkDispatcherTest extends TestCase {
 			$GLOBALS['_wpcv_test_as_enqueue_return_zero'],
 			$GLOBALS['_wpcv_test_as_schedule_single_calls'],
 			$GLOBALS['_wpcv_test_as_schedule_single_return_zero'],
+			$GLOBALS['_wpcv_test_as_unschedule_all_calls'],
 			$GLOBALS['_wpcv_test_action_scheduler_initialized'],
 			// v0.5後半 §Step14c: `WPCV_Diff_Dispatcher`が`WPCV_Alert_Sender`経由で
 			// `WPCV_Settings::get_alert_to()`を読むようになったため、他のテスト
@@ -1325,5 +1326,37 @@ class ChunkDispatcherTest extends TestCase {
 		$method->invoke( null, 42, 0 );
 
 		$this->assertArrayNotHasKey( '_wpcv_test_as_enqueue_calls', $GLOBALS );
+	}
+
+	/**
+	 * `deactivate()`(無効化フック. v0.5.1)が、Action Scheduler初期化済みなら
+	 * `as_unschedule_all_actions()` をhook空・group=self::GROUPで呼ぶことを
+	 * 確認する(hookを空にすることで `cancel_actions_by_group()` に委譲され、
+	 * `WPCV_Runner_Async::HOOK` の起動アクションも一緒にキャンセルされる設計.
+	 * `deactivate()` 自身のdocblock参照).
+	 *
+	 * @return void
+	 */
+	public function test_deactivate_unschedules_group_when_action_scheduler_initialized() {
+		$GLOBALS['_wpcv_test_action_scheduler_initialized'] = true;
+
+		WPCV_Chunk_Dispatcher::deactivate();
+
+		$this->assertSame(
+			array( array( '', array(), 'wpcv' ) ),
+			$GLOBALS['_wpcv_test_as_unschedule_all_calls']
+		);
+	}
+
+	/**
+	 * `deactivate()` が、Action Scheduler未初期化時は何もしないことを確認する
+	 * (`schedule_via_action_scheduler()` と同じ可用性チェックの回帰確認).
+	 *
+	 * @return void
+	 */
+	public function test_deactivate_does_nothing_when_action_scheduler_not_initialized() {
+		WPCV_Chunk_Dispatcher::deactivate();
+
+		$this->assertArrayNotHasKey( '_wpcv_test_as_unschedule_all_calls', $GLOBALS );
 	}
 }
