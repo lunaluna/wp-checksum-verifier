@@ -115,6 +115,7 @@ add_action(
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-error-code.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-target-resolver.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-static-target-resolver.php';
 
 /**
  * Run/target の状態定数と遷移検証(v0.4.0 §Step1). Repository群より前に

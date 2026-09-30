@@ -32,6 +32,12 @@ class WPCV_Target_Resolver {
 	const DIMENSION_MUPLUGIN = 'muplugin';
 
 	/**
+	 * ドロップイン(v0.6 §Step9. §5.3 L1・L3)。`dropin:_stat` 1つの合成target
+	 * 専用で、本体targetはこのdimensionには存在しない.
+	 */
+	const DIMENSION_DROPIN = 'dropin';
+
+	/**
 	 * 妥当な dimension 値の一覧.
 	 *
 	 * @var string[]
@@ -41,6 +47,7 @@ class WPCV_Target_Resolver {
 		self::DIMENSION_PLUGIN,
 		self::DIMENSION_THEME,
 		self::DIMENSION_MUPLUGIN,
+		self::DIMENSION_DROPIN,
 	);
 
 	/**

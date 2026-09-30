@@ -10,6 +10,7 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-error-code.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-file-hasher.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-path-normalizer.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-static-target-resolver.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-budget.php';
@@ -273,7 +274,9 @@ class StatTargetDispatchTest extends TestCase {
 		$this->assertSame( array(), $this->file_states_by_path( $made ) );
 
 		$this->assertSame( 'success', $result['summary']['status'] );
-		$this->assertSame( 3, $result['summary']['targets_total'] );
+		// core + core:_scan + core:_config + dropin:_stat(v0.6 §Step9) +
+		// plugin:akismet の5件(plugin:akismet:_statはchecksum_coveredで除外).
+		$this->assertSame( 5, $result['summary']['targets_total'] );
 	}
 
 	/**

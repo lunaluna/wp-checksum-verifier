@@ -604,6 +604,24 @@ class WPCV_Chunk_Dispatcher {
 		$dimension = $target_run['dimension'];
 		$slug      = $target_run['slug'];
 
+		// v0.6 §Step9: 本体targetを持たない合成target(core:_config・dropin:_stat.
+		// プラン§5.3 L1・L2)。`dropin:_stat`は`_stat`接尾辞を持つため、次の
+		// `is_stat_id()`判定より先に判定する必要がある ―― 先にそちらへ流すと
+		// `process_stat_target()`が本体targetを探して必ず見つからず
+		// `TARGET_MISSING`になってしまう(この2つには本体target自体が存在しない
+		// ため。`WPCV_Target_Resolver::body_id_of_stat()`のdocblock参照).
+		// `core:_config`はis_stat_id()には該当しないが、以降のcore次元の分岐
+		// (manifest比較)に誤って混ざらないよう、ここで同じタイミングで判定する.
+		if ( WPCV_Target_Resolver::DIMENSION_CORE === $dimension && '_config' === $slug ) {
+			$this->run_static_stat_scan( $run_id, $target_run, $context );
+			return;
+		}
+
+		if ( WPCV_Target_Resolver::DIMENSION_DROPIN === $dimension ) {
+			$this->run_static_stat_scan( $run_id, $target_run, $context );
+			return;
+		}
+
 		// v0.5 §Step6: stat target は本体と同じ dimension/slug を持つため、
 		// dimension/slug による振り分けより先に target_id の接尾辞で判定する.
 		if ( WPCV_Target_Resolver::is_stat_id( (string) $target_run['target_id'] ) ) {
@@ -1089,6 +1107,113 @@ class WPCV_Chunk_Dispatcher {
 	}
 
 	/**
+	 * 本体targetを持たない合成target(`core:_config`・`dropin:_stat`. v0.6 §Step9.
+	 * プラン§5.3 L1・L8)のstat走査を処理する。
+	 *
+	 * `run_stat_scan()`との違いは、D5〜D8(本体の「更新」を検知してベースラインを
+	 * 作り直すかどうかの判定. §3.2)を一切行わないこと ―― これらのtargetには
+	 * 「本体」も「version」という概念も無く、`WPCV_Update_Event_Repository`にも
+	 * 記録が乗らないため、作り直しの判断材料自体が存在しない。常に
+	 * 「ベースラインが無ければ初回、あれば比較」だけを行う(初回は
+	 * `baseline_mode=true`になりfindingを出さない。これがプラン§5.3 L8の
+	 * 「初回はベースラインのみ」の実体で、既存のstatの仕組みが自然に満たす).
+	 *
+	 * @param int   $run_id     対象の run の id.
+	 * @param array $target_run claim済みのtarget_run行.
+	 * @param array $context    `dispatch()` に渡された `$context`.
+	 * @return void
+	 *
+	 * @throws LogicException `WPCV_File_State_Repository` が注入されていない場合.
+	 */
+	private function run_static_stat_scan( $run_id, array $target_run, array $context ) {
+		if ( null === $this->file_state_repository ) {
+			throw new LogicException( 'WPCV_Chunk_Dispatcher requires a WPCV_File_State_Repository to process stat targets.' );
+		}
+
+		$scan = $this->collect_stat_items( $target_run, $context );
+
+		if ( null === $scan ) {
+			$this->target_run_repository->finalize_immediate(
+				$target_run['id'],
+				array(
+					'status'     => WPCV_Target_Status::UNVERIFIABLE,
+					'error_code' => WPCV_Error_Code::TARGET_MISSING,
+				),
+				$target_run['lease_owner']
+			);
+			return;
+		}
+
+		if ( $scan['truncated'] ) {
+			// core:_scan と同じ理由(process_core_scan() 参照)で、不完全な走査結果は
+			// 使わず retry へ戻す(実際にはファイル数が少数のためtruncatedになることは
+			// 想定していないが、budget自体は他のstat走査と共有しているため念のため確認する).
+			$this->target_run_repository->mark_scan_incomplete( $target_run['id'], $target_run['lease_owner'] );
+			return;
+		}
+
+		$target_id             = (string) $target_run['target_id'];
+		$file_state_repository = $this->file_state_repository;
+
+		// v0.6 §Step9で実地検証中に発見した罠: `run_stat_scan()`と同じく
+		// `has_baseline_before_run()`(`wpcv_file_states`に行があるか)で
+		// baseline_modeを判定すると、この2つのtarget(特に`dropin:_stat`。
+		// ドロップインが1つも無いサイトは珍しくない)は「本体が実在する
+		// stat target」と違い**ファイルが0件の状態が普通に何runも続き得る**。
+		// 0件のままだと`wpcv_file_states`に行が一切書かれないため、その後
+		// 初めてファイルが現れた回もbaseline_modeがtrueのまま(=addedを
+		// 報告せず黙って取り込む)になってしまう(test-armfu.localの実地検証で
+		// 実際に発生: run #109が0件→run #110でファイル追加もfindingが出なかった)。
+		// この2つのtargetにはD5〜D8のような「バージョン変化でベースラインを
+		// 作り直す」概念自体が無く、`wpcv_file_states`の行の有無と「過去に
+		// このtargetが処理されたか」が一致するとは限らないため、ここだけは
+		// `find_baseline_target_run()`(同じtarget_idが過去に`success`で
+		// 終端したrunがあるか. ファイル件数に関わらず判定できる)を使う.
+		$baseline_mode = null === $this->target_run_repository->find_baseline_target_run( $target_id, (int) $run_id );
+
+		$chunk_result = $this->chunk_verifier->verify_stat_chunk(
+			array(
+				'target_id'            => $target_id,
+				'dimension'            => $target_run['dimension'],
+				'slug'                 => $target_run['slug'],
+				'version'              => $scan['version'],
+				'source'               => 'stat',
+				'run_id'               => (int) $run_id,
+				'scan_items'           => $scan['items'],
+				'baseline_mode'        => $baseline_mode,
+				'load_previous_states' => static function ( array $paths ) use ( $file_state_repository, $target_id ) {
+					$keys = array();
+					foreach ( $paths as $path ) {
+						$keys[] = WPCV_File_State_Repository::compute_state_key( $target_id, $path );
+					}
+
+					$by_path = array();
+					foreach ( $file_state_repository->find_by_state_keys( $keys ) as $row ) {
+						$by_path[ $row['path'] ] = $row;
+					}
+
+					return $by_path;
+				},
+				'cursor_path'          => $target_run['cursor_path'] ?? null,
+				'previous_fingerprint' => $target_run['manifest_fingerprint'] ?? null,
+				'previous_version'     => $target_run['version'],
+				'budget'               => $this->default_budget(),
+				'rollup'               => array(
+					'min_count' => (int) apply_filters( 'wpcv_stat_rollup_min_count', self::DEFAULT_STAT_ROLLUP_MIN_COUNT, $target_id ),
+					'ratio'     => (float) apply_filters( 'wpcv_stat_rollup_ratio', self::DEFAULT_STAT_ROLLUP_RATIO, $target_id ),
+				),
+				'target_root_path'     => $scan['root_path'],
+			)
+		);
+
+		if ( ! $chunk_result['needs_retry'] && $chunk_result['completed'] && ! $baseline_mode ) {
+			$chunk_result = $this->add_missing_findings( $chunk_result, $target_run, (int) $run_id, $scan['version'] );
+		}
+
+		$this->chunk_result_repository->commit_chunk( $run_id, $target_run['id'], $target_id, $chunk_result, $target_run['lease_owner'], $scan['version'] );
+	}
+
+	/**
 	 * D7(v0.6 §Step4・§3.2): version変化があった stat target について、作り直さず
 	 * 今のベースラインと比べ続けるべきかを判定する。記録あり・期間外
 	 * (`wpcv_update_events_since`より前・未設定を含む)・設定OFFのいずれかなら
@@ -1258,7 +1383,49 @@ class WPCV_Chunk_Dispatcher {
 			return $scan;
 		}
 
+		// v0.6 §Step9(§5.3 L1・L2): 本体を持たない合成target。複数の絶対パス
+		// (単一ディレクトリの再帰走査ではない)にまたがるため、`stat_file()`を
+		// 1ファイルずつ呼んで`items`を連結する(`root_path`は複数ファイルに
+		// またがり単一の値が無いため空文字列。ロールアップ〔rev.3 §3.7〕は
+		// 対象ファイル数がごく少数のためどのみち発火しない).
+		if ( WPCV_Target_Resolver::DIMENSION_CORE === $target_run['dimension'] && '_config' === $target_run['slug'] ) {
+			return $this->collect_static_stat_items( WPCV_Static_Target_Resolver::config_file_paths() );
+		}
+
+		if ( WPCV_Target_Resolver::DIMENSION_DROPIN === $target_run['dimension'] ) {
+			return $this->collect_static_stat_items( WPCV_Static_Target_Resolver::dropin_paths() );
+		}
+
 		return null;
+	}
+
+	/**
+	 * 複数の絶対パスそれぞれを`stat_file()`で走査し、`items`を連結する
+	 * (`collect_stat_items()`の`core:_config`/`dropin:_stat`分岐専用).
+	 *
+	 * `severity`は常に`high`にする(wp-config.php・.htaccess・ドロップインは
+	 * いずれもリクエストのたびに読まれる/機密情報を含み得るため、拡張子を
+	 * 問わず高severityとして扱う).
+	 *
+	 * @param string[] $absolute_paths 対象の絶対パス一覧(実在するもののみ想定).
+	 * @return array{items: array, truncated: bool, version: string, root_path: string}
+	 */
+	private function collect_static_stat_items( array $absolute_paths ) {
+		$items = array();
+
+		foreach ( $absolute_paths as $absolute_path ) {
+			$result = $this->scanner->stat_file( $absolute_path, 'high', 'high' );
+			$items  = array_merge( $items, $result['items'] );
+		}
+
+		return array(
+			'items'     => $items,
+			'truncated' => false,
+			// §5.5: findings.version は NOT NULL のため空文字列にする(muplugin loaderと同じ規約.
+			// これらのtargetに「version」という概念自体が無いため).
+			'version'   => '',
+			'root_path' => '',
+		);
 	}
 
 	/**

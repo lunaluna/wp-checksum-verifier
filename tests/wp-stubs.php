@@ -322,6 +322,10 @@ if ( ! function_exists( 'get_current_user_id' ) ) {
 // WP_PLUGIN_DIR / WPMU_PLUGIN_DIR は定数のためテストごとに値を変えられない。
 // 実際の WordPress の既定値(WP_CONTENT_DIR 配下)と同じ形にしておき、
 // ContextBuilderTest はこのパス配下にフィクスチャを置いて検証する.
+if ( ! defined( 'WP_CONTENT_DIR' ) ) {
+	define( 'WP_CONTENT_DIR', ABSPATH . 'wp-content' );
+}
+
 if ( ! defined( 'WP_PLUGIN_DIR' ) ) {
 	define( 'WP_PLUGIN_DIR', ABSPATH . 'wp-content/plugins' );
 }
@@ -538,6 +542,39 @@ if ( ! function_exists( 'is_multisite' ) ) {
 	 */
 	function is_multisite() { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
 		return ! empty( $GLOBALS['_wpcv_test_is_multisite'] );
+	}
+}
+
+if ( ! function_exists( '_get_dropins' ) ) {
+	/**
+	 * Stub _get_dropins() — real WordPress core function
+	 * (`wp-admin/includes/plugin.php`)の戻り値をそのまま複製したもの
+	 * (v0.6 §Step9)。返す一覧自体はサイトの状態に依存しない固定値のため、
+	 * 実関数と同じ内容の固定スタブでよい(`is_multisite()`スタブが返す値だけ
+	 * `$GLOBALS['_wpcv_test_is_multisite']`でテストごとに変えられる).
+	 *
+	 * @return array<string, array{0: string, 1: string|true}>
+	 */
+	function _get_dropins() { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$dropins = array(
+			'advanced-cache.php'      => array( 'Advanced caching plugin.', 'WP_CACHE' ),
+			'db.php'                  => array( 'Custom database class.', true ),
+			'db-error.php'            => array( 'Custom database error message.', true ),
+			'install.php'             => array( 'Custom installation script.', true ),
+			'maintenance.php'         => array( 'Custom maintenance message.', true ),
+			'object-cache.php'        => array( 'External object cache.', true ),
+			'php-error.php'           => array( 'Custom PHP error message.', true ),
+			'fatal-error-handler.php' => array( 'Custom PHP fatal error handler.', true ),
+		);
+
+		if ( is_multisite() ) {
+			$dropins['sunrise.php']        = array( 'Executed before Multisite is loaded.', 'SUNRISE' );
+			$dropins['blog-deleted.php']   = array( 'Custom site deleted message.', true );
+			$dropins['blog-inactive.php']  = array( 'Custom site inactive message.', true );
+			$dropins['blog-suspended.php'] = array( 'Custom site suspended message.', true );
+		}
+
+		return $dropins;
 	}
 }
 
