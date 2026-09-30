@@ -335,6 +335,106 @@ class StatTargetDispatchTest extends TestCase {
 	}
 
 	/**
+	 * `content_hash_mode`を`stat_targets`に設定すると、既存のstat target
+	 * (独自プラグイン)でも同じサイズ・同じmtimeでの書き換え(timestompの典型例。
+	 * stat比較だけでは検知できない)が`modified`として検出されることを確認する
+	 * (v0.6 §Step11. §5.3 L6・U4。プランの完了条件そのもの).
+	 *
+	 * @return void
+	 */
+	public function test_content_hash_mode_detects_same_size_rewrite_as_modified() {
+		$GLOBALS['_wpcv_test_options']['wpcv_settings'] = array( 'content_hash_mode' => 'stat_targets' );
+
+		$main = 'wp-content/plugins/custom-plugin/custom-plugin.php';
+		$this->put_fixture_file( $main, 'AAAA' );
+		touch( ABSPATH . $main, 1700000000 );
+
+		$made  = wpcv_test_make_fake_environment();
+		$first = $this->reserve_and_run( $made, $this->custom_plugin_context() );
+		$this->assertSame( array(), $this->stat_findings( $made, $first['run_id'] ) );
+
+		// 同じサイズ・同じmtimeで書き換える(stat比較だけでは変化なしに見える).
+		file_put_contents( ABSPATH . $main, 'BBBB' );
+		touch( ABSPATH . $main, 1700000000 );
+		clearstatcache();
+
+		$second   = $this->reserve_and_run( $made, $this->custom_plugin_context() );
+		$findings = $this->stat_findings( $made, $second['run_id'] );
+
+		$this->assertCount( 1, $findings );
+		$this->assertSame( 'modified', $findings[0]['status'] );
+		$this->assertSame( hash( 'sha256', 'AAAA' ), $findings[0]['expected_hash'] );
+		$this->assertSame( hash( 'sha256', 'BBBB' ), $findings[0]['actual_hash'] );
+
+		$states = $this->file_states_by_path( $made );
+		$this->assertSame( hash( 'sha256', 'BBBB' ), $states[ $main ]['content_hash'] );
+	}
+
+	/**
+	 * `content_hash_mode`が既定(`off`)のままなら、同じサイズ・同じmtimeでの
+	 * 書き換えは(層1の限界どおり)検知されないことを確認する(層1のみの
+	 * targetの挙動が変わらないことの回帰確認。上のテストとの対比).
+	 *
+	 * @return void
+	 */
+	public function test_content_hash_mode_off_does_not_detect_same_size_rewrite() {
+		$main = 'wp-content/plugins/custom-plugin/custom-plugin.php';
+		$this->put_fixture_file( $main, 'AAAA' );
+		touch( ABSPATH . $main, 1700000000 );
+
+		$made  = wpcv_test_make_fake_environment();
+		$first = $this->reserve_and_run( $made, $this->custom_plugin_context() );
+		$this->assertSame( array(), $this->stat_findings( $made, $first['run_id'] ) );
+
+		file_put_contents( ABSPATH . $main, 'BBBB' );
+		touch( ABSPATH . $main, 1700000000 );
+		clearstatcache();
+
+		$second = $this->reserve_and_run( $made, $this->custom_plugin_context() );
+
+		$this->assertSame( array(), $this->stat_findings( $made, $second['run_id'] ) );
+
+		$states = $this->file_states_by_path( $made );
+		$this->assertNull( $states[ $main ]['content_hash'] );
+	}
+
+	/**
+	 * `wpcv_content_hash_max_bytes`フィルターで1ファイルの上限を下げると、
+	 * それを超えるファイルはハッシュを計算せず層1にフォールバックすることを
+	 * 確認する(v0.6 §Step11。上限を超えたファイルが層1になるテスト).
+	 *
+	 * @return void
+	 */
+	public function test_content_hash_max_bytes_filter_caps_large_file_to_stat_only() {
+		$GLOBALS['_wpcv_test_options']['wpcv_settings']                 = array( 'content_hash_mode' => 'stat_targets' );
+		$GLOBALS['_wpcv_test_filters']['wpcv_content_hash_max_bytes'][] = static function () {
+			return 2;
+		};
+
+		$main = 'wp-content/plugins/custom-plugin/custom-plugin.php';
+		$this->put_fixture_file( $main, 'AAAA' );
+		touch( ABSPATH . $main, 1700000000 );
+
+		$made  = wpcv_test_make_fake_environment();
+		$first = $this->reserve_and_run( $made, $this->custom_plugin_context() );
+		$this->assertSame( array(), $this->stat_findings( $made, $first['run_id'] ) );
+
+		// 同じサイズ・同じmtimeで書き換えるが、ファイルサイズ(4バイト)が
+		// フィルターで下げた上限(2バイト)を超えるため、ハッシュは計算されず
+		// statも変化していないのでfindingは出ない.
+		file_put_contents( ABSPATH . $main, 'BBBB' );
+		touch( ABSPATH . $main, 1700000000 );
+		clearstatcache();
+
+		$second = $this->reserve_and_run( $made, $this->custom_plugin_context() );
+
+		$this->assertSame( array(), $this->stat_findings( $made, $second['run_id'] ) );
+
+		$states = $this->file_states_by_path( $made );
+		$this->assertNull( $states[ $main ]['content_hash'] );
+	}
+
+	/**
 	 * 単一ファイルのプラグインは、`WP_PLUGIN_DIR` 全体ではなくそのファイル1つだけを
 	 * stat 走査することを確認する(他のプラグインのファイルを拾わない).
 	 *

@@ -127,6 +127,44 @@ class WPCV_Chunk_Dispatcher {
 	const DEFAULT_STAT_ROLLUP_RATIO = 0.5;
 
 	/**
+	 * 内容ハッシュ(層2)で1ファイルを読む上限バイト数(v0.6 §Step11。§5.3 L6).
+	 *
+	 * これを超えるファイルはハッシュを計算せず層1(stat比較)にフォールバックする。
+	 * 10 MB(10,485,760バイト)。Step8実測(test-armfu.local・エックスサーバー)を
+	 * 踏まえ2026-09-30ユーザー承認済み: (1) 実際に観測したPHP/JS等のソースは
+	 * 最大でも709 KB程度で十分な余裕がある、(2) 60MBのzip・23MBのフォントの
+	 * ような大きな静的バイナリは確実に除外される、(3) 最も遅い実測スループット
+	 * (約78 MB/秒)でも10MBのハッシュは0.13秒程度で無視できるコスト。
+	 * `wpcv_content_hash_max_bytes` フィルターで変えられる(rollup閾値と同じ方針.
+	 * 2026-09-30ユーザー確認済み: 設定画面には出さずフィルターのみで上書き可能にする).
+	 *
+	 * @var int
+	 */
+	const DEFAULT_CONTENT_HASH_MAX_BYTES = 10485760;
+
+	/**
+	 * 内容ハッシュ(層2)を有効にしたchunkで、累積で何バイト読んだら区切るかの
+	 * 既定上限(v0.6 §Step11. `WPCV_Chunk_Budget::max_bytes`).
+	 *
+	 * 1ファイルの上限(`DEFAULT_CONTENT_HASH_MAX_BYTES`)を導入したことで、
+	 * 1ファイルあたりの最悪コストは既に小さく抑えられている
+	 * (Step8実測の最も遅いスループット〔約78 MB/秒〕でも10MBのハッシュは
+	 * 0.13秒程度。`DEFAULT_BUDGET_MAX_FILES`(500)件すべてがこの上限ちょうど
+	 * だったとしても、`DEFAULT_BUDGET_MAX_SECONDS`(20秒)がファイル1件処理
+	 * するごとのチェックで先に止めるため、この`max_bytes`単体は安全性のためではなく
+	 * 「経過時間というやや揺らぎのある指標」ではなく「読んだバイト数という
+	 * 決定的な指標」でchunkを区切れるようにするための予算〔2026-09-30
+	 * ユーザー承認済み〕)。Step8実測の最も遅いスループット(約78 MB/秒)を基準に、
+	 * `DEFAULT_BUDGET_MAX_SECONDS`(20秒)の半分程度(ファイル走査・DB往復等
+	 * 他のオーバーヘッド分の余裕を残す)を内容ハッシュに使える時間の目安とし、
+	 * 10秒 × 78 MB/秒 ≈ 780 MBから、きりの良い200 MiB(209,715,200バイト)を
+	 * 既定値とする。`wpcv_content_hash_chunk_max_bytes` フィルターで変えられる.
+	 *
+	 * @var int
+	 */
+	const DEFAULT_CONTENT_HASH_CHUNK_MAX_BYTES = 209715200;
+
+	/**
 	 * `wpcv_runs` の永続化層.
 	 *
 	 * @var WPCV_Run_Repository
@@ -1035,17 +1073,43 @@ class WPCV_Chunk_Dispatcher {
 		// (今回の run が書いた行は last_seen_run_id が同じなので含まれない).
 		$baseline_mode = $rebuild || ! $file_state_repository->has_baseline_before_run( $target_id, (int) $run_id );
 
+		// v0.6 §Step11(§5.3 L6・U4): 既存のstat targetは`content_hash_mode`が
+		// `stat_targets`のときだけ内容ハッシュ(層2)を有効にする(既定off。
+		// `core:_config`/`dropin:_stat`〔Step10で常時有効〕とは異なる).
+		$content_hash_enabled = WPCV_Settings::get_content_hash_stat_targets_enabled();
+
+		$budget = $this->default_budget();
+
+		if ( $content_hash_enabled ) {
+			/**
+			 * Chunkあたりで内容ハッシュに読む累積バイト数の上限を変える(v0.6 §Step11).
+			 *
+			 * @param int    $max_bytes 既定 `DEFAULT_CONTENT_HASH_CHUNK_MAX_BYTES`.
+			 * @param string $target_id stat target の target_id.
+			 */
+			$budget['max_bytes'] = (int) apply_filters( 'wpcv_content_hash_chunk_max_bytes', self::DEFAULT_CONTENT_HASH_CHUNK_MAX_BYTES, $target_id );
+		}
+
 		$chunk_result = $this->chunk_verifier->verify_stat_chunk(
 			array(
-				'target_id'            => $target_id,
-				'dimension'            => $target_run['dimension'],
-				'slug'                 => $target_run['slug'],
-				'version'              => $scan['version'],
-				'source'               => 'stat',
-				'run_id'               => (int) $run_id,
-				'scan_items'           => $scan['items'],
-				'baseline_mode'        => $baseline_mode,
-				'load_previous_states' => static function ( array $paths ) use ( $file_state_repository, $target_id ) {
+				'target_id'              => $target_id,
+				'dimension'              => $target_run['dimension'],
+				'slug'                   => $target_run['slug'],
+				'version'                => $scan['version'],
+				'source'                 => 'stat',
+				'run_id'                 => (int) $run_id,
+				'scan_items'             => $scan['items'],
+				'baseline_mode'          => $baseline_mode,
+				'content_hash_enabled'   => $content_hash_enabled,
+				/**
+				 * 1ファイルの内容ハッシュ上限バイト数を変える(v0.6 §Step11。§5.3 L6).
+				 * 超えるファイルは層1(stat比較)にフォールバックする.
+				 *
+				 * @param int    $max_bytes 既定 `DEFAULT_CONTENT_HASH_MAX_BYTES`.
+				 * @param string $target_id stat target の target_id.
+				 */
+				'content_hash_max_bytes' => $content_hash_enabled ? (int) apply_filters( 'wpcv_content_hash_max_bytes', self::DEFAULT_CONTENT_HASH_MAX_BYTES, $target_id ) : null,
+				'load_previous_states'   => static function ( array $paths ) use ( $file_state_repository, $target_id ) {
 					$keys = array();
 					foreach ( $paths as $path ) {
 						$keys[] = WPCV_File_State_Repository::compute_state_key( $target_id, $path );
@@ -1058,11 +1122,11 @@ class WPCV_Chunk_Dispatcher {
 
 					return $by_path;
 				},
-				'cursor_path'          => $target_run['cursor_path'] ?? null,
-				'previous_fingerprint' => $target_run['manifest_fingerprint'] ?? null,
-				'previous_version'     => $target_run['version'],
-				'budget'               => $this->default_budget(),
-				'rollup'               => array(
+				'cursor_path'            => $target_run['cursor_path'] ?? null,
+				'previous_fingerprint'   => $target_run['manifest_fingerprint'] ?? null,
+				'previous_version'       => $target_run['version'],
+				'budget'                 => $budget,
+				'rollup'                 => array(
 					/**
 					 * Stat 差分検知で変更 finding を1件にまとめる最小件数を変える(v0.5 §Step8).
 					 *
@@ -1081,7 +1145,7 @@ class WPCV_Chunk_Dispatcher {
 					 */
 					'ratio'     => (float) apply_filters( 'wpcv_stat_rollup_ratio', self::DEFAULT_STAT_ROLLUP_RATIO, $target_id ),
 				),
-				'target_root_path'     => $scan['root_path'],
+				'target_root_path'       => $scan['root_path'],
 			)
 		);
 

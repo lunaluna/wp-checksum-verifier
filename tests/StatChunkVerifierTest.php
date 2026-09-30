@@ -759,6 +759,114 @@ class StatChunkVerifierTest extends TestCase {
 	}
 
 	/**
+	 * `content_hash_max_bytes`(v0.6 §Step11. §5.3 L6)を超えるファイルは、
+	 * `content_hash_enabled`が真でもハッシュを計算せず層1(stat比較)に
+	 * フォールバックすることを確認する。内容は変わっている(`AAAA`→`BBBB`)が
+	 * サイズ・mtimeとも不変なので、layerが層1のみならfindingは出ないはず.
+	 *
+	 * @return void
+	 */
+	public function test_content_hash_max_bytes_caps_hashing_and_falls_back_to_stat() {
+		$path = 'wp-content/plugins/custom-plugin/vendor-pdf.zip';
+		$this->put_fixture_file( $path, 'BBBB' );
+
+		$result = ( new WPCV_Chunk_Verifier() )->verify_stat_chunk(
+			$this->context(
+				array( $this->item( $path, 4, 1000, 900, 'medium' ) ),
+				array( $path => $this->state( 4, 1000, 900, hash( 'sha256', 'AAAA' ) ) ),
+				array(
+					'content_hash_enabled'   => true,
+					'content_hash_max_bytes' => 2,
+				)
+			)
+		);
+
+		$this->assertSame( array(), $result['findings'] );
+		$this->assertNull( $result['baseline_rows'][0]['content_hash'] );
+		$this->assertNull( $result['baseline_rows'][0]['hash_algorithm'] );
+	}
+
+	/**
+	 * `content_hash_max_bytes`の上限内であれば、通常どおりハッシュを計算して
+	 * `modified`を検出することを確認する(上のテストとの対比. 上限値ちょうどは
+	 * 含む側であることも併せて確認する).
+	 *
+	 * @return void
+	 */
+	public function test_content_hash_max_bytes_allows_hashing_at_the_limit() {
+		$path = 'wp-content/plugins/custom-plugin/main.php';
+		$this->put_fixture_file( $path, 'BBBB' );
+
+		$result = ( new WPCV_Chunk_Verifier() )->verify_stat_chunk(
+			$this->context(
+				array( $this->item( $path, 4, 1000, 900, 'high' ) ),
+				array( $path => $this->state( 4, 1000, 900, hash( 'sha256', 'AAAA' ) ) ),
+				array(
+					'content_hash_enabled'   => true,
+					'content_hash_max_bytes' => 4,
+				)
+			)
+		);
+
+		$this->assertCount( 1, $result['findings'] );
+		$this->assertSame( 'modified', $result['findings'][0]['status'] );
+		$this->assertSame( hash( 'sha256', 'BBBB' ), $result['baseline_rows'][0]['content_hash'] );
+	}
+
+	/**
+	 * `budget.max_bytes`(v0.6 §Step11。chunkあたりの累積ハッシュバイト数上限)に
+	 * 達したら、`max_files`/`max_seconds`と同じくchunkをそこで区切り、
+	 * cursorから再開できることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_max_bytes_budget_limits_chunk_and_resumes_from_cursor() {
+		$items  = array();
+		$states = array();
+		foreach ( array( 'a', 'b', 'c' ) as $name ) {
+			$path = "wp-content/plugins/custom-plugin/{$name}.php";
+			$this->put_fixture_file( $path, str_repeat( 'x', 10 ) );
+			$items[]         = $this->item( $path, 10, 10, 10 );
+			$states[ $path ] = $this->state( 10, 10, 10, hash( 'sha256', str_repeat( 'x', 10 ) ) );
+		}
+
+		$verifier = new WPCV_Chunk_Verifier();
+		$first    = $verifier->verify_stat_chunk(
+			$this->context(
+				$items,
+				$states,
+				array(
+					'content_hash_enabled' => true,
+					'budget'               => array( 'max_bytes' => 10 ),
+				)
+			)
+		);
+
+		$this->assertFalse( $first['completed'] );
+		$this->assertSame( 'wp-content/plugins/custom-plugin/a.php', $first['cursor_path'] );
+		$this->assertCount( 1, $first['baseline_rows'] );
+		// 変化していないので1件目もfindingは出ない(budgetで打ち切られただけ).
+		$this->assertSame( array(), $first['findings'] );
+
+		$second = $verifier->verify_stat_chunk(
+			$this->context(
+				$items,
+				$states,
+				array(
+					'content_hash_enabled' => true,
+					'budget'               => array( 'max_bytes' => 10 ),
+					'cursor_path'          => $first['cursor_path'],
+					'previous_fingerprint' => $first['manifest_fingerprint'],
+				)
+			)
+		);
+
+		$this->assertFalse( $second['completed'] );
+		$this->assertSame( 'wp-content/plugins/custom-plugin/b.php', $second['cursor_path'] );
+		$this->assertCount( 1, $second['baseline_rows'] );
+	}
+
+	/**
 	 * 変更件数がまとめの閾値に届かなければ、個別の finding のまま返すことを確認する(v0.5 §Step7).
 	 *
 	 * @return void

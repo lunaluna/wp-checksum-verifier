@@ -125,6 +125,7 @@ class WPCV_Page_Settings {
 		$external_http_time_budget_seconds = WPCV_Settings::get_external_http_time_budget_seconds();
 		$strict_mode                       = WPCV_Settings::get_strict_mode();
 		$stat_detection                    = WPCV_Settings::get_stat_detection_enabled();
+		$content_hash_stat_targets_enabled = WPCV_Settings::get_content_hash_stat_targets_enabled();
 		$alert_unrecorded_version_change   = WPCV_Settings::get_alert_unrecorded_version_change_enabled();
 		$alert_to                          = WPCV_Settings::get_alert_to();
 		$button_state                      = self::run_now_button_state( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON );
@@ -206,7 +207,22 @@ class WPCV_Page_Settings {
 								<?php echo esc_html__( 'Track file size and timestamps of plugins that cannot be verified against checksums, and report changes since the previous run.', 'wp-checksum-verifier' ); ?>
 							</label>
 							<p class="description">
-								<?php echo esc_html__( 'Applies to custom or premium plugins and mu-plugin loaders that have no official checksums. The first run only records a baseline. When a plugin version changes, its baseline is rebuilt without reporting changes. File contents are not read.', 'wp-checksum-verifier' ); ?>
+								<?php echo esc_html__( 'Applies to custom or premium plugins and mu-plugin loaders that have no official checksums. The first run only records a baseline. When a plugin version changes, its baseline is rebuilt without reporting changes. File contents are not read unless content-hash comparison is also enabled below.', 'wp-checksum-verifier' ); ?>
+							</p>
+						</td>
+					</tr>
+					<?php // v0.6 §Step11: 既存のstat targetの内容ハッシュ(層2)のオプトイン(プランU4・§5.3 L6). ?>
+					<tr>
+						<th scope="row">
+							<?php echo esc_html__( 'Content-hash comparison for custom plugins', 'wp-checksum-verifier' ); ?>
+						</th>
+						<td>
+							<label for="wpcv_content_hash_stat_targets">
+								<input type="checkbox" name="wpcv_content_hash_stat_targets" id="wpcv_content_hash_stat_targets" value="1" <?php checked( $content_hash_stat_targets_enabled ); ?> />
+								<?php echo esc_html__( 'Also compute a content hash for custom/premium plugins and mu-plugin loaders, and report a change even when file size and modified time stay the same.', 'wp-checksum-verifier' ); ?>
+							</label>
+							<p class="description">
+								<?php echo esc_html__( 'Detects a same-size rewrite that preserves the timestamp, which size/timestamp tracking alone cannot catch. This reads file contents on every run and adds I/O cost, so it is off by default; consider enabling it only for sites with a small number of custom plugins. Files larger than a fixed size limit fall back to size/timestamp tracking only.', 'wp-checksum-verifier' ); ?>
 							</p>
 						</td>
 					</tr>
@@ -419,6 +435,13 @@ class WPCV_Page_Settings {
 
 		// v0.5 §Step8: strict mode と同じく、未チェック時はキー自体が送られてこない.
 		WPCV_Settings::update_stat_detection_enabled( isset( $_POST['wpcv_stat_detection'] ) );
+
+		// v0.6 §Step11: strict mode と同じく、未チェック時はキー自体が送られてこない.
+		WPCV_Settings::update_content_hash_mode(
+			isset( $_POST['wpcv_content_hash_stat_targets'] )
+				? WPCV_Settings::CONTENT_HASH_MODE_STAT_TARGETS
+				: WPCV_Settings::CONTENT_HASH_MODE_OFF
+		);
 
 		// v0.6 §Step7: strict mode と同じく、未チェック時はキー自体が送られてこない.
 		WPCV_Settings::update_alert_unrecorded_version_change_enabled( isset( $_POST['wpcv_alert_unrecorded_version_change'] ) );

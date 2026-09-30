@@ -325,6 +325,13 @@ class WPCV_Chunk_Verifier {
 	 *                                               `WPCV_Verifier::make_finding_for_stat_content_change()`
 	 *                                               で比較する(v0.6 §Step10. §5.3 L4).
 	 *                                               既定 false(従来どおり size/ctime/mtime のみ).
+	 *     @type int|null      $content_hash_max_bytes 1ファイルの内容ハッシュ上限バイト数
+	 *                                               (v0.6 §Step11. §5.3 L6)。`$content_hash_enabled`
+	 *                                               が真でもこれを超えるファイルはハッシュを
+	 *                                               計算せず層1(stat比較)にフォールバックする。
+	 *                                               既定 null(上限なし。`core:_config`/
+	 *                                               `dropin:_stat`〔常に内容ハッシュを取る
+	 *                                               L4対象〕はこの上限を渡さない).
 	 * }
 	 * @return array `verify_manifest_chunk()` と同じ形に `baseline_rows`
 	 *               (`WPCV_File_State_Repository::upsert_many()` にそのまま渡せる行の配列)を
@@ -357,9 +364,10 @@ class WPCV_Chunk_Verifier {
 		$budget = isset( $context['budget'] ) ? (array) $context['budget'] : array();
 		$paths  = WPCV_Chunk_Cursor::paths_after( $sorted_paths, $context['cursor_path'] ?? null );
 
-		$baseline_mode        = ! empty( $context['baseline_mode'] );
-		$content_hash_enabled = ! empty( $context['content_hash_enabled'] );
-		$previous_states      = $baseline_mode ? array() : $this->load_previous_states( $context, $paths, $budget );
+		$baseline_mode          = ! empty( $context['baseline_mode'] );
+		$content_hash_enabled   = ! empty( $context['content_hash_enabled'] );
+		$content_hash_max_bytes = isset( $context['content_hash_max_bytes'] ) ? (int) $context['content_hash_max_bytes'] : null;
+		$previous_states        = $baseline_mode ? array() : $this->load_previous_states( $context, $paths, $budget );
 
 		$target_id = (string) $context['target_id'];
 		$dimension = (string) $context['dimension'];
@@ -374,6 +382,7 @@ class WPCV_Chunk_Verifier {
 		$new_cursor_path      = $context['cursor_path'] ?? null;
 		$completed            = true;
 		$processed            = 0;
+		$bytes_hashed         = 0;
 		$start                = call_user_func( $this->now );
 
 		foreach ( $paths as $path ) {
@@ -390,10 +399,20 @@ class WPCV_Chunk_Verifier {
 			if ( ! $stat_failed ) {
 				// content_hash_enabledの対象(v0.6 §Step10)は、baseline_modeでも計算して
 				// 保存する(§5.3 L4「常に内容ハッシュを取る」)。こうしておくと、初回の
-				// ベースライン構築の直後の回からすでに内容比較が効く.
-				$current_content_hash = $content_hash_enabled
-					? WPCV_File_Hasher::hash( rtrim( ABSPATH, '/' ) . '/' . $path, WPCV_File_Hasher::ALGO_SHA256 )
-					: null;
+				// ベースライン構築の直後の回からすでに内容比較が効く。
+				// `content_hash_max_bytes`(v0.6 §Step11. §5.3 L6)を超えるファイルは
+				// ハッシュを計算せず層1にフォールバックする(nullのまま扱われる。
+				// `make_finding_for_stat_content_change()`のフォールバック経路と同じ).
+				$within_content_hash_size_limit = null === $content_hash_max_bytes || $current['size'] <= $content_hash_max_bytes;
+				$current_content_hash           = null;
+
+				if ( $content_hash_enabled && $within_content_hash_size_limit ) {
+					$current_content_hash = WPCV_File_Hasher::hash( rtrim( ABSPATH, '/' ) . '/' . $path, WPCV_File_Hasher::ALGO_SHA256 );
+					// `max_bytes`予算(chunk単位の累積)には、ハッシュに成功したかに
+					// 関わらず「読もうとしたバイト数」を積む(読み取り失敗でもI/Oの
+					// コストは既に発生しているため).
+					$bytes_hashed += $current['size'];
+				}
 
 				if ( ! $baseline_mode ) {
 					$previous = isset( $previous_states[ $path ] ) ? array(
@@ -438,7 +457,7 @@ class WPCV_Chunk_Verifier {
 			$new_cursor_path = $path;
 			++$processed;
 
-			if ( $this->budget_exceeded( $start, $processed, $budget ) ) {
+			if ( $this->budget_exceeded( $start, $processed, $budget, $bytes_hashed ) ) {
 				$completed = false;
 				break;
 			}
@@ -573,15 +592,19 @@ class WPCV_Chunk_Verifier {
 	}
 
 	/**
-	 * 予算(件数・経過時間・メモリ)のいずれかを超えたかを判定する.
+	 * 予算(件数・経過時間・メモリ・累積バイト数)のいずれかを超えたかを判定する.
 	 *
-	 * @param float $start_time 処理開始時刻(`$this->now` の戻り値).
-	 * @param int   $processed  このchunkで既に処理した件数.
-	 * @param array $budget     `max_files`/`max_seconds`/`memory_limit_bytes`/
-	 *                          `memory_threshold_ratio`(いずれも省略可).
+	 * @param float $start_time      処理開始時刻(`$this->now` の戻り値).
+	 * @param int   $processed       このchunkで既に処理した件数.
+	 * @param array $budget          `max_files`/`max_seconds`/`max_bytes`/
+	 *                               `memory_limit_bytes`/`memory_threshold_ratio`
+	 *                               (いずれも省略可).
+	 * @param int   $bytes_processed このchunkで既に読んだ累積バイト数(v0.6 §Step11。
+	 *                               `max_bytes`判定用)。既定0(内容ハッシュを扱わない
+	 *                               呼び出し元はそのままでよい).
 	 * @return bool
 	 */
-	private function budget_exceeded( $start_time, $processed, array $budget ) {
-		return WPCV_Chunk_Budget::exceeded( $start_time, $processed, $budget, $this->now, $this->memory_usage );
+	private function budget_exceeded( $start_time, $processed, array $budget, $bytes_processed = 0 ) {
+		return WPCV_Chunk_Budget::exceeded( $start_time, $processed, $budget, $this->now, $this->memory_usage, $bytes_processed );
 	}
 }
