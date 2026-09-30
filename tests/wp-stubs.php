@@ -484,6 +484,10 @@ if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
 	define( 'HOUR_IN_SECONDS', 3600 );
 }
 
+if ( ! defined( 'MINUTE_IN_SECONDS' ) ) {
+	define( 'MINUTE_IN_SECONDS', 60 );
+}
+
 if ( ! class_exists( 'WP_Screen' ) ) {
 	/**
 	 * Minimal stub of WP_Screen — `get_current_screen()`が返すオブジェクトの

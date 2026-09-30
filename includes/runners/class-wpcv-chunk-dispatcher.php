@@ -28,8 +28,10 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 2. Run自体のdeadline超過を検知して `aborted` へ倒す
  * 3. Runが`queued`/`planning`(target_runsの列挙・保存が別プロセスでまだ完了
  *    していない)なら、claimを試みず待機する
- * 4. Claim可能な target_run を1件claimし、1chunk分処理する
- * 5. Claim対象が無ければ、全target_runが終端状態かどうかを見て run を確定する
+ * 4. `.maintenance`/updater lockが有効なら、claimを試みず延期する(v0.6 §Step6.
+ *    D10。target はSKIPPEDにせず、単に継続を後ろへずらすだけ)
+ * 5. Claim可能な target_run を1件claimし、1chunk分処理する
+ * 6. Claim対象が無ければ、全target_runが終端状態かどうかを見て run を確定する
  *    (終端でなければ、他workerの処理待ちとして遅延re-checkを予約するだけ)
  *
  * v0.4.0コードレビューCR-01是正: 3.を追加する前は、runが`queued`/`running`の
@@ -240,6 +242,14 @@ class WPCV_Chunk_Dispatcher {
 	private $update_event_matcher;
 
 	/**
+	 * `.maintenance`/updater lock の判定(v0.6 §Step6. D10).
+	 * `null`なら既存(v0.5まで)のまま延期を一切行わない(既存呼び出し元との後方互換).
+	 *
+	 * @var WPCV_Update_Lock_Detector|null
+	 */
+	private $update_lock_detector;
+
+	/**
 	 * Stat 差分検知を行う本体 target の `error_code`(rev.3 §3.4).
 	 *
 	 * 「照合元の配布物がそもそも無い」ことを示すものに限る。`http_error`/
@@ -253,6 +263,21 @@ class WPCV_Chunk_Dispatcher {
 		WPCV_Error_Code::UNKNOWN_SOURCE,
 		WPCV_Error_Code::VERSION_UNKNOWN,
 	);
+
+	/**
+	 * `.maintenance`/updater lock による延期(D10)の再チェック間隔(秒).
+	 *
+	 * 実測(2026-09-30. test-armfu.local. `wp_maybe_auto_update()` を実際に
+	 * 実行): 小さいプラグイン2件(hello-dolly・akismet)の更新で5秒、コア
+	 * (7.1.1→7.1.2)+中規模プラグイン1件(google-site-kit、約6MB)の更新で21秒。
+	 * この実測値を踏まえ、待ちすぎず・頻繁に再チェックしすぎない値として30秒とした
+	 * (更新が終わっていなければ`schedule_continuation()`により自分自身を再度
+	 * この間隔で起こすだけなので、共有ホスティング等で実測より長くかかる場合でも
+	 * 単に再チェック回数が増えるだけで正しさには影響しない).
+	 *
+	 * @var int
+	 */
+	const DEFER_SECONDS = 30;
 
 	/**
 	 * コンストラクタ.
@@ -280,6 +305,10 @@ class WPCV_Chunk_Dispatcher {
 	 *                                                                `null`なら既存(v0.5)のまま
 	 *                                                                version変化=常にrebuildになる
 	 *                                                                (既存呼び出し元との後方互換).
+	 * @param WPCV_Update_Lock_Detector|null  $update_lock_detector `.maintenance`/updater lockの
+	 *                                                                判定(v0.6 §Step6. D10). `null`
+	 *                                                                なら延期を行わない(既存呼び出し元
+	 *                                                                との後方互換).
 	 */
 	public function __construct(
 		WPCV_Run_Repository $run_repository,
@@ -294,7 +323,8 @@ class WPCV_Chunk_Dispatcher {
 		?callable $now = null,
 		?WPCV_File_State_Repository $file_state_repository = null,
 		?WPCV_Diff_Dispatcher $diff_dispatcher = null,
-		?WPCV_Update_Event_Matcher $update_event_matcher = null
+		?WPCV_Update_Event_Matcher $update_event_matcher = null,
+		?WPCV_Update_Lock_Detector $update_lock_detector = null
 	) {
 		$this->run_repository          = $run_repository;
 		$this->target_run_repository   = $target_run_repository;
@@ -317,6 +347,7 @@ class WPCV_Chunk_Dispatcher {
 		$this->file_state_repository = $file_state_repository;
 		$this->diff_dispatcher       = $diff_dispatcher;
 		$this->update_event_matcher  = $update_event_matcher;
+		$this->update_lock_detector  = $update_lock_detector;
 	}
 
 	/**
@@ -327,8 +358,8 @@ class WPCV_Chunk_Dispatcher {
 	 *                        (version/plugins/plugin_dir/mu_plugin_dir/mu_plugins).
 	 * @return array{action: string} 少なくとも `action` キーを持つ結果
 	 *               (`run_not_found`|`run_already_terminal`|`aborted`|
-	 *               `waiting_for_plan`|`run_finalized`|`waiting`|`processed`。
-	 *               テスト・観測用).
+	 *               `waiting_for_plan`|`run_finalized`|`waiting`|`processed`|
+	 *               `deferred`(v0.6 §Step6. D10)。テスト・観測用).
 	 */
 	public function dispatch( $run_id, array $context ) {
 		$run_id = (int) $run_id;
@@ -374,6 +405,16 @@ class WPCV_Chunk_Dispatcher {
 			$this->schedule_continuation( $run_id, 0 );
 
 			return array( 'action' => 'waiting_for_plan' );
+		}
+
+		// v0.6 §Step6(D10): claim対象の有無を見る前に、`.maintenance`/updater
+		// lockの有無を確かめる。更新処理中に別のtargetをclaimして更新途中の
+		// ファイルを読んでしまうことを避けるため(target をSKIPPEDにはせず、
+		// 単に継続を後ろへずらすだけ. クラス docblock 参照).
+		if ( null !== $this->update_lock_detector && $this->update_lock_detector->is_deferred() ) {
+			$this->schedule_continuation( $run_id, self::DEFER_SECONDS );
+
+			return array( 'action' => 'deferred' );
 		}
 
 		$lease_owner = call_user_func( $this->lease_owner_factory );

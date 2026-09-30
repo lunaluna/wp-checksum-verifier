@@ -166,6 +166,14 @@ class WPCV_Plugin {
 	private static $update_event_matcher = null;
 
 	/**
+	 * 組み立て済みの `WPCV_Update_Lock_Detector`(1リクエスト内で使い回す.
+	 * v0.6 §Step6).
+	 *
+	 * @var WPCV_Update_Lock_Detector|null
+	 */
+	private static $update_lock_detector = null;
+
+	/**
 	 * 本番用に配線された `WPCV_Run_Coordinator` を返す.
 	 *
 	 * @return WPCV_Run_Coordinator
@@ -401,6 +409,19 @@ class WPCV_Plugin {
 	}
 
 	/**
+	 * 本番用に配線された `WPCV_Update_Lock_Detector` を返す(v0.6 §Step6).
+	 *
+	 * @return WPCV_Update_Lock_Detector
+	 */
+	public static function update_lock_detector() {
+		if ( null === self::$update_lock_detector ) {
+			self::$update_lock_detector = new WPCV_Update_Lock_Detector();
+		}
+
+		return self::$update_lock_detector;
+	}
+
+	/**
 	 * `upgrader_process_complete`フックのハンドラ(v0.6 §Step2.
 	 * `WPCV_Update_Event_Recorder`が実際の判定・記録を行う.
 	 * `includes/runners/class-wpcv-update-event-recorder.php`の末尾で登録する.
@@ -503,7 +524,8 @@ class WPCV_Plugin {
 			null,
 			self::file_state_repository(),
 			self::diff_dispatcher(),
-			self::update_event_matcher()
+			self::update_event_matcher(),
+			self::update_lock_detector()
 		);
 	}
 

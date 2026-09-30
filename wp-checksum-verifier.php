@@ -200,6 +200,12 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-generatio
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-alert-composer.php';
 
 /**
+ * `.maintenance`/updater lock の有無を判定する(v0.6 §3.4・D10. DBに触れない
+ * 純粋ロジック).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-update-lock-detector.php';
+
+/**
  * DB 永続化層(§4.2. v0.4.0 §Step1でrun/target_run/findingの3責務に分割)と、
  * 1回分の run のライフサイクルを統括する Coordinator.
  */

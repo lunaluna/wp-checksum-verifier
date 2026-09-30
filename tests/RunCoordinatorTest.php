@@ -425,6 +425,58 @@ class RunCoordinatorTest extends TestCase {
 
 		$this->assertSame( 6, $fake_dispatcher->call_count(), 'diff_finalizedでは止まらず、diff_alertedに到達するまでの6回すべてが呼ばれ、そこで止まる' );
 	}
+
+	/**
+	 * `deferred`(v0.6 §Step6. D10)が返っている間はループを止めず、`sleeper`を
+	 * `WPCV_Chunk_Dispatcher::DEFER_SECONDS`で呼んでから`dispatch()`を呼び直す
+	 * ことを確認する(sleepを挟まないと空回りするため。クラスdocblock参照).
+	 *
+	 * @return void
+	 */
+	public function test_run_loop_sleeps_and_retries_when_deferred() {
+		$wpdb                  = new WPCV_Test_Fake_WPDB();
+		$now                   = static function () {
+			return '2026-09-30 12:00:00';
+		};
+		$run_repository        = new WPCV_Run_Repository( $wpdb, $now );
+		$target_run_repository = new WPCV_Target_Run_Repository( $wpdb, $now );
+
+		$run_id = $run_repository->reserve_run()['run_id'];
+
+		$fake_dispatcher = new WPCV_Test_Fake_Dispatcher_Action_Queue(
+			array(
+				array( 'action' => 'deferred' ),
+				array( 'action' => 'deferred' ),
+				array( 'action' => 'processed' ),
+			)
+		);
+
+		$sleep_calls = array();
+		$coordinator = new WPCV_Run_Coordinator(
+			new WPCV_Run_Planner( new WPCV_Suppression_Repository( $wpdb, $now ) ),
+			$run_repository,
+			$target_run_repository,
+			$fake_dispatcher,
+			static function ( $seconds ) use ( &$sleep_calls ) {
+				$sleep_calls[] = $seconds;
+			}
+		);
+
+		$coordinator->run(
+			$run_id,
+			array(
+				'version'       => '6.8',
+				'plugins'       => array(),
+				'plugin_dir'    => '/tmp/wpcv-test-plugins',
+				'mu_plugin_dir' => null,
+				'mu_plugins'    => array(),
+			)
+		);
+
+		$this->assertSame( array( WPCV_Chunk_Dispatcher::DEFER_SECONDS, WPCV_Chunk_Dispatcher::DEFER_SECONDS ), $sleep_calls );
+		// deferred×2 + processed + (キュー消化後の既定値)run_finalizedの4回.
+		$this->assertSame( 4, $fake_dispatcher->call_count() );
+	}
 }
 
 /**

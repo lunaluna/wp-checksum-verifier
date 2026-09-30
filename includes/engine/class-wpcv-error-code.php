@@ -57,9 +57,6 @@ class WPCV_Error_Code {
 	/** 検証中に更新が走った(retry 対象). */
 	const VERSION_CHANGED = 'version_changed';
 
-	/** 更新処理中でスキップ. */
-	const LOCKED = 'locked';
-
 	/** 時間予算切れ(resume 対象). */
 	const TIMEOUT = 'timeout';
 
@@ -88,8 +85,7 @@ class WPCV_Error_Code {
 	/**
 	 * `exclude_target` 抑制ルールに一致し、検証自体を行わずスキップした(v0.4.0 §Step8).
 	 *
-	 * `LOCKED`(更新処理中の一時的なスキップ)とは異なり、ユーザーが明示的に
-	 * この target を検証対象外にした恒久的なスキップであることを示す.
+	 * ユーザーが明示的にこの target を検証対象外にした恒久的なスキップであることを示す.
 	 */
 	const EXCLUDED = 'excluded';
 
@@ -143,7 +139,6 @@ class WPCV_Error_Code {
 			self::ARCHIVE_REJECTED           => __( 'Archive rejected (zip slip / zip bomb check)', 'wp-checksum-verifier' ),
 			self::DISK_FULL                  => __( 'Insufficient disk space for extraction', 'wp-checksum-verifier' ),
 			self::VERSION_CHANGED            => __( 'Version changed during verification (will retry)', 'wp-checksum-verifier' ),
-			self::LOCKED                     => __( 'Skipped: an update is in progress', 'wp-checksum-verifier' ),
 			self::TIMEOUT                    => __( 'Time budget exhausted (will resume)', 'wp-checksum-verifier' ),
 			self::TARGET_MISSING             => __( 'Target no longer found locally', 'wp-checksum-verifier' ),
 			self::LEASE_EXPIRED              => __( 'Worker lease expired too many times', 'wp-checksum-verifier' ),

@@ -12,6 +12,34 @@
  */
 
 require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-source.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-update-lock-detector.php';
+
+/**
+ * `is_deferred()` を固定値で返すフェイク(v0.6 §Step6. D10. `.maintenance`/
+ * updater lockの実ファイル・実optionに依存せずdefer分岐を検証するため。
+ * `ChunkDispatcherTest`・`RunnerAsyncTest`の両方から共用する).
+ */
+class WPCV_Test_Fake_Update_Lock_Detector extends WPCV_Update_Lock_Detector {
+
+	/**
+	 * @var bool
+	 */
+	private $deferred;
+
+	/**
+	 * @param bool $deferred `is_deferred()` が返す固定値.
+	 */
+	public function __construct( $deferred ) {
+		$this->deferred = $deferred;
+	}
+
+	/**
+	 * @return bool
+	 */
+	public function is_deferred() {
+		return $this->deferred;
+	}
+}
 
 /**
  * テスト用の固定結果を返す `WPCV_Manifest_Source` 実装.
@@ -1156,6 +1184,19 @@ function wpcv_test_inject_suppression_repository( $repository = null ) {
 	$property = new ReflectionProperty( WPCV_Plugin::class, 'suppression_repository' );
 	$property->setAccessible( true );
 	$property->setValue( null, $repository );
+}
+
+/**
+ * `WPCV_Plugin::update_lock_detector()` が返すインスタンスを差し替える
+ * (`wpcv_test_inject_run_repository()` と同じ手法. v0.6 §Step6).
+ *
+ * @param WPCV_Update_Lock_Detector|null $detector 差し替え先. 省略時はキャッシュを空に戻す.
+ * @return void
+ */
+function wpcv_test_inject_update_lock_detector( $detector = null ) {
+	$property = new ReflectionProperty( WPCV_Plugin::class, 'update_lock_detector' );
+	$property->setAccessible( true );
+	$property->setValue( null, $detector );
 }
 
 /**
