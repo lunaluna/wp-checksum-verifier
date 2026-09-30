@@ -233,22 +233,30 @@ class StaticTargetDispatchTest extends TestCase {
 	}
 
 	/**
-	 * 2回目のrunで、ファイルの追加(`added`)・削除(`missing`)・サイズ変更
-	 * (`stat_changed`)がそれぞれ検出されることを確認する(v0.6 §Step9の完了条件).
+	 * 2回目のrunで、ファイルの追加(`added`)・削除(`missing`)・内容変更
+	 * (`modified`)がそれぞれ検出されることを確認する(v0.6 §Step9の完了条件).
+	 *
+	 * **v0.6 §Step10で内容ハッシュ(層2)がこの2つのtargetに常時有効になったため、
+	 * wp-config.phpの内容変更は`stat_changed`ではなく`modified`(expected_hash=
+	 * 前回のcontent_hash・actual_hash=今回の値)として検出されるようになった
+	 * (Step9実装時点ではまだ層2が無く`stat_changed`だった。2026-09-30更新)。
 	 *
 	 * @return void
 	 */
 	public function test_second_run_detects_added_missing_and_changed_files() {
-		$this->put_fixture_file( 'wp-config.php', str_repeat( 'a', 100 ) );
+		$original_config_content = str_repeat( 'a', 100 );
+		$changed_config_content  = str_repeat( 'a', 200 );
+
+		$this->put_fixture_file( 'wp-config.php', $original_config_content );
 		$this->put_fixture_file( '.htaccess', 'rules' );
 		$this->put_fixture_file( 'wp-content/object-cache.php', str_repeat( 'b', 50 ) );
 
 		$made = wpcv_test_make_fake_environment();
 		$this->reserve_and_run( $made, array( 'version' => '6.8' ) );
 
-		// wp-config.php: サイズ変更(stat_changed). .htaccess: 削除(missing).
+		// wp-config.php: 内容変更(modified). .htaccess: 削除(missing).
 		// object-cache.php: そのまま. advanced-cache.php: 追加(added).
-		$this->put_fixture_file( 'wp-config.php', str_repeat( 'a', 200 ) );
+		$this->put_fixture_file( 'wp-config.php', $changed_config_content );
 		unlink( ABSPATH . '.htaccess' );
 		$this->put_fixture_file( 'wp-content/advanced-cache.php', str_repeat( 'c', 30 ) );
 
@@ -267,7 +275,9 @@ class StaticTargetDispatchTest extends TestCase {
 		}
 
 		$this->assertArrayHasKey( 'wp-config.php', $config_by_path );
-		$this->assertSame( 'stat_changed', $config_by_path['wp-config.php']['status'] );
+		$this->assertSame( 'modified', $config_by_path['wp-config.php']['status'] );
+		$this->assertSame( hash( 'sha256', $original_config_content ), $config_by_path['wp-config.php']['expected_hash'] );
+		$this->assertSame( hash( 'sha256', $changed_config_content ), $config_by_path['wp-config.php']['actual_hash'] );
 
 		$this->assertArrayHasKey( '.htaccess', $config_by_path );
 		$this->assertSame( 'missing', $config_by_path['.htaccess']['status'] );

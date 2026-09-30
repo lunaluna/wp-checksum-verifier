@@ -1181,6 +1181,8 @@ class WPCV_Chunk_Dispatcher {
 				'run_id'               => (int) $run_id,
 				'scan_items'           => $scan['items'],
 				'baseline_mode'        => $baseline_mode,
+				// v0.6 §Step10・§5.3 L4: この2つのtargetは常に内容ハッシュを取る.
+				'content_hash_enabled' => true,
 				'load_previous_states' => static function ( array $paths ) use ( $file_state_repository, $target_id ) {
 					$keys = array();
 					foreach ( $paths as $path ) {

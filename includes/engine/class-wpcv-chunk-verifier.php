@@ -269,7 +269,10 @@ class WPCV_Chunk_Verifier {
 	 *
 	 * 1. 走査結果(`collect_stat => true` で得た size/ctime/mtime 付きの items)を
 	 *    前回のベースラインと比べ、`WPCV_Verifier::make_finding_for_stat_change()` で
-	 *    finding にする(ファイル内容は読まない).
+	 *    finding にする(ファイル内容は読まない)。`$context['content_hash_enabled']`
+	 *    が真の対象(`core:_config`/`dropin:_stat`. v0.6 §Step10)だけは例外で、
+	 *    内容ハッシュ(sha256)も計算し `WPCV_Verifier::make_finding_for_stat_content_change()`
+	 *    で比較する.
 	 * 2. 処理したファイルぶんのベースライン行(`baseline_rows`)も返す。呼び出し元
 	 *    (Step6の dispatcher / `commit_chunk()`)が findings と同じトランザクションで
 	 *    `WPCV_File_State_Repository::upsert_many()` に渡す想定.
@@ -317,6 +320,11 @@ class WPCV_Chunk_Verifier {
 	 *                                               省略時はまとめない.
 	 *     @type string        $target_root_path     まとめた finding の path にする
 	 *                                               target のルート(ABSPATH 相対). 既定は空文字.
+	 *     @type bool          $content_hash_enabled 真なら内容ハッシュ(sha256)を計算し、
+	 *                                               `file_states.content_hash` に保存しつつ
+	 *                                               `WPCV_Verifier::make_finding_for_stat_content_change()`
+	 *                                               で比較する(v0.6 §Step10. §5.3 L4).
+	 *                                               既定 false(従来どおり size/ctime/mtime のみ).
 	 * }
 	 * @return array `verify_manifest_chunk()` と同じ形に `baseline_rows`
 	 *               (`WPCV_File_State_Repository::upsert_many()` にそのまま渡せる行の配列)を
@@ -349,8 +357,9 @@ class WPCV_Chunk_Verifier {
 		$budget = isset( $context['budget'] ) ? (array) $context['budget'] : array();
 		$paths  = WPCV_Chunk_Cursor::paths_after( $sorted_paths, $context['cursor_path'] ?? null );
 
-		$baseline_mode   = ! empty( $context['baseline_mode'] );
-		$previous_states = $baseline_mode ? array() : $this->load_previous_states( $context, $paths, $budget );
+		$baseline_mode        = ! empty( $context['baseline_mode'] );
+		$content_hash_enabled = ! empty( $context['content_hash_enabled'] );
+		$previous_states      = $baseline_mode ? array() : $this->load_previous_states( $context, $paths, $budget );
 
 		$target_id = (string) $context['target_id'];
 		$dimension = (string) $context['dimension'];
@@ -379,6 +388,13 @@ class WPCV_Chunk_Verifier {
 			$stat_failed = 0 === $current['size'] && 0 === $current['ctime'] && 0 === $current['mtime'];
 
 			if ( ! $stat_failed ) {
+				// content_hash_enabledの対象(v0.6 §Step10)は、baseline_modeでも計算して
+				// 保存する(§5.3 L4「常に内容ハッシュを取る」)。こうしておくと、初回の
+				// ベースライン構築の直後の回からすでに内容比較が効く.
+				$current_content_hash = $content_hash_enabled
+					? WPCV_File_Hasher::hash( rtrim( ABSPATH, '/' ) . '/' . $path, WPCV_File_Hasher::ALGO_SHA256 )
+					: null;
+
 				if ( ! $baseline_mode ) {
 					$previous = isset( $previous_states[ $path ] ) ? array(
 						'size'  => (int) $previous_states[ $path ]['file_size'],
@@ -386,7 +402,13 @@ class WPCV_Chunk_Verifier {
 						'mtime' => (int) $previous_states[ $path ]['mtime'],
 					) : null;
 
-					$finding = WPCV_Verifier::make_finding_for_stat_change( $target_id, $dimension, $slug, $version, $source, $path, (string) $item['severity'], $previous, $current );
+					if ( $content_hash_enabled ) {
+						$previous_content_hash = isset( $previous_states[ $path ]['content_hash'] ) ? $previous_states[ $path ]['content_hash'] : null;
+						$finding               = WPCV_Verifier::make_finding_for_stat_content_change( $target_id, $dimension, $slug, $version, $source, $path, (string) $item['severity'], $previous, $current, $previous_content_hash, $current_content_hash );
+					} else {
+						$finding = WPCV_Verifier::make_finding_for_stat_change( $target_id, $dimension, $slug, $version, $source, $path, (string) $item['severity'], $previous, $current );
+					}
+
 					++$files_compared;
 
 					if ( null === $finding ) {
@@ -405,8 +427,8 @@ class WPCV_Chunk_Verifier {
 					'file_size'         => $current['size'],
 					'ctime'             => $current['ctime'],
 					'mtime'             => $current['mtime'],
-					'content_hash'      => null,
-					'hash_algorithm'    => null,
+					'content_hash'      => $current_content_hash,
+					'hash_algorithm'    => null === $current_content_hash ? null : WPCV_File_Hasher::ALGO_SHA256,
 					'baseline_version'  => '' === $version ? null : $version,
 					'first_seen_run_id' => $run_id,
 					'last_seen_run_id'  => $run_id,

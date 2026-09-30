@@ -297,6 +297,11 @@ class WPCV_Verifier {
 	 * chmod/chown と「同サイズ書き換え+mtime巻き戻し」を stat だけでは区別できない
 	 * ため、timestomp にはせず通常の `stat_changed` として拾うに留める(層1の限界。§3.2-c).
 	 *
+	 * **v0.6 §Step10で導入した層2(`core:_config`/`dropin:_stat`専用)は、上記の
+	 * timestomp判定を拡張するのではなく、内容ハッシュが変化していれば`stat_changed`
+	 * を経由せず直接`modified`を返す形にした(`make_finding_for_stat_content_change()`
+	 * 参照。2026-09-30ユーザー承認済み). 本メソッド自体は層1専用のまま変更していない.
+	 *
 	 * 層1はファイル内容を読まない設計(§3.2-c)のため、`added` でも hash を計算しない
 	 * (`make_finding_for_unknown_file()` は hash を計算するので使わない)。そのため
 	 * `expected_hash`/`actual_hash` は常に null、`hash_algorithm` は空文字にする
@@ -368,6 +373,58 @@ class WPCV_Verifier {
 		);
 
 		return $finding;
+	}
+
+	/**
+	 * `make_finding_for_stat_change()`に内容ハッシュ比較を重ねる(v0.6 §Step10.
+	 * §5.3 L4「常に内容ハッシュを取る」対象専用. `core:_config`/`dropin:_stat`から呼ぶ).
+	 *
+	 * 組み合わせ表(2026-09-30ユーザー承認済み):
+	 *
+	 * | 前回content_hash | 今回content_hash | 結果                                    |
+	 * |------------------|-------------------|------------------------------------------|
+	 * | null(層2導入前等) | *                 | 比較不能。`make_finding_for_stat_change()`にフォールバック(stat比較のみ) |
+	 * | あり             | null(読み取り失敗) | 同上(フォールバック)                     |
+	 * | あり             | 前回と同じ         | 同上(フォールバック。chmod等のstat変化はそのまま拾う) |
+	 * | あり             | 前回と違う         | `modified`(expected_hash=前回値・actual_hash=今回値). この回は`stat_changed`を別途出さない |
+	 *
+	 * 「同じサイズ・同じmtimeでの書き換え」(timestompの典型例)を層1のstat比較だけでは
+	 * 検知できないため、内容ハッシュが変わっていればstatの状態に関わらず`modified`を
+	 * 優先する。フォールバック時は`make_finding_for_stat_change()`のtimestomp判定
+	 * (size変化+mtime不変)がそのまま働く.
+	 *
+	 * @param string      $target_id             target_id(`{dimension}:{slug}:_stat`形式).
+	 * @param string      $dimension             dimension.
+	 * @param string      $slug                  slug.
+	 * @param string      $version               version.
+	 * @param string      $source                source.
+	 * @param string      $relative_path         ABSPATH相対パス.
+	 * @param string      $severity              timestompでない場合のseverity(フォールバック時のみ使う).
+	 * @param array|null  $previous              前回のstat値(`make_finding_for_stat_change()`と同じ形).
+	 * @param array       $current               今回のstat値(同上).
+	 * @param string|null $previous_content_hash 前回保存済みのcontent_hash(sha256).未確立ならnull.
+	 * @param string|null $current_content_hash  今回計算したcontent_hash(sha256).読み取り失敗ならnull.
+	 * @return array|null 変更が無ければnull.
+	 */
+	public static function make_finding_for_stat_content_change( $target_id, $dimension, $slug, $version, $source, $relative_path, $severity, ?array $previous, array $current, ?string $previous_content_hash, ?string $current_content_hash ) {
+		if ( null !== $previous_content_hash && null !== $current_content_hash && $previous_content_hash !== $current_content_hash ) {
+			return self::make_finding(
+				$target_id,
+				$dimension,
+				$slug,
+				$version,
+				$source,
+				$relative_path,
+				'modified',
+				self::severity_for_modified_path( $relative_path ),
+				WPCV_File_Hasher::ALGO_SHA256,
+				$previous_content_hash,
+				$current_content_hash,
+				(int) $current['size']
+			);
+		}
+
+		return self::make_finding_for_stat_change( $target_id, $dimension, $slug, $version, $source, $relative_path, $severity, $previous, $current );
 	}
 
 	/**

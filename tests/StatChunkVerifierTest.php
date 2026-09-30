@@ -22,7 +22,10 @@ use PHPUnit\Framework\TestCase;
  * Stat差分検知(層1)の chunk 処理のテスト(v0.5 §Step5).
  *
  * `verify_stat_chunk()` はファイルシステムにも DB にも触らない純ロジックのため、
- * `collect_stat => true` の走査結果(items)と前回ベースラインを手で組み立てて渡す.
+ * `collect_stat => true` の走査結果(items)と前回ベースラインを手で組み立てて渡す。
+ * ただし`content_hash_enabled`(v0.6 §Step10)を使うテストだけは、実際に
+ * `hash_file()` が読む対象として `tests/fixtures/fake-root/`(ABSPATH)配下に
+ * 実ファイルを作る(`VerifierTest`/`ChunkVerifierTest` と同じ方式).
  */
 class StatChunkVerifierTest extends TestCase {
 
@@ -32,6 +35,82 @@ class StatChunkVerifierTest extends TestCase {
 	 * @var string
 	 */
 	const TARGET_ID = 'plugin:custom-plugin:_stat';
+
+	/**
+	 * 各テストの前に前回の残骸を掃除する(content_hash_enabledのテストが
+	 * 実ファイルを作るため).
+	 *
+	 * @return void
+	 */
+	protected function setUp(): void {
+		parent::setUp();
+		$this->clean_fixtures();
+	}
+
+	/**
+	 * 各テストの後に作成したフィクスチャを掃除する.
+	 *
+	 * @return void
+	 */
+	protected function tearDown(): void {
+		$this->clean_fixtures();
+		parent::tearDown();
+	}
+
+	/**
+	 * ABSPATH 直下を `.gitkeep` 以外すべて削除する.
+	 *
+	 * @return void
+	 */
+	private function clean_fixtures() {
+		foreach ( scandir( ABSPATH ) as $entry ) {
+			if ( '.' === $entry || '..' === $entry || '.gitkeep' === $entry ) {
+				continue;
+			}
+			$this->remove_path( ABSPATH . $entry );
+		}
+	}
+
+	/**
+	 * ファイル・ディレクトリを再帰的に削除する.
+	 *
+	 * @param string $path 絶対パス.
+	 * @return void
+	 */
+	private function remove_path( $path ) {
+		if ( is_dir( $path ) && ! is_link( $path ) ) {
+			foreach ( scandir( $path ) as $entry ) {
+				if ( '.' === $entry || '..' === $entry ) {
+					continue;
+				}
+				$this->remove_path( $path . '/' . $entry );
+			}
+			rmdir( $path );
+			return;
+		}
+
+		if ( file_exists( $path ) || is_link( $path ) ) {
+			unlink( $path );
+		}
+	}
+
+	/**
+	 * ABSPATH 相対パスを指定してテスト用ファイルを作る.
+	 *
+	 * @param string $relative_path ABSPATH 相対パス.
+	 * @param string $content       ファイルの中身.
+	 * @return void
+	 */
+	private function put_fixture_file( $relative_path, $content = '' ) {
+		$absolute_path = ABSPATH . $relative_path;
+		$dir           = dirname( $absolute_path );
+
+		if ( ! is_dir( $dir ) ) {
+			mkdir( $dir, 0777, true );
+		}
+
+		file_put_contents( $absolute_path, $content );
+	}
 
 	/**
 	 * 走査結果の item を1件組み立てる.
@@ -57,16 +136,20 @@ class StatChunkVerifierTest extends TestCase {
 	 * `wpcv_file_states` の行の形をしたベースラインを1件組み立てる
 	 * (DB から読んだ値は文字列で返るため、あえて文字列にしている).
 	 *
-	 * @param int $size  file_size.
-	 * @param int $ctime ctime.
-	 * @param int $mtime mtime.
+	 * @param int         $size          file_size.
+	 * @param int         $ctime         ctime.
+	 * @param int         $mtime         mtime.
+	 * @param string|null $content_hash  content_hash(v0.6 §Step10。未確立ならnull.
+	 *                                  `wpdb`はNULL列をPHPのnullで返すため、この
+	 *                                  引数を省略した場合もnullのまま持たせる).
 	 * @return array
 	 */
-	private function state( $size, $ctime, $mtime ) {
+	private function state( $size, $ctime, $mtime, $content_hash = null ) {
 		return array(
-			'file_size' => (string) $size,
-			'ctime'     => (string) $ctime,
-			'mtime'     => (string) $mtime,
+			'file_size'    => (string) $size,
+			'ctime'        => (string) $ctime,
+			'mtime'        => (string) $mtime,
+			'content_hash' => $content_hash,
 		);
 	}
 
@@ -449,6 +532,230 @@ class StatChunkVerifierTest extends TestCase {
 		$this->assertNull(
 			WPCV_Verifier::make_finding_for_stat_change( self::TARGET_ID, 'plugin', 'custom-plugin', '1.0.0', '', 'x.php', 'high', $stat, $stat )
 		);
+	}
+
+	/**
+	 * `make_finding_for_stat_content_change()` の組み合わせ表(v0.6 §Step10.
+	 * 2026-09-30ユーザー承認済み)を直接呼び出しで確認する.
+	 *
+	 * 前回・今回のcontent_hashが両方あり値が違えば、statの状態(ここでは
+	 * size/ctime/mtimeすべて同じ.「同じサイズの書き換え」を想定)に関わらず
+	 * `modified` を返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_make_finding_for_stat_content_change_returns_modified_when_hash_differs() {
+		$stat = array(
+			'size'  => 10,
+			'ctime' => 10,
+			'mtime' => 10,
+		);
+
+		$finding = WPCV_Verifier::make_finding_for_stat_content_change(
+			self::TARGET_ID,
+			'core',
+			'_config',
+			'',
+			'',
+			'wp-config.php',
+			'high',
+			$stat,
+			$stat,
+			hash( 'sha256', 'old' ),
+			hash( 'sha256', 'new' )
+		);
+
+		$this->assertSame( 'modified', $finding['status'] );
+		$this->assertSame( 'high', $finding['severity'] );
+		$this->assertSame( hash( 'sha256', 'old' ), $finding['expected_hash'] );
+		$this->assertSame( hash( 'sha256', 'new' ), $finding['actual_hash'] );
+		$this->assertSame( WPCV_File_Hasher::ALGO_SHA256, $finding['hash_algorithm'] );
+		$this->assertArrayNotHasKey( 'detail', $finding );
+	}
+
+	/**
+	 * 前回のcontent_hashがnull(層2導入前のベースライン等、比較不能)なら、
+	 * statも変化していない場合は`make_finding_for_stat_change()`と同じくnullに
+	 * フォールバックすることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_make_finding_for_stat_content_change_falls_back_when_previous_hash_is_null() {
+		$stat = array(
+			'size'  => 10,
+			'ctime' => 10,
+			'mtime' => 10,
+		);
+
+		$finding = WPCV_Verifier::make_finding_for_stat_content_change(
+			self::TARGET_ID,
+			'core',
+			'_config',
+			'',
+			'',
+			'wp-config.php',
+			'high',
+			$stat,
+			$stat,
+			null,
+			hash( 'sha256', 'new' )
+		);
+
+		$this->assertNull( $finding );
+	}
+
+	/**
+	 * 今回のcontent_hashがnull(読み取り失敗)なら、同様にstat比較へ
+	 * フォールバックすることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_make_finding_for_stat_content_change_falls_back_when_current_hash_is_null() {
+		$stat = array(
+			'size'  => 10,
+			'ctime' => 10,
+			'mtime' => 10,
+		);
+
+		$finding = WPCV_Verifier::make_finding_for_stat_content_change(
+			self::TARGET_ID,
+			'core',
+			'_config',
+			'',
+			'',
+			'wp-config.php',
+			'high',
+			$stat,
+			$stat,
+			hash( 'sha256', 'old' ),
+			null
+		);
+
+		$this->assertNull( $finding );
+	}
+
+	/**
+	 * `verify_stat_chunk()` に `content_hash_enabled` を渡すと、size/ctime/mtimeが
+	 * すべて同じ「同じサイズの書き換え」でも内容ハッシュの違いから `modified` を
+	 * 検出することを確認する(v0.6 §Step10の完了条件そのもの. プラン§6 Step10参照).
+	 *
+	 * @return void
+	 */
+	public function test_content_hash_enabled_detects_same_size_rewrite_as_modified() {
+		$path = 'wp-config.php';
+		$this->put_fixture_file( $path, 'BBBB' );
+
+		$result = ( new WPCV_Chunk_Verifier() )->verify_stat_chunk(
+			$this->context(
+				array( $this->item( $path, 4, 1000, 900, 'high' ) ),
+				array( $path => $this->state( 4, 1000, 900, hash( 'sha256', 'AAAA' ) ) ),
+				array( 'content_hash_enabled' => true )
+			)
+		);
+
+		$this->assertCount( 1, $result['findings'] );
+		$finding = $result['findings'][0];
+		$this->assertSame( 'modified', $finding['status'] );
+		$this->assertSame( hash( 'sha256', 'AAAA' ), $finding['expected_hash'] );
+		$this->assertSame( hash( 'sha256', 'BBBB' ), $finding['actual_hash'] );
+
+		$row = $result['baseline_rows'][0];
+		$this->assertSame( hash( 'sha256', 'BBBB' ), $row['content_hash'] );
+		$this->assertSame( WPCV_File_Hasher::ALGO_SHA256, $row['hash_algorithm'] );
+	}
+
+	/**
+	 * 前回のcontent_hashが未確立(null。層2導入直後の移行期)なら、statが
+	 * 変化していない限りfindingを出さず、今回計算したhashをbaseline行へ
+	 * 保存するだけにとどまることを確認する(2026-09-30ユーザー承認済みの方針).
+	 *
+	 * @return void
+	 */
+	public function test_content_hash_enabled_stores_hash_without_finding_when_previous_hash_missing() {
+		$path = 'wp-config.php';
+		$this->put_fixture_file( $path, 'BBBB' );
+
+		$result = ( new WPCV_Chunk_Verifier() )->verify_stat_chunk(
+			$this->context(
+				array( $this->item( $path, 4, 1000, 900, 'high' ) ),
+				array( $path => $this->state( 4, 1000, 900 ) ),
+				array( 'content_hash_enabled' => true )
+			)
+		);
+
+		$this->assertSame( array(), $result['findings'] );
+		$this->assertSame( hash( 'sha256', 'BBBB' ), $result['baseline_rows'][0]['content_hash'] );
+	}
+
+	/**
+	 * 内容が変わっていなければ、ctimeのみの変化(chmod等)は従来どおり
+	 * `stat_changed` のまま拾われることを確認する(content_hash一致時は
+	 * stat比較へフォールバックする方針).
+	 *
+	 * @return void
+	 */
+	public function test_content_hash_enabled_still_reports_stat_changed_when_content_unchanged() {
+		$path = 'wp-config.php';
+		$this->put_fixture_file( $path, 'AAAA' );
+
+		$result = ( new WPCV_Chunk_Verifier() )->verify_stat_chunk(
+			$this->context(
+				array( $this->item( $path, 4, 5000, 900, 'high' ) ),
+				array( $path => $this->state( 4, 1000, 900, hash( 'sha256', 'AAAA' ) ) ),
+				array( 'content_hash_enabled' => true )
+			)
+		);
+
+		$this->assertCount( 1, $result['findings'] );
+		$this->assertSame( 'stat_changed', $result['findings'][0]['status'] );
+	}
+
+	/**
+	 * ベースライン構築モードでも(finding は出さずに)内容ハッシュを計算して
+	 * baseline行へ保存することを確認する(§5.3 L4「常に内容ハッシュを取る」).
+	 *
+	 * @return void
+	 */
+	public function test_content_hash_enabled_computes_hash_during_baseline_mode() {
+		$path = 'wp-config.php';
+		$this->put_fixture_file( $path, 'AAAA' );
+
+		$result = ( new WPCV_Chunk_Verifier() )->verify_stat_chunk(
+			$this->context(
+				array( $this->item( $path, 4, 1000, 900, 'high' ) ),
+				array(),
+				array(
+					'baseline_mode'        => true,
+					'content_hash_enabled' => true,
+				)
+			)
+		);
+
+		$this->assertSame( array(), $result['findings'] );
+		$this->assertSame( hash( 'sha256', 'AAAA' ), $result['baseline_rows'][0]['content_hash'] );
+	}
+
+	/**
+	 * `content_hash_enabled` を渡さない(既定 false)通常のstat targetは、実ファイルが
+	 * 存在してもハッシュを一切計算せず、従来どおり`content_hash`がnullのままである
+	 * ことを確認する(層1のみのtargetの挙動が変わらないことの完了条件. プラン§6参照).
+	 *
+	 * @return void
+	 */
+	public function test_content_hash_stays_null_when_not_enabled_even_if_file_exists() {
+		$path = 'wp-content/plugins/custom-plugin/main.php';
+		$this->put_fixture_file( $path, 'anything' );
+
+		$result = ( new WPCV_Chunk_Verifier() )->verify_stat_chunk(
+			$this->context(
+				array( $this->item( $path, 8, 1000, 900 ) ),
+				array( $path => $this->state( 8, 1000, 900 ) )
+			)
+		);
+
+		$this->assertSame( array(), $result['findings'] );
+		$this->assertNull( $result['baseline_rows'][0]['content_hash'] );
+		$this->assertNull( $result['baseline_rows'][0]['hash_algorithm'] );
 	}
 
 	/**
