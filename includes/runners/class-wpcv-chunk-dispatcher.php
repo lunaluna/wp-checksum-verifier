@@ -1473,6 +1473,13 @@ class WPCV_Chunk_Dispatcher {
 	 * いずれもリクエストのたびに読まれる/機密情報を含み得るため、拡張子を
 	 * 問わず高severityとして扱う).
 	 *
+	 * 各itemの`path`は`WPCV_Static_Target_Resolver::stored_path_for()`で求めた
+	 * ABSPATH相対のパスに置き換え、実際のファイルの場所は`absolute_path`に
+	 * 持たせる。ABSPATHの1つ上にある`wp-config.php`は`path`が`wp-config.php`に
+	 * なり実体の場所と一致しないため、`WPCV_Chunk_Verifier::verify_stat_chunk()`
+	 * の内容ハッシュは`absolute_path`を読む(v0.6 §Step12. 理由は
+	 * `stored_path_for()`のdocblock参照).
+	 *
 	 * @param string[] $absolute_paths 対象の絶対パス一覧(実在するもののみ想定).
 	 * @return array{items: array, truncated: bool, version: string, root_path: string}
 	 */
@@ -1481,7 +1488,12 @@ class WPCV_Chunk_Dispatcher {
 
 		foreach ( $absolute_paths as $absolute_path ) {
 			$result = $this->scanner->stat_file( $absolute_path, 'high', 'high' );
-			$items  = array_merge( $items, $result['items'] );
+
+			foreach ( $result['items'] as $item ) {
+				$item['path']          = WPCV_Static_Target_Resolver::stored_path_for( $absolute_path );
+				$item['absolute_path'] = WPCV_Path_Normalizer::to_forward_slashes( $absolute_path );
+				$items[]               = $item;
+			}
 		}
 
 		return array(

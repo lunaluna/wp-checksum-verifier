@@ -306,7 +306,10 @@ class WPCV_Chunk_Verifier {
 	 *                                               first/last_seen_run_id になる). 必須.
 	 *     @type array         $scan_items           `collect_stat => true` で得た
 	 *                                               `WPCV_Unknown_File_Scanner::scan()` の戻り値. 必須.
-	 *     @type bool          $baseline_mode        真ならベースライン構築のみ(finding なし). 既定 false.
+	 *                                               `core:_config`/`dropin:_stat`のitemは
+	 *                                               内容ハッシュ用に`absolute_path`も持つ
+	 *                                               (v0.6 §Step12).
+	 *     @type bool          $baseline_mode       真ならベースライン構築のみ(finding なし). 既定 false.
 	 *     @type callable|null $load_previous_states `function( string[] $paths ): array`.
 	 *                                               path => `array( 'file_size', 'ctime', 'mtime', ... )`
 	 *                                               (`wpcv_file_states` の行の形)を返す.
@@ -407,7 +410,12 @@ class WPCV_Chunk_Verifier {
 				$current_content_hash           = null;
 
 				if ( $content_hash_enabled && $within_content_hash_size_limit ) {
-					$current_content_hash = WPCV_File_Hasher::hash( rtrim( ABSPATH, '/' ) . '/' . $path, WPCV_File_Hasher::ALGO_SHA256 );
+					// `absolute_path`は`core:_config`/`dropin:_stat`のitemだけが持つ.
+					// ABSPATHの1つ上にある`wp-config.php`は`path`が`wp-config.php`で
+					// 実体の場所と一致しないため、実際の場所を読む(v0.6 §Step12.
+					// `WPCV_Static_Target_Resolver::stored_path_for()`参照).
+					$absolute_path        = isset( $item['absolute_path'] ) ? (string) $item['absolute_path'] : rtrim( ABSPATH, '/' ) . '/' . $path;
+					$current_content_hash = WPCV_File_Hasher::hash( $absolute_path, WPCV_File_Hasher::ALGO_SHA256 );
 					// `max_bytes`予算(chunk単位の累積)には、ハッシュに成功したかに
 					// 関わらず「読もうとしたバイト数」を積む(読み取り失敗でもI/Oの
 					// コストは既に発生しているため).

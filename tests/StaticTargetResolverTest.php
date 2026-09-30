@@ -6,6 +6,7 @@
  */
 
 require_once __DIR__ . '/wp-stubs.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-path-normalizer.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-static-target-resolver.php';
 
 use PHPUnit\Framework\TestCase;
@@ -224,5 +225,38 @@ class StaticTargetResolverTest extends TestCase {
 		$GLOBALS['_wpcv_test_is_multisite'] = true;
 
 		$this->assertSame( array( $root . '/sunrise.php' ), WPCV_Static_Target_Resolver::dropin_paths( $root ) );
+	}
+
+	/**
+	 * ABSPATH配下のパスは、`stored_path_for()`でそのままABSPATH相対になることを
+	 * 確認する(v0.6 §Step12).
+	 *
+	 * @return void
+	 */
+	public function test_stored_path_for_returns_relative_path_under_abspath() {
+		$this->assertSame( 'wp-config.php', WPCV_Static_Target_Resolver::stored_path_for( '/srv/site/public/wp-config.php', '/srv/site/public' ) );
+		$this->assertSame( '.htaccess', WPCV_Static_Target_Resolver::stored_path_for( '/srv/site/public/.htaccess', '/srv/site/public/' ) );
+		$this->assertSame( 'wp-content/db.php', WPCV_Static_Target_Resolver::stored_path_for( '/srv/site/public/wp-content/db.php', '/srv/site/public' ) );
+	}
+
+	/**
+	 * ABSPATHの1つ上の階層にある`wp-config.php`は、サーバーの絶対パスではなく
+	 * `wp-config.php`として保存されることを確認する(v0.6 §Step12.
+	 * エックスサーバーの実地検証で、絶対パスのまま保存されていたのを発見した).
+	 *
+	 * @return void
+	 */
+	public function test_stored_path_for_maps_wp_config_one_level_above_abspath() {
+		$this->assertSame( 'wp-config.php', WPCV_Static_Target_Resolver::stored_path_for( '/srv/site/wp-config.php', '/srv/site/public' ) );
+	}
+
+	/**
+	 * 1つ上の階層でも`wp-config.php`以外のファイルは読み替えないことを確認する
+	 * (読み替えるのは`resolve_wp_config_path()`が返し得るパスだけ).
+	 *
+	 * @return void
+	 */
+	public function test_stored_path_for_does_not_map_other_files_above_abspath() {
+		$this->assertSame( '/srv/site/.htaccess', WPCV_Static_Target_Resolver::stored_path_for( '/srv/site/.htaccess', '/srv/site/public' ) );
 	}
 }

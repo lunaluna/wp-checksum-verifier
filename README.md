@@ -94,7 +94,9 @@ hash recorded on the previous run:
 - **Always on** for the configuration-file and drop-in targets
   (`core:_config`: `wp-config.php` — found the same way WordPress itself
   looks for it, one directory above `ABSPATH` if it isn't there directly and
-  `wp-settings.php` isn't in that parent directory either — `.htaccess`, and
+  `wp-settings.php` isn't in that parent directory either, and reported as
+  `wp-config.php` in both cases so the server's absolute path never appears
+  in findings or alert emails — `.htaccess`, and
   `.user.ini`; `dropin:_stat`: whichever drop-ins WordPress
   recognizes (`advanced-cache.php`, `db.php`, `db-error.php`, `install.php`,
   `maintenance.php`, `object-cache.php`, `php-error.php`,

@@ -74,7 +74,9 @@ checksum で「正しいファイルか」を確かめられるのは、比べ�
 
 - **設定ファイル・ドロップインのtargetでは常に有効**(`core:_config`:
   `wp-config.php`〔ABSPATHに無ければ1つ上の階層。`wp-settings.php`もその
-  階層に無い場合だけ、というWordPressコア自身の探し方と同じ〕・
+  階層に無い場合だけ、というWordPressコア自身の探し方と同じ。どちらの場所でも
+  `wp-config.php`と表示し、サーバーの絶対パスはfindingやアラートメールに
+  出さない〕・
   `.htaccess`・`.user.ini`。`dropin:_stat`: WordPressが認識するドロップイン
   〔`advanced-cache.php`・`db.php`・`db-error.php`・`install.php`・
   `maintenance.php`・`object-cache.php`・`php-error.php`・

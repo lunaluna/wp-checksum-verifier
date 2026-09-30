@@ -79,6 +79,42 @@ class WPCV_Static_Target_Resolver {
 	}
 
 	/**
+	 * 走査対象の絶対パスから、`wpcv_file_states.path`・`findings.path`に保存する
+	 * ABSPATH相対のパスを求める.
+	 *
+	 * ABSPATH配下なら通常どおり相対パスにする。ABSPATHの1つ上の階層にある
+	 * `wp-config.php`(`resolve_wp_config_path()`が返し得る唯一のABSPATH外の
+	 * パス)は、ABSPATH直下にある場合と同じ`wp-config.php`として扱う.
+	 *
+	 * こうしないと`WPCV_Path_Normalizer::to_relative()`が範囲外のパスをそのまま
+	 * 返すため、サーバーの絶対パスがDB・画面・アラートメールに出てしまう
+	 * (アラートの`clean_path()`はABSPATHで始まるパスしか直さない)。あわせて、
+	 * 内容ハッシュの計算が`ABSPATH . path`で組み立てたありえないパスを読みに行き
+	 * 常にnullになる不具合もあった(v0.6 §Step12でエックスサーバーの実地検証中に
+	 * 発見。エックスサーバーは標準でこの配置になる).
+	 *
+	 * 攻撃者がABSPATH直下に別の`wp-config.php`を置いた場合、WordPressはそちらを
+	 * 読むようになる(`wp-load.php`)。このときも同じ`wp-config.php`のまま内容が
+	 * 変わるので、`modified`として検知される.
+	 *
+	 * @param string      $absolute_path 走査対象の絶対パス.
+	 * @param string|null $abspath       省略時は`ABSPATH`(テスト用の引数).
+	 * @return string ABSPATH相対のパス. どちらにも当たらなければ
+	 *                `to_relative()`の結果(範囲外ならそのままのパス)を返す.
+	 */
+	public static function stored_path_for( $absolute_path, $abspath = null ) {
+		$abspath       = rtrim( WPCV_Path_Normalizer::to_forward_slashes( null === $abspath ? ABSPATH : $abspath ), '/' ) . '/';
+		$absolute_path = WPCV_Path_Normalizer::to_forward_slashes( $absolute_path );
+		$parent_config = dirname( rtrim( $abspath, '/' ) ) . '/wp-config.php';
+
+		if ( $absolute_path === $parent_config ) {
+			return 'wp-config.php';
+		}
+
+		return WPCV_Path_Normalizer::to_relative( $absolute_path, $abspath );
+	}
+
+	/**
 	 * `dropin:_stat`が走査すべき絶対パスの一覧を返す(実在するもののみ).
 	 *
 	 * @param string|null $wp_content_dir 省略時は`WP_CONTENT_DIR`(テストで

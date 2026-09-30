@@ -68,7 +68,23 @@ class StaticTargetDispatchTest extends TestCase {
 	protected function tearDown(): void {
 		$this->clean_fixtures();
 		unset( $GLOBALS['_wpcv_test_is_multisite'] );
+
+		// ABSPATHの1つ上(tests/fixtures/)に置いたwp-config.phpの掃除.
+		// clean_fixtures()はABSPATH直下しか見ないため別に消す.
+		if ( file_exists( $this->parent_wp_config_path() ) ) {
+			unlink( $this->parent_wp_config_path() );
+		}
+
 		parent::tearDown();
+	}
+
+	/**
+	 * ABSPATHの1つ上の階層の`wp-config.php`の絶対パス(`tests/fixtures/wp-config.php`).
+	 *
+	 * @return string
+	 */
+	private function parent_wp_config_path() {
+		return dirname( rtrim( ABSPATH, '/' ) ) . '/wp-config.php';
 	}
 
 	/**
@@ -286,6 +302,57 @@ class StaticTargetDispatchTest extends TestCase {
 		$this->assertSame( 'added', $dropin_by_path['wp-content/advanced-cache.php']['status'] );
 
 		$this->assertArrayNotHasKey( 'wp-content/object-cache.php', $dropin_by_path, '変化していないファイルはfindingを出さない' );
+	}
+
+	/**
+	 * `wp-config.php`がABSPATHの1つ上の階層にある構成(エックスサーバーの標準)で、
+	 * ベースラインのpathが絶対パスではなく`wp-config.php`になり、内容ハッシュも
+	 * 取られ、同じサイズ・同じmtimeの書き換えが`modified`として検出されることを
+	 * 確認する(v0.6 §Step12. エックスサーバーの実地検証で、pathが絶対パスのまま・
+	 * content_hashがnullになっていたのを発見した).
+	 *
+	 * @return void
+	 */
+	public function test_wp_config_one_level_above_abspath_is_stored_as_relative_path_and_hashed() {
+		$original_content = str_repeat( 'a', 100 );
+		$changed_content  = str_repeat( 'b', 100 );
+		$config_path      = $this->parent_wp_config_path();
+
+		$this->assertFileDoesNotExist( dirname( $config_path ) . '/wp-settings.php', '前提: 1つ上の階層にwp-settings.phpがあると対象外になる' );
+
+		file_put_contents( $config_path, $original_content );
+		$mtime = filemtime( $config_path );
+
+		$made  = wpcv_test_make_fake_environment();
+		$first = $this->reserve_and_run( $made, array( 'version' => '6.8' ) );
+
+		$config = $this->find_target_run( $made, 'core:_config', $first['run_id'] );
+		$this->assertSame( 1, (int) $config['files_total'] );
+
+		$rows = array_values(
+			array_filter(
+				$made['wpdb']->rows['wp_wpcv_file_states'] ?? array(),
+				static function ( $row ) {
+					return 'core:_config' === $row['target_id'];
+				}
+			)
+		);
+		$this->assertCount( 1, $rows );
+		$this->assertSame( 'wp-config.php', $rows[0]['path'], 'サーバーの絶対パスではなくABSPATH相対で保存する' );
+		$this->assertSame( hash( 'sha256', $original_content ), $rows[0]['content_hash'], '実体の場所を読んで内容ハッシュを取る' );
+
+		// 同じサイズ・同じmtimeで内容だけ書き換える(層1では検知できない変化).
+		file_put_contents( $config_path, $changed_content );
+		touch( $config_path, $mtime );
+
+		$second   = $this->reserve_and_run( $made, array( 'version' => '6.8' ) );
+		$findings = $this->findings_for( $made, 'core:_config', $second['run_id'] );
+
+		$this->assertCount( 1, $findings );
+		$this->assertSame( 'wp-config.php', $findings[0]['path'] );
+		$this->assertSame( 'modified', $findings[0]['status'] );
+		$this->assertSame( hash( 'sha256', $original_content ), $findings[0]['expected_hash'] );
+		$this->assertSame( hash( 'sha256', $changed_content ), $findings[0]['actual_hash'] );
 	}
 
 	/**
