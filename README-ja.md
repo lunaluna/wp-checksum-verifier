@@ -4,12 +4,13 @@ WordPress のコア・プラグイン・MU プラグインの checksum を検証
 プラグイン。公式の checksum マニフェスト(wp.org のコア/プラグイン checksum)と
 実ファイルを突き合わせ、どのマニフェストにも存在しない未知のファイルも報告する。
 
-> **ステータス**: v0.5.1。検証エンジン、計画していた全ての実行モデル
+> **ステータス**: v0.6.0。検証エンジン、計画していた全ての実行モデル
 > (WP-CLI・WP-Cron・管理画面の「今すぐ実行」ボタン・REST API)、resume対応の
 > ファイル単位分割実行、抑制エンジン(`exclude_target`/`exclude_path`/
 > `allowlist_hash`とstrict mode)、公式checksumの無いプラグイン向けのstat
-> 差分検知、差分検知に基づくメールアラート(下記「アラート」参照)、
-> 検出結果・抑制一覧・実行履歴の管理画面を実装済み。公式テーマの照合と、
+> 差分検知(内容ハッシュ比較のオプション付き)、設定ファイル・ドロップインの
+> 監視、更新イベントの記録、差分検知に基づくメールアラート(下記「アラート」
+> 参照)、検出結果・抑制一覧・実行履歴の管理画面を実装済み。公式テーマの照合と、
 > GitHub Releases 上の非公式プラグイン/テーマの照合はまだ未実装。詳細は
 > `CHANGELOG.md` を参照.
 
@@ -22,6 +23,11 @@ WordPress のコア・プラグイン・MU プラグインの checksum を検証
   finding として報告する.
 - **公式 checksum の無いプラグイン**(独自・有料プラグイン、MU プラグインの loader):
   stat 差分検知で変更を追跡する(下記).
+- **設定ファイルとドロップイン**(`wp-config.php`・`.htaccess`・`.user.ini`・
+  実在するWordPress認識済みドロップイン〔例: `object-cache.php`〕): 同じ仕組みで
+  追跡するが、常に内容ハッシュ比較(下記「内容ハッシュ比較」参照)も行う ――
+  これらのtargetは「Stat-based change detection」の設定とは無関係に無条件で
+  存在する.
 - 未実装: 公式テーマの照合、GitHub Releases 上の非公式プラグイン/テーマの照合.
 
 ### stat 差分検知
@@ -57,7 +63,44 @@ checksum で「正しいファイルか」を確かめられるのは、比べ�
 - **無効にする**: 設定画面の「Stat-based change detection」のチェックを外します(既定は有効)。
   既存のベースラインは残るため、あとで有効に戻すと古いベースラインと比較します.
 - **既知の制限**: 同じサイズで書き換えて mtime も元に戻された場合も ctime で検出できますが、
-  擬装ではなく通常の `stat_changed` として報告されます.
+  擬装ではなく通常の `stat_changed` として報告されます ―― ただし、そのtargetで下記の
+  内容ハッシュ比較が有効なら、`modified` として直接報告されます.
+
+### 内容ハッシュ比較
+
+サイズ・ctime・mtime の追跡だけでは、「同じサイズ・同じmtimeでの書き換え」を
+「変更なし」と区別できません。内容ハッシュ比較は、各ファイルの内容の sha256
+ハッシュも計算し、前回runで記録した値と比べることでこの穴を埋めます:
+
+- **設定ファイル・ドロップインのtargetでは常に有効**(`core:_config`:
+  `wp-config.php`〔ABSPATHに無ければ1つ上の階層。`wp-settings.php`もその
+  階層に無い場合だけ、というWordPressコア自身の探し方と同じ〕・
+  `.htaccess`・`.user.ini`。`dropin:_stat`: WordPressが認識するドロップイン
+  〔`advanced-cache.php`・`db.php`・`db-error.php`・`install.php`・
+  `maintenance.php`・`object-cache.php`・`php-error.php`・
+  `fatal-error-handler.php`。マルチサイトのみ`sunrise.php`・
+  `blog-deleted.php`・`blog-inactive.php`・`blog-suspended.php`も追加〕の
+  うち`wp-content/`に実在するもの)。この2つのtargetには本体プラグインも
+  versionという概念も無いため、「Stat-based change detection」の設定や
+  更新イベントの記録の影響を受けず、内容・サイズ・mtimeのいずれかが変われば
+  次のrunでそのまま報告されます。初回はベースラインのみ記録し(他のstat
+  targetと同じ)、ドロップインの追加・削除は他のstat targetと同じく
+  `added`/`missing`として報告されます.
+- **それ以外のstat target(独自・有料プラグイン、MUプラグインのloader)は
+  オプトイン**: 毎回すべてのファイルの内容を読むためI/Oコストが増えることから
+  既定は無効で、設定画面の「Content-hash comparison for custom plugins」で
+  サイトごとに有効化します.
+- 前回runと内容ハッシュが異なれば、size/ctime/mtimeの変化の有無に関わらず
+  `modified`(`hash_algorithm`/`expected_hash`/`actual_hash`付き。checksum
+  targetのfindingと同じ形)として報告されます。内容ハッシュが一致していれば、
+  chmod等のメタデータのみの変更は従来どおり`stat_changed`のままです.
+- 10MBを超えるファイルはハッシュを計算せず、そのファイルだけstatのみの追跡に
+  フォールバックします(`wpcv_content_hash_max_bytes`フィルター)。1回の処理
+  単位では200MiBを読んだ時点でいったん区切り、次の処理単位で続きを読みます
+  (`wpcv_content_hash_chunk_max_bytes`フィルター)。どちらの既定値も実測した
+  ハッシュ計算のスループットに基づく値です(`CHANGELOG.md`参照)。単なる目安
+  ではないため、変更する場合は`wp wpcv bench-stat --hash`で自分の環境を
+  実測し直してください.
 
 ### 更新イベント
 
@@ -440,9 +483,12 @@ run」を反映するだけで、サーバーにWP-CLI自体がインストー�
 (UTC。WP-CronとRESTの日次due判定が共通で使う)・RESTエンドポイントの
 時間予算・strict mode(readme.txt/readme.mdの変更を低リスクな「soft change」
 として抑制せず、通常のfindingとして報告する。既定は無効)・stat差分検知
-(既定は有効)・WordPressの更新機構を通らないversion変化を通知するか
-(既定は有効。上記「アラート」参照)・アラートの宛先と「Send test alert」
-ボタン(上記「アラート」参照)・RESTトークンの発行を設定できる.
+(既定は有効)・独自プラグイン・MUプラグインのloader向けの内容ハッシュ比較
+(既定は無効。上記「内容ハッシュ比較」参照。設定ファイル・ドロップインは
+この設定に関わらず常に内容ハッシュ比較の対象)・WordPressの更新機構を
+通らないversion変化を通知するか(既定は有効。上記「アラート」参照)・
+アラートの宛先と「Send test alert」ボタン(上記「アラート」参照)・
+RESTトークンの発行を設定できる.
 
 ## 配布方針
 

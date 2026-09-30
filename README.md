@@ -5,15 +5,16 @@ tampering by comparing installed files against official checksum manifests
 (wp.org core/plugin checksums) and reports unknown files not present in any
 manifest.
 
-> **Status**: v0.5.1. The verification engine, all planned execution model
+> **Status**: v0.6.0. The verification engine, all planned execution model
 > entry points (WP-CLI, WP-Cron, admin "Run now" button, REST API),
 > file-level chunked execution with resume, the suppression engine
 > (`exclude_target`/`exclude_path`/`allowlist_hash` plus strict mode),
-> stat-based change detection for plugins without official checksums,
-> diff-based email alerts (see Alerts below), and the
-> Findings/Suppressions/Run History admin screens are implemented.
-> Official theme verification and GitHub-hosted plugin/theme verification
-> are not implemented yet. See `CHANGELOG.md` for details.
+> stat-based change detection for plugins without official checksums
+> (with optional content-hash comparison), configuration-file and drop-in
+> monitoring, update-event tracking, diff-based email alerts (see Alerts
+> below), and the Findings/Suppressions/Run History admin screens are
+> implemented. Official theme verification and GitHub-hosted plugin/theme
+> verification are not implemented yet. See `CHANGELOG.md` for details.
 
 ## Verification targets
 
@@ -27,6 +28,12 @@ manifest.
   manifest are reported as findings, for every target above.
 - **Plugins without official checksums** (custom or premium plugins, and
   MU-plugin loaders): tracked by stat-based change detection (see below).
+- **Configuration files and drop-ins** (`wp-config.php`, `.htaccess`,
+  `.user.ini`, and any WordPress-recognized drop-in that is actually present,
+  e.g. `object-cache.php`): tracked the same way, but always with
+  content-hash comparison (see "Content-hash comparison" below) — these
+  targets exist unconditionally, independent of the "Stat-based change
+  detection" setting.
 - Not yet implemented: official theme verification, and checksum
   verification for unofficial plugins/themes hosted on GitHub Releases.
 
@@ -73,7 +80,49 @@ whether a change is malicious.
   compares against the old baseline.
 - **Known limitations**: a same-size edit that also restores the original
   mtime is still caught by ctime, but it is reported as an ordinary
-  `stat_changed` rather than as forgery.
+  `stat_changed` rather than as forgery — unless content-hash comparison
+  (below) is active for that target, in which case it is reported as
+  `modified` directly.
+
+### Content-hash comparison
+
+Size/ctime/mtime tracking cannot tell a same-size, same-mtime rewrite from
+no change at all. Content-hash comparison closes that gap by additionally
+computing a sha256 hash of each file's contents and comparing it with the
+hash recorded on the previous run:
+
+- **Always on** for the configuration-file and drop-in targets
+  (`core:_config`: `wp-config.php` — found the same way WordPress itself
+  looks for it, one directory above `ABSPATH` if it isn't there directly and
+  `wp-settings.php` isn't in that parent directory either — `.htaccess`, and
+  `.user.ini`; `dropin:_stat`: whichever drop-ins WordPress
+  recognizes (`advanced-cache.php`, `db.php`, `db-error.php`, `install.php`,
+  `maintenance.php`, `object-cache.php`, `php-error.php`,
+  `fatal-error-handler.php`, plus `sunrise.php`/`blog-deleted.php`/
+  `blog-inactive.php`/`blog-suspended.php` on multisite) that actually exist
+  in `wp-content/`). These two targets have no "body" plugin and no version
+  of their own, so they are unaffected by the "Stat-based change detection"
+  setting and by update-event tracking — any content, size, or mtime
+  difference is reported on the very next run. The first run only builds a
+  baseline, and adding or removing a drop-in is reported as `added`/`missing`
+  like any other stat target.
+- **Opt-in** for the other stat-based targets (custom/premium plugins and
+  MU-plugin loaders): off by default (reading every file's contents on every
+  run adds I/O cost), turned on per-site with "Content-hash comparison for
+  custom plugins" in Settings.
+- When the content hash differs from the previous run, the finding is
+  `modified` (with `hash_algorithm`/`expected_hash`/`actual_hash`, the same
+  shape as a checksum-target finding) instead of `stat_changed`, regardless
+  of whether size/ctime/mtime also changed. When the content hash matches, a
+  metadata-only change (e.g. `chmod`) is still reported as `stat_changed` as
+  before.
+- A file larger than 10 MB is not hashed and falls back to stat-only
+  tracking for that file (`wpcv_content_hash_max_bytes` filter); per chunk,
+  hashing stops after 200 MiB and resumes on the next cycle
+  (`wpcv_content_hash_chunk_max_bytes` filter). Both defaults come from
+  measured hashing throughput (see `CHANGELOG.md`), not a fixed rule of
+  thumb — re-measure with `wp wpcv bench-stat --hash` on your own server if
+  you change them.
 
 ### Update events
 
@@ -483,9 +532,12 @@ installed on the server). Below that, you can configure: the daily run time
 (UTC, shared by WP-Cron and the REST endpoint's due check), the REST
 endpoint's per-request time budget, strict mode (reports readme.txt/readme.md
 changes as findings instead of suppressing them as a low-risk "soft change";
-off by default), stat-based change detection (on by default), whether to
-alert on version changes that did not go through the WordPress updater (on
-by default; see Alerts above), alert recipients and the "Send test alert"
+off by default), stat-based change detection (on by default), content-hash
+comparison for custom plugins and MU-plugin loaders (off by default; see
+"Content-hash comparison" above — configuration files and drop-ins are
+always content-hashed regardless of this setting), whether to alert on
+version changes that did not go through the WordPress updater (on by
+default; see Alerts above), alert recipients and the "Send test alert"
 button (see Alerts above), and REST token issuance.
 
 ## Distribution

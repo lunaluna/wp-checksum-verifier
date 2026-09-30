@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.6.0] - 2026-10-01
 
 ### Added
 
@@ -26,6 +26,29 @@ All notable changes to this project will be documented in this file.
   never marked `skipped`) while `.maintenance` is present or an update
   lock (`core_updater.lock`/`auto_updater.lock`) is held, instead of
   claiming a target and possibly reading files mid-update.
+- New `core:_config` and `dropin:_stat` targets track `wp-config.php`,
+  `.htaccess`, `.user.ini`, and any present WordPress-recognized drop-in
+  (`object-cache.php`, `advanced-cache.php`, etc.) the same way stat-based
+  change detection does, but unconditionally — independent of the
+  "Stat-based change detection" setting — and always with content-hash
+  comparison (see below).
+- **Content-hash comparison.** In addition to size/ctime/mtime, a sha256
+  hash of each file's contents can now be compared against the previous
+  run, catching a same-size, same-mtime rewrite that stat tracking alone
+  cannot. Always on for the new configuration-file/drop-in targets above;
+  opt-in for other stat-based targets (custom/premium plugins, MU-plugin
+  loaders) via the new **"Content-hash comparison for custom plugins"**
+  setting (off by default). A content change is reported as `modified`
+  (with `hash_algorithm`/`expected_hash`/`actual_hash`, like a
+  checksum-target finding) instead of `stat_changed`. A file over 10 MB is
+  not hashed and falls back to stat-only tracking (`wpcv_content_hash_max_bytes`
+  filter), and hashing within a single chunk stops after 200 MiB and
+  resumes on the next cycle (`wpcv_content_hash_chunk_max_bytes` filter) —
+  both measured against ~78–131 MB/s observed hashing throughput (see
+  `wp wpcv bench-stat --hash` below).
+- `wp wpcv bench-stat --hash` flag that additionally measures content-hash
+  (sha256) throughput on a directory, used to size the content-hash byte
+  limits above.
 
 ### Changed
 
