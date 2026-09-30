@@ -34,13 +34,20 @@ class WPCV_CLI_Bench_Stat_Command {
 	 * [--iterations=<n>]
 	 * : `lstat`経路(本番と同じ経路)の計測回数. 既定3。1未満は1に切り上げる.
 	 *
+	 * [--hash]
+	 * : 内容ハッシュ(sha256. `WPCV_File_Hasher::hash()`)の所要時間も測る
+	 *   (v0.6 §Step8. 層2の実測)。既定では測らない ―— 対象ディレクトリが大きいと
+	 *   ハッシュ計算自体が数百MB〜数GBの読み取りを伴い時間がかかるため。
+	 *   `--iterations`で指定した回数分、cold/warmの組で計測する.
+	 *
 	 * ## EXAMPLES
 	 *
 	 *     wp wpcv bench-stat --dir=/var/www/html/wp-content/plugins
 	 *     wp wpcv bench-stat --dir=/var/www/html/wp-includes --iterations=5
+	 *     wp wpcv bench-stat --dir=/var/www/html/wp-content/plugins/akismet --hash
 	 *
 	 * @param array $args       位置引数(未使用).
-	 * @param array $assoc_args 連想引数(`--dir`必須・`--iterations`任意).
+	 * @param array $assoc_args 連想引数(`--dir`必須・`--iterations`/`--hash`任意).
 	 * @return void
 	 */
 	public function __invoke( $args, $assoc_args ) {
@@ -63,9 +70,10 @@ class WPCV_CLI_Bench_Stat_Command {
 			return;
 		}
 
-		$iterations = isset( $assoc_args['iterations'] ) ? (int) $assoc_args['iterations'] : 3;
+		$iterations           = isset( $assoc_args['iterations'] ) ? (int) $assoc_args['iterations'] : 3;
+		$include_content_hash = isset( $assoc_args['hash'] );
 
-		$result = ( new WPCV_Stat_Bench() )->measure( $dir, $iterations );
+		$result = ( new WPCV_Stat_Bench() )->measure( $dir, $iterations, $include_content_hash );
 
 		self::report( $result );
 	}
@@ -82,6 +90,14 @@ class WPCV_CLI_Bench_Stat_Command {
 			WP_CLI::line( sprintf( '--- iteration %d ---', $run['iteration'] ) );
 			self::report_stats( 'lstat (cold)', $run['lstat_cold'] );
 			self::report_stats( 'lstat (warm)', $run['lstat_warm'] );
+
+			// v0.6 §Step8: `--hash`指定時のみ存在する(層2の実測).
+			if ( isset( $run['content_hash_cold'] ) ) {
+				self::report_stats( 'content-hash sha256 (cold)', $run['content_hash_cold'] );
+			}
+			if ( isset( $run['content_hash_warm'] ) ) {
+				self::report_stats( 'content-hash sha256 (warm)', $run['content_hash_warm'] );
+			}
 		}
 
 		WP_CLI::line( '--- lstat() 1回 vs filesize()+filectime()+filemtime() 3回呼びの比較(ファイル一覧確保後の関数呼び出しのみ) ---' );

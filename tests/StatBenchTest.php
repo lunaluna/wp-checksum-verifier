@@ -8,6 +8,7 @@
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-path-normalizer.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-budget.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-unknown-file-scanner.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-file-hasher.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-stat-bench.php';
 
 use PHPUnit\Framework\TestCase;
@@ -246,5 +247,63 @@ class StatBenchTest extends TestCase {
 
 		$this->assertSame( 0, $result['runs'][0]['lstat_cold']['entries'] );
 		$this->assertSame( 0, $result['triple_call_cold']['entries'] );
+	}
+
+	/**
+	 * `$include_content_hash` を省略(既定false)すると `content_hash_cold`/
+	 * `content_hash_warm` が結果に含まれないことを確認する(v0.6 §Step8. 既定では
+	 * ハッシュ計算を行わない、というクラスdocblockの方針の検証).
+	 *
+	 * @return void
+	 */
+	public function test_measure_omits_content_hash_by_default() {
+		$this->put_fixture_file( 'wp-admin/a.php', 'x' );
+
+		$bench  = new WPCV_Stat_Bench( null, $this->make_monotonic_now() );
+		$result = $bench->measure( ABSPATH . 'wp-admin', 1 );
+
+		$this->assertArrayNotHasKey( 'content_hash_cold', $result['runs'][0] );
+		$this->assertArrayNotHasKey( 'content_hash_warm', $result['runs'][0] );
+	}
+
+	/**
+	 * `$include_content_hash = true` のとき、`content_hash_cold`/
+	 * `content_hash_warm` が実際のフィクスチャの合計サイズを反映することを
+	 * 確認する(v0.6 §Step8. 層2の実測).
+	 *
+	 * @return void
+	 */
+	public function test_measure_includes_content_hash_when_requested() {
+		$this->put_fixture_file( 'wp-admin/a.php', str_repeat( 'a', 100 ) );
+		$this->put_fixture_file( 'wp-admin/b.php', str_repeat( 'b', 250 ) );
+
+		$bench  = new WPCV_Stat_Bench( null, $this->make_monotonic_now() );
+		$result = $bench->measure( ABSPATH . 'wp-admin', 1, true );
+
+		foreach ( array( $result['runs'][0]['content_hash_cold'], $result['runs'][0]['content_hash_warm'] ) as $stats ) {
+			$this->assertSame( 2, $stats['entries'] );
+			$this->assertSame( 350, $stats['bytes'] );
+		}
+	}
+
+	/**
+	 * `$include_content_hash = true` を `iterations` 複数回で呼んでも、
+	 * `runs` の各要素にそれぞれ `content_hash_cold`/`content_hash_warm` が
+	 * 付くことを確認する(v0.6 §Step8).
+	 *
+	 * @return void
+	 */
+	public function test_measure_includes_content_hash_for_every_iteration() {
+		$this->put_fixture_file( 'wp-admin/a.php', 'x' );
+
+		$bench  = new WPCV_Stat_Bench( null, $this->make_monotonic_now() );
+		$result = $bench->measure( ABSPATH . 'wp-admin', 2, true );
+
+		$this->assertCount( 2, $result['runs'] );
+
+		foreach ( $result['runs'] as $run ) {
+			$this->assertArrayHasKey( 'content_hash_cold', $run );
+			$this->assertArrayHasKey( 'content_hash_warm', $run );
+		}
 	}
 }
