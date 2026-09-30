@@ -299,7 +299,8 @@ class WPCV_Plugin {
 				self::finding_repository(),
 				self::file_state_repository(),
 				self::alert_sender(),
-				self::update_event_matcher()
+				self::update_event_matcher(),
+				self::suppression_repository()
 			);
 		}
 

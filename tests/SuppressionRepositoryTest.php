@@ -218,6 +218,147 @@ class SuppressionRepositoryTest extends TestCase {
 	}
 
 	/**
+	 * D9(v0.6プラン §3.3): `expire_allowlist_hash_rules_with_different_version()`が、
+	 * versionが今回と異なる`allowlist_hash`ルールを失効させ、`expired_reason`に
+	 * `version_changed`を書くことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_expire_allowlist_hash_rules_with_different_version_expires_mismatched_rule() {
+		$repository = new WPCV_Suppression_Repository( new WPCV_Test_Fake_WPDB() );
+
+		$id = $repository->insert(
+			array(
+				'type'           => WPCV_Suppression_Type::ALLOWLIST_HASH,
+				'dimension'      => 'plugin',
+				'slug'           => 'foo',
+				'pattern'        => 'foo.php',
+				'expected_hash'  => str_repeat( 'a', 64 ),
+				'hash_algorithm' => 'sha256',
+				'version'        => '1.0.0',
+				'reason'         => 'approved 1.0.0',
+				'created_by'     => 1,
+			)
+		);
+
+		$expired = $repository->expire_allowlist_hash_rules_with_different_version( 'plugin', 'foo', '1.1.0' );
+
+		$this->assertSame( 1, $expired );
+
+		$row = $repository->find_by_id( $id );
+		$this->assertNotNull( $row['expired_at'] );
+		$this->assertSame( WPCV_Suppression_Repository::EXPIRED_REASON_VERSION_CHANGED, $row['expired_reason'] );
+	}
+
+	/**
+	 * D9: versionが今回と同じ`allowlist_hash`ルールは失効させないことを確認する
+	 * (「先に新しいversionで承認されたもの」. §3.3の表参照).
+	 *
+	 * @return void
+	 */
+	public function test_expire_allowlist_hash_rules_with_different_version_keeps_matching_version() {
+		$repository = new WPCV_Suppression_Repository( new WPCV_Test_Fake_WPDB() );
+
+		$id = $repository->insert(
+			array(
+				'type'           => WPCV_Suppression_Type::ALLOWLIST_HASH,
+				'dimension'      => 'plugin',
+				'slug'           => 'foo',
+				'pattern'        => 'foo.php',
+				'expected_hash'  => str_repeat( 'a', 64 ),
+				'hash_algorithm' => 'sha256',
+				'version'        => '1.1.0',
+				'reason'         => 'approved 1.1.0',
+				'created_by'     => 1,
+			)
+		);
+
+		$expired = $repository->expire_allowlist_hash_rules_with_different_version( 'plugin', 'foo', '1.1.0' );
+
+		$this->assertSame( 0, $expired );
+		$this->assertNull( $repository->find_by_id( $id )['expired_at'] );
+	}
+
+	/**
+	 * D9: `exclude_path`/`exclude_target`ルールは失効させないことを確認する
+	 * (「exclude_path/exclude_targetは失効させない」. §3.3参照).
+	 *
+	 * @return void
+	 */
+	public function test_expire_allowlist_hash_rules_with_different_version_does_not_touch_other_types() {
+		$repository = new WPCV_Suppression_Repository( new WPCV_Test_Fake_WPDB() );
+
+		$exclude_path_id = $repository->insert(
+			array(
+				'type'       => WPCV_Suppression_Type::EXCLUDE_PATH,
+				'dimension'  => 'plugin',
+				'slug'       => 'foo',
+				'pattern'    => 'readme.txt',
+				'reason'     => 'noisy',
+				'created_by' => 1,
+			)
+		);
+		$exclude_target_id = $repository->insert(
+			array(
+				'type'       => WPCV_Suppression_Type::EXCLUDE_TARGET,
+				'dimension'  => 'plugin',
+				'slug'       => 'foo',
+				'reason'     => 'skip',
+				'created_by' => 1,
+			)
+		);
+
+		$expired = $repository->expire_allowlist_hash_rules_with_different_version( 'plugin', 'foo', '1.1.0' );
+
+		$this->assertSame( 0, $expired );
+		$this->assertNull( $repository->find_by_id( $exclude_path_id )['expired_at'] );
+		$this->assertNull( $repository->find_by_id( $exclude_target_id )['expired_at'] );
+	}
+
+	/**
+	 * D9: 複数の`allowlist_hash`ルールがある場合、versionが一致しないものだけを
+	 * まとめて失効させ、失効件数を返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_expire_allowlist_hash_rules_with_different_version_handles_multiple_rules() {
+		$repository = new WPCV_Suppression_Repository( new WPCV_Test_Fake_WPDB() );
+
+		$stale_id = $repository->insert(
+			array(
+				'type'           => WPCV_Suppression_Type::ALLOWLIST_HASH,
+				'dimension'      => 'plugin',
+				'slug'           => 'foo',
+				'pattern'        => 'a.php',
+				'expected_hash'  => str_repeat( 'a', 64 ),
+				'hash_algorithm' => 'sha256',
+				'version'        => '1.0.0',
+				'reason'         => 'old',
+				'created_by'     => 1,
+			)
+		);
+		$fresh_id = $repository->insert(
+			array(
+				'type'           => WPCV_Suppression_Type::ALLOWLIST_HASH,
+				'dimension'      => 'plugin',
+				'slug'           => 'foo',
+				'pattern'        => 'b.php',
+				'expected_hash'  => str_repeat( 'b', 64 ),
+				'hash_algorithm' => 'sha256',
+				'version'        => '1.1.0',
+				'reason'         => 'new',
+				'created_by'     => 1,
+			)
+		);
+
+		$expired = $repository->expire_allowlist_hash_rules_with_different_version( 'plugin', 'foo', '1.1.0' );
+
+		$this->assertSame( 1, $expired );
+		$this->assertNotNull( $repository->find_by_id( $stale_id )['expired_at'] );
+		$this->assertNull( $repository->find_by_id( $fresh_id )['expired_at'] );
+	}
+
+	/**
 	 * `find_all()` が挿入済みの全ルールを返すことを確認する.
 	 *
 	 * @return void

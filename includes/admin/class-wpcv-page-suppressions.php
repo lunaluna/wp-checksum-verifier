@@ -154,8 +154,28 @@ class WPCV_Page_Suppressions {
 			/* translators: 1: revoked timestamp, 2: revoke reason. */
 			__( 'Revoked at %1$s (%2$s)', 'wp-checksum-verifier' ),
 			(string) $row['expired_at'],
-			(string) $row['expired_reason']
+			self::format_expired_reason( (string) $row['expired_reason'] )
 		);
+	}
+
+	/**
+	 * `expired_reason`の表示文字列を組み立てる(`status_label()`から分離).
+	 *
+	 * `v0.6` §Step5(D9)で自動失効した行は、機械的な値
+	 * `WPCV_Suppression_Repository::EXPIRED_REASON_VERSION_CHANGED`
+	 * (`version_changed`)がそのまま保存されているため、人が読める文言に変換する。
+	 * それ以外(管理画面から手動で失効させた際のユーザー入力の自由文字列)は
+	 * そのまま表示する.
+	 *
+	 * @param string $reason `wpcv_suppressions.expired_reason`の値.
+	 * @return string
+	 */
+	private static function format_expired_reason( $reason ) {
+		if ( WPCV_Suppression_Repository::EXPIRED_REASON_VERSION_CHANGED === $reason ) {
+			return __( 'version changed', 'wp-checksum-verifier' );
+		}
+
+		return $reason;
 	}
 
 	/**

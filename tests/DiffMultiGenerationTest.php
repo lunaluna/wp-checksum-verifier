@@ -22,6 +22,8 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-migrator.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-update-event-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-update-event-matcher.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-alert-sender.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-diff-dispatcher.php';
 require_once __DIR__ . '/doubles.php';
@@ -83,6 +85,7 @@ class DiffMultiGenerationTest extends TestCase {
 		$alert_sender            = new WPCV_Alert_Sender( $run_repository, $target_run_repository, $finding_repository, $now );
 		$update_event_repository = new WPCV_Update_Event_Repository( $wpdb, $now );
 		$update_event_matcher    = new WPCV_Update_Event_Matcher( $update_event_repository, $run_repository );
+		$suppression_repository  = new WPCV_Suppression_Repository( $wpdb, $now );
 
 		$owner_sequence = 0;
 		$dispatcher     = new WPCV_Diff_Dispatcher(
@@ -92,6 +95,7 @@ class DiffMultiGenerationTest extends TestCase {
 			$file_state_repository,
 			$alert_sender,
 			$update_event_matcher,
+			$suppression_repository,
 			static function () use ( &$owner_sequence ) {
 				++$owner_sequence;
 				return 'owner-' . $owner_sequence;
@@ -107,6 +111,7 @@ class DiffMultiGenerationTest extends TestCase {
 			'alert_sender'             => $alert_sender,
 			'update_event_repository'  => $update_event_repository,
 			'update_event_matcher'     => $update_event_matcher,
+			'suppression_repository'   => $suppression_repository,
 			'dispatcher'               => $dispatcher,
 		);
 	}

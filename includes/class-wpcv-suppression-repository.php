@@ -25,6 +25,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 class WPCV_Suppression_Repository {
 
 	/**
+	 * D9(v0.6プラン §3.3)による自動失効の`expired_reason`値.
+	 *
+	 * @var string
+	 */
+	const EXPIRED_REASON_VERSION_CHANGED = 'version_changed';
+
+	/**
 	 * `$wpdb` 相当のオブジェクト(`insert()` / `update()` / `get_results()` /
 	 * `base_prefix` / `insert_id` を持つもの).
 	 *
@@ -206,6 +213,37 @@ class WPCV_Suppression_Repository {
 		);
 
 		return $updated > 0;
+	}
+
+	/**
+	 * D9(v0.6プラン §3.3): 指定した dimension/slug の有効な `allowlist_hash` ルールの
+	 * うち、`version` が今回の version と異なるものをすべて失効させる
+	 * (`WPCV_Diff_Dispatcher` が`version_changed`と判定したtargetに対して呼ぶ).
+	 *
+	 * `version` が今回と同じルールは失効させない(「先に新しい version で承認された
+	 * もの」。§3.3の表参照)。`exclude_path`/`exclude_target` はこのメソッドの対象外
+	 * (`find_active_rules_for_target()` が `allowlist_hash` だけを見るため自然に除外される).
+	 *
+	 * @param string      $dimension       対象の dimension.
+	 * @param string      $slug            対象の slug.
+	 * @param string|null $current_version 今回の version.
+	 * @return int 失効した件数.
+	 */
+	public function expire_allowlist_hash_rules_with_different_version( $dimension, $slug, $current_version ) {
+		$rules   = $this->find_active_rules_for_target( $dimension, $slug )['allowlist_hash'];
+		$expired = 0;
+
+		foreach ( $rules as $rule ) {
+			if ( (string) ( $rule['version'] ?? '' ) === (string) ( $current_version ?? '' ) ) {
+				continue;
+			}
+
+			if ( $this->expire( (int) $rule['id'], self::EXPIRED_REASON_VERSION_CHANGED ) ) {
+				++$expired;
+			}
+		}
+
+		return $expired;
 	}
 
 	/**

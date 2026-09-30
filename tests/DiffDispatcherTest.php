@@ -22,6 +22,8 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-migrator.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-update-event-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-update-event-matcher.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-alert-sender.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-diff-dispatcher.php';
 require_once __DIR__ . '/doubles.php';
@@ -80,6 +82,7 @@ class DiffDispatcherTest extends TestCase {
 		$alert_sender            = new WPCV_Alert_Sender( $run_repository, $target_run_repository, $finding_repository, $now );
 		$update_event_repository = new WPCV_Update_Event_Repository( $wpdb, $now );
 		$update_event_matcher    = new WPCV_Update_Event_Matcher( $update_event_repository, $run_repository );
+		$suppression_repository  = new WPCV_Suppression_Repository( $wpdb, $now );
 
 		$owner_sequence = 0;
 		$dispatcher     = new WPCV_Diff_Dispatcher(
@@ -89,6 +92,7 @@ class DiffDispatcherTest extends TestCase {
 			$file_state_repository,
 			$alert_sender,
 			$update_event_matcher,
+			$suppression_repository,
 			static function () use ( &$owner_sequence ) {
 				++$owner_sequence;
 				return 'owner-' . $owner_sequence;
@@ -104,6 +108,7 @@ class DiffDispatcherTest extends TestCase {
 			'alert_sender'             => $alert_sender,
 			'update_event_repository'  => $update_event_repository,
 			'update_event_matcher'     => $update_event_matcher,
+			'suppression_repository'   => $suppression_repository,
 			'dispatcher'               => $dispatcher,
 		);
 	}
@@ -473,6 +478,103 @@ class DiffDispatcherTest extends TestCase {
 		$env['dispatcher']->dispatch_diff( $scenario['run_id'] );
 
 		$this->assertNull( $env['wpdb']->rows['wp_wpcv_target_runs'][ $scenario['target_run_id'] ]['error_code'] );
+	}
+
+	/**
+	 * D9(v0.6プラン §3.3): `version_changed`と判定されたtargetの`allowlist_hash`
+	 * 承認のうち、versionが今回と異なるものが失効することを確認する
+	 * (`make_version_changed_scenario()`はdimension=core・slug=wordpressの
+	 * target_runを作るため、同じdimension/slugでルールを登録する).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_diff_version_changed_mode_expires_allowlist_hash_with_different_version() {
+		$env      = $this->make_environment();
+		$scenario = $this->make_version_changed_scenario( $env );
+
+		$rule_id = $env['suppression_repository']->insert(
+			array(
+				'type'           => WPCV_Suppression_Type::ALLOWLIST_HASH,
+				'dimension'      => 'core',
+				'slug'           => 'wordpress',
+				'pattern'        => 'wp-admin/index.php',
+				'expected_hash'  => str_repeat( 'a', 64 ),
+				'hash_algorithm' => 'sha256',
+				'version'        => '1.0',
+				'reason'         => 'approved 1.0',
+				'created_by'     => 1,
+			)
+		);
+
+		$env['dispatcher']->dispatch_diff( $scenario['run_id'] );
+
+		$rule = $env['suppression_repository']->find_by_id( $rule_id );
+		$this->assertNotNull( $rule['expired_at'] );
+		$this->assertSame( WPCV_Suppression_Repository::EXPIRED_REASON_VERSION_CHANGED, $rule['expired_reason'] );
+	}
+
+	/**
+	 * D9: `allowlist_hash`承認のversionが今回と同じなら失効させないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_diff_version_changed_mode_does_not_expire_allowlist_hash_with_matching_version() {
+		$env      = $this->make_environment();
+		$scenario = $this->make_version_changed_scenario( $env );
+
+		$rule_id = $env['suppression_repository']->insert(
+			array(
+				'type'           => WPCV_Suppression_Type::ALLOWLIST_HASH,
+				'dimension'      => 'core',
+				'slug'           => 'wordpress',
+				'pattern'        => 'wp-admin/index.php',
+				'expected_hash'  => str_repeat( 'a', 64 ),
+				'hash_algorithm' => 'sha256',
+				'version'        => '2.0',
+				'reason'         => 'approved 2.0',
+				'created_by'     => 1,
+			)
+		);
+
+		$env['dispatcher']->dispatch_diff( $scenario['run_id'] );
+
+		$this->assertNull( $env['suppression_repository']->find_by_id( $rule_id )['expired_at'] );
+	}
+
+	/**
+	 * D9: `exclude_path`/`exclude_target`ルールは`version_changed`でも失効しない
+	 * ことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_diff_version_changed_mode_does_not_expire_exclude_rules() {
+		$env      = $this->make_environment();
+		$scenario = $this->make_version_changed_scenario( $env );
+
+		$exclude_path_id = $env['suppression_repository']->insert(
+			array(
+				'type'       => WPCV_Suppression_Type::EXCLUDE_PATH,
+				'dimension'  => 'core',
+				'slug'       => 'wordpress',
+				'pattern'    => 'readme.html',
+				'reason'     => 'noisy',
+				'created_by' => 1,
+			)
+		);
+		$exclude_target_id = $env['suppression_repository']->insert(
+			array(
+				'type'       => WPCV_Suppression_Type::EXCLUDE_TARGET,
+				'dimension'  => 'core',
+				'slug'       => 'wordpress',
+				'reason'     => 'skip',
+				'created_by' => 1,
+			)
+		);
+
+		$env['dispatcher']->dispatch_diff( $scenario['run_id'] );
+
+		$this->assertNull( $env['suppression_repository']->find_by_id( $exclude_path_id )['expired_at'] );
+		$this->assertNull( $env['suppression_repository']->find_by_id( $exclude_target_id )['expired_at'] );
 	}
 
 	/**

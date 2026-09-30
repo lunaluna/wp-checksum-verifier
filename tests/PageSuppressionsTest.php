@@ -7,6 +7,7 @@
 
 require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-suppressions.php';
 
 use PHPUnit\Framework\TestCase;
@@ -107,5 +108,25 @@ class PageSuppressionsTest extends TestCase {
 
 		$this->assertStringContainsString( '2026-09-11 10:00:00', $label );
 		$this->assertStringContainsString( 'no longer needed', $label );
+	}
+
+	/**
+	 * `status_label()`が、D9(v0.6 §Step5)で自動失効した行の機械的な
+	 * `expired_reason`(`version_changed`)を、人が読める文言に変換することを
+	 * 確認する.
+	 *
+	 * @return void
+	 */
+	public function test_status_label_translates_version_changed_reason() {
+		$row = array(
+			'expired_at'     => '2026-09-30 10:00:00',
+			'expired_reason' => WPCV_Suppression_Repository::EXPIRED_REASON_VERSION_CHANGED,
+		);
+
+		$label = WPCV_Page_Suppressions::status_label( $row );
+
+		$this->assertStringContainsString( '2026-09-30 10:00:00', $label );
+		$this->assertStringContainsString( 'version changed', $label );
+		$this->assertStringNotContainsString( 'version_changed', $label );
 	}
 }

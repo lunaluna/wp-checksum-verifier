@@ -99,6 +99,13 @@ class WPCV_Diff_Dispatcher {
 	private $update_event_matcher;
 
 	/**
+	 * `wpcv_suppressions`の永続化層(v0.6 §Step5. D9「承認の失効」に使う).
+	 *
+	 * @var WPCV_Suppression_Repository
+	 */
+	private $suppression_repository;
+
+	/**
 	 * `claim_diff()`に渡す一意なowner文字列を生成するcallable.
 	 *
 	 * @var callable
@@ -108,13 +115,14 @@ class WPCV_Diff_Dispatcher {
 	/**
 	 * コンストラクタ.
 	 *
-	 * @param WPCV_Run_Repository        $run_repository        `wpcv_runs`の永続化層.
-	 * @param WPCV_Target_Run_Repository $target_run_repository `wpcv_target_runs`の永続化層.
-	 * @param WPCV_Finding_Repository    $finding_repository    `wpcv_findings`の永続化層.
-	 * @param WPCV_File_State_Repository $file_state_repository `wpcv_file_states`の永続化層.
-	 * @param WPCV_Alert_Sender          $alert_sender          アラート送信本体(v0.5後半 §Step14c).
-	 * @param WPCV_Update_Event_Matcher  $update_event_matcher  D5・D6の突き合わせ(v0.6 §Step3・§Step4).
-	 * @param callable|null              $lease_owner_factory   省略時は `uniqid( 'wpcv_diff_', true )`.
+	 * @param WPCV_Run_Repository         $run_repository         `wpcv_runs`の永続化層.
+	 * @param WPCV_Target_Run_Repository  $target_run_repository  `wpcv_target_runs`の永続化層.
+	 * @param WPCV_Finding_Repository     $finding_repository     `wpcv_findings`の永続化層.
+	 * @param WPCV_File_State_Repository  $file_state_repository  `wpcv_file_states`の永続化層.
+	 * @param WPCV_Alert_Sender           $alert_sender           アラート送信本体(v0.5後半 §Step14c).
+	 * @param WPCV_Update_Event_Matcher   $update_event_matcher   D5・D6の突き合わせ(v0.6 §Step3・§Step4).
+	 * @param WPCV_Suppression_Repository $suppression_repository `wpcv_suppressions`の永続化層(v0.6 §Step5).
+	 * @param callable|null               $lease_owner_factory    省略時は `uniqid( 'wpcv_diff_', true )`.
 	 */
 	public function __construct(
 		WPCV_Run_Repository $run_repository,
@@ -123,14 +131,16 @@ class WPCV_Diff_Dispatcher {
 		WPCV_File_State_Repository $file_state_repository,
 		WPCV_Alert_Sender $alert_sender,
 		WPCV_Update_Event_Matcher $update_event_matcher,
+		WPCV_Suppression_Repository $suppression_repository,
 		?callable $lease_owner_factory = null
 	) {
-		$this->run_repository        = $run_repository;
-		$this->target_run_repository = $target_run_repository;
-		$this->finding_repository    = $finding_repository;
-		$this->file_state_repository = $file_state_repository;
-		$this->alert_sender          = $alert_sender;
-		$this->update_event_matcher  = $update_event_matcher;
+		$this->run_repository         = $run_repository;
+		$this->target_run_repository  = $target_run_repository;
+		$this->finding_repository     = $finding_repository;
+		$this->file_state_repository  = $file_state_repository;
+		$this->alert_sender           = $alert_sender;
+		$this->update_event_matcher   = $update_event_matcher;
+		$this->suppression_repository = $suppression_repository;
 
 		$this->lease_owner_factory = $lease_owner_factory ?? static function () {
 			return uniqid( 'wpcv_diff_', true );
@@ -312,6 +322,17 @@ class WPCV_Diff_Dispatcher {
 				// 分岐参照).
 				$this->finding_repository->end_all_for_target_run( $run_id, (int) $baseline['id'], WPCV_Generation_Differ::END_REASON_VERSION_CHANGED );
 				$this->maybe_flag_unrecorded_version_change( $target_run_id, (string) $target_run['target_id'], $target_run['version'], $baseline );
+				// D9(v0.6 §Step5・§3.3): versionが変わったので、古いversionのまま
+				// 残っているallowlist_hash承認を失効させる(手動デプロイ等、記録が
+				// 無い経路でversionが変わった場合も含め、version_changedと判定された
+				// 時点で経路を問わず失効させてよい.差分処理〔このメソッド〕が
+				// version一致を毎回確認しているため、失効しても照合の挙動自体は
+				// 変わらず一覧の表示だけが正しくなる〔D9〕).
+				$this->suppression_repository->expire_allowlist_hash_rules_with_different_version(
+					(string) $target_run['dimension'],
+					(string) $target_run['slug'],
+					$target_run['version']
+				);
 				return null;
 
 			case WPCV_Generation_Differ::DIFF_MODE_EXCLUDED:

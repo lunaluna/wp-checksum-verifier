@@ -132,6 +132,7 @@ class ChunkDispatcherTest extends TestCase {
 			'alert_sender'            => new WPCV_Alert_Sender( $run_repository, $target_run_repository, $finding_repository, $now ),
 			'update_event_repository' => $update_event_repository,
 			'update_event_matcher'    => new WPCV_Update_Event_Matcher( $update_event_repository, $run_repository ),
+			'suppression_repository'  => new WPCV_Suppression_Repository( $wpdb, $now ),
 		);
 	}
 
@@ -320,7 +321,8 @@ class ChunkDispatcherTest extends TestCase {
 			$repositories['finding_repository'],
 			$repositories['file_state_repository'],
 			$repositories['alert_sender'],
-			$repositories['update_event_matcher']
+			$repositories['update_event_matcher'],
+			$repositories['suppression_repository']
 		);
 
 		$continuation_calls = array();
@@ -369,7 +371,8 @@ class ChunkDispatcherTest extends TestCase {
 			$repositories['finding_repository'],
 			$repositories['file_state_repository'],
 			$repositories['alert_sender'],
-			$repositories['update_event_matcher']
+			$repositories['update_event_matcher'],
+			$repositories['suppression_repository']
 		);
 
 		$continuation_calls = array();
@@ -414,7 +417,8 @@ class ChunkDispatcherTest extends TestCase {
 			$repositories['finding_repository'],
 			$repositories['file_state_repository'],
 			$repositories['alert_sender'],
-			$repositories['update_event_matcher']
+			$repositories['update_event_matcher'],
+			$repositories['suppression_repository']
 		);
 
 		$continuation_calls = array();
@@ -458,7 +462,8 @@ class ChunkDispatcherTest extends TestCase {
 			$repositories['finding_repository'],
 			$repositories['file_state_repository'],
 			$repositories['alert_sender'],
-			$repositories['update_event_matcher']
+			$repositories['update_event_matcher'],
+			$repositories['suppression_repository']
 		);
 
 		$continuation_calls = array();
@@ -745,7 +750,8 @@ class ChunkDispatcherTest extends TestCase {
 			$repositories['finding_repository'],
 			$repositories['file_state_repository'],
 			$repositories['alert_sender'],
-			$repositories['update_event_matcher']
+			$repositories['update_event_matcher'],
+			$repositories['suppression_repository']
 		);
 
 		$continuation_calls = array();
