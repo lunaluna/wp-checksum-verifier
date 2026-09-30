@@ -602,7 +602,11 @@ class WPCV_Diff_Dispatcher {
 		$excluded_stat_target_ids   = array();
 
 		foreach ( $target_runs as $target_run ) {
-			if ( ! WPCV_Target_Resolver::is_stat_id( (string) $target_run['target_id'] ) ) {
+			// v0.6 §Step12是正: `is_stat_id()`だけで判定すると、`:_stat`接尾辞を
+			// 持たない`core:_config`が「列挙されなかったtarget」として扱われ、
+			// 毎runベースラインが削除されてしまう不具合があった
+			// (`WPCV_Target_Resolver::uses_file_state_storage()`のdocblock参照).
+			if ( ! WPCV_Target_Resolver::uses_file_state_storage( (string) $target_run['target_id'], (string) $target_run['dimension'], (string) $target_run['slug'] ) ) {
 				continue;
 			}
 

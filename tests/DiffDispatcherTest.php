@@ -839,4 +839,54 @@ class DiffDispatcherTest extends TestCase {
 
 		$this->assertArrayNotHasKey( 1, $env['wpdb']->rows['wp_wpcv_file_states'] ?? array( 1 => true ), '列挙されなかったstat targetの行は削除される' );
 	}
+
+	/**
+	 * `core:_config`(v0.6 §Step9。`:_stat`接尾辞を持たない合成target)が今回
+	 * 列挙されているのに、`is_stat_id()`だけで「列挙されなかったtarget」と
+	 * 誤判定されてベースラインを削除されないことを確認する(v0.6 §Step12の
+	 * 実地検証〔test-armfu.local〕で発見した不具合の回帰テスト。
+	 * `WPCV_Target_Resolver::uses_file_state_storage()`参照).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_diff_keeps_file_states_for_core_config_target() {
+		$env    = $this->make_environment();
+		$run_id = $this->make_run_ready_for_diff( $env['run_repository'] );
+
+		$this->insert_target_run(
+			$env['wpdb'],
+			$run_id,
+			array(
+				'target_id' => 'core:_config',
+				'dimension' => 'core',
+				'slug'      => '_config',
+				'status'    => 'success',
+			)
+		);
+
+		$env['wpdb']->insert(
+			'wp_wpcv_file_states',
+			array(
+				'state_key'         => WPCV_File_State_Repository::compute_state_key( 'core:_config', 'wp-config.php' ),
+				'target_id'         => 'core:_config',
+				'dimension'         => 'core',
+				'slug'              => '_config',
+				'path'              => 'wp-config.php',
+				'file_size'         => 1,
+				'ctime'             => 1,
+				'mtime'             => 1,
+				'content_hash'      => null,
+				'hash_algorithm'    => null,
+				'baseline_version'  => null,
+				'first_seen_run_id' => 1,
+				'last_seen_run_id'  => 1,
+				'updated_at'        => self::NOW,
+			)
+		);
+
+		$env['dispatcher']->dispatch_diff( $run_id ); // core:_configをeventモードで確定.
+		$env['dispatcher']->dispatch_diff( $run_id ); // 全target完了→掃除+確定.
+
+		$this->assertArrayHasKey( 1, $env['wpdb']->rows['wp_wpcv_file_states'] ?? array(), '今回列挙されたcore:_configの行は削除されない' );
+	}
 }

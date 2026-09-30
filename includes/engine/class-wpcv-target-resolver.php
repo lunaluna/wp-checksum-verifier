@@ -123,6 +123,43 @@ class WPCV_Target_Resolver {
 	}
 
 	/**
+	 * `wpcv_file_states`(stat差分検知の層1/層2ベースライン)を使うtargetかどうかを
+	 * 判定する(v0.6 §Step12是正).
+	 *
+	 * 通常の本体target(`is_stat_id()`が真の `{dimension}:{slug}:_stat`)に加えて、
+	 * `core:_config`/`dropin:_stat`(v0.6 §Step9。本体targetを持たない合成target)も
+	 * `wpcv_file_states`を使う。この2つは`:_stat`接尾辞の規則に従わない
+	 * (`core:_config`はslugが`_config`で終わる)ため、`is_stat_id()`だけでは
+	 * 判定できない.
+	 *
+	 * `WPCV_Diff_Dispatcher::cleanup_after_all_targets_processed()`(今回列挙された
+	 * targetの一覧を`is_stat_id()`だけで組み立て、それ以外の`wpcv_file_states`行を
+	 * 削除する処理)がv0.6 §Step9で`core:_config`を考慮し忘れていたため、
+	 * `core:_config`が実際には毎run列挙されているのに「列挙されなかったtarget」
+	 * として扱われ、ベースラインが毎runで削除される不具合があった
+	 * (v0.6 §Step12の実地検証〔test-armfu.local〕で発見。`dropin:_stat`は
+	 * `:_stat`接尾辞を持つため偶然この不具合を免れていた).
+	 * 判定ロジック自体は`WPCV_Target_Resolver`(target_id/dimension/slugの
+	 * 意味を扱う本クラス)に置くのが自然なため、ここに実装する.
+	 *
+	 * @param string $target_id target_id.
+	 * @param string $dimension dimension.
+	 * @param string $slug      slug.
+	 * @return bool
+	 */
+	public static function uses_file_state_storage( $target_id, $dimension, $slug ) {
+		if ( self::is_stat_id( $target_id ) ) {
+			return true;
+		}
+
+		if ( self::DIMENSION_CORE === $dimension && '_config' === $slug ) {
+			return true;
+		}
+
+		return self::DIMENSION_DROPIN === $dimension;
+	}
+
+	/**
 	 * Stat差分検知 target の target_id から、本体 target の target_id を取り出す(v0.5 §Step6).
 	 *
 	 * @param string $stat_target_id `build_stat_id()` が作った target_id.
