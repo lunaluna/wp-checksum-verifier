@@ -182,10 +182,17 @@ class WPCV_Page_Suppressions {
 	 * 「作成者」列の表示文字列を組み立てる. ユーザーが削除されている場合は
 	 * user idのみを表示する(`get_userdata()`が`false`を返すケース).
 	 *
-	 * @param int $user_id `wpcv_suppressions.created_by`.
+	 * `WPCV_Page_Run_History`からも呼ぶため`public`にした(v0.6 §Step7。
+	 * `WPCV_Page_Settings::format_run_summary()`が`WPCV_Page_Run_History`の
+	 * `format_diff_summary()`/`format_alert_status()`を再利用するのと同じ考え方.
+	 * 同じ表示ロジックを2か所に持たない).`user_id=0`(cron・CLI由来)の扱いは
+	 * 呼び出し元の責務のまま(`wpcv_suppressions.created_by`は常に実ユーザーの
+	 * 想定だが、呼び出し元によっては`0`が正当な値になり得るため).
+	 *
+	 * @param int $user_id `wpcv_suppressions.created_by`等、ユーザーを記録した列の値.
 	 * @return string
 	 */
-	private static function format_created_by( $user_id ) {
+	public static function format_created_by( $user_id ) {
 		$user = get_userdata( $user_id );
 
 		if ( false === $user ) {

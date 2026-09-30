@@ -297,9 +297,88 @@ class WPCV_Page_Run_History {
 				</table>
 			<?php endif; ?>
 
+			<?php self::render_update_events_since_previous_run( $run_id, $run ); ?>
+
 			<?php self::render_ended_findings( $run_id ); ?>
 		</div>
 		<?php
+	}
+
+	/**
+	 * 「Update events since the previous run」節(v0.6 §Step7・プラン§4)を描画する.
+	 *
+	 * 直前run(id基準。statusは問わない)の`started_at`からこのrunの`started_at`
+	 * (このrunがまだ`started_at`を持たない=描画時点で走っていない、という状況は
+	 * 実際には起きない想定だが念のため`null`ならその時点までの全件)までの
+	 * `wpcv_update_events`を新しい順に表示する。**この窓は表示専用**であり、
+	 * D5・D6の突き合わせ判定が使う「各targetの基準target_runが属するrunの
+	 * 開始時刻」という窓(`WPCV_Update_Event_Matcher`参照)とは別物(targetごとに
+	 * 基準runが異なり得るため、ここでは単純に「直前run〜今回run」という
+	 * 人間にとって分かりやすい窓を使う).
+	 *
+	 * @param int   $run_id 対象のrunのid.
+	 * @param array $run    `WPCV_Run_Repository::find_by_id()`の戻り値.
+	 * @return void
+	 */
+	private static function render_update_events_since_previous_run( $run_id, array $run ) {
+		$previous_run = WPCV_Plugin::run_repository()->find_previous_run( $run_id );
+
+		if ( null === $previous_run || empty( $previous_run['started_at'] ) ) {
+			// 最初のrun(比較対象となる直前runが無い)。節自体を出さない.
+			return;
+		}
+
+		$before = empty( $run['started_at'] ) ? null : (string) $run['started_at'];
+		$events = WPCV_Plugin::update_event_repository()->find_since( (string) $previous_run['started_at'], $before );
+		?>
+		<h3><?php echo esc_html__( 'Update events since the previous run', 'wp-checksum-verifier' ); ?></h3>
+		<?php if ( empty( $events ) ) : ?>
+			<p><?php echo esc_html__( 'No update events were recorded in this window.', 'wp-checksum-verifier' ); ?></p>
+			<?php return; ?>
+		<?php endif; ?>
+		<table class="wp-list-table widefat fixed striped">
+			<thead>
+				<tr>
+					<th><?php echo esc_html__( 'Target', 'wp-checksum-verifier' ); ?></th>
+					<th><?php echo esc_html__( 'Version', 'wp-checksum-verifier' ); ?></th>
+					<th><?php echo esc_html__( 'Source', 'wp-checksum-verifier' ); ?></th>
+					<th><?php echo esc_html__( 'Recorded at', 'wp-checksum-verifier' ); ?></th>
+					<th><?php echo esc_html__( 'By', 'wp-checksum-verifier' ); ?></th>
+				</tr>
+			</thead>
+			<tbody>
+				<?php foreach ( $events as $event ) : ?>
+					<tr>
+						<td><?php echo esc_html( (string) $event['target_id'] ); ?></td>
+						<td><?php echo esc_html( null !== $event['version'] ? (string) $event['version'] : '—' ); ?></td>
+						<td><?php echo esc_html( (string) $event['source'] ); ?></td>
+						<td><?php echo esc_html( (string) $event['event_at'] ); ?></td>
+						<td><?php echo esc_html( self::format_update_event_created_by( (int) $event['created_by'] ) ); ?></td>
+					</tr>
+				<?php endforeach; ?>
+			</tbody>
+		</table>
+		<?php
+	}
+
+	/**
+	 * 「By」列の表示文字列を組み立てる。`WPCV_Page_Suppressions::format_created_by()`
+	 * を再利用するが、`user_id=0`(cron・WP-CLI発の自動更新。フックが
+	 * `get_current_user_id()`で読む値。`WPCV_Update_Event_Recorder`参照)は
+	 * `get_userdata(0)`が`false`を返し「User #0」と表示されてしまい紛らわしいため、
+	 * この場合だけ先に人間向けの文言に置き換える.
+	 *
+	 * `render()`から分離してテスト可能にする(このクラスの他の`format_*()`と同じ方針).
+	 *
+	 * @param int $user_id `wpcv_update_events.created_by`.
+	 * @return string
+	 */
+	public static function format_update_event_created_by( $user_id ) {
+		if ( 0 === $user_id ) {
+			return __( 'Automatic (cron/WP-CLI)', 'wp-checksum-verifier' );
+		}
+
+		return WPCV_Page_Suppressions::format_created_by( $user_id );
 	}
 
 	/**

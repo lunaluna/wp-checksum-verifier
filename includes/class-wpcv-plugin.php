@@ -447,6 +447,21 @@ class WPCV_Plugin {
 	}
 
 	/**
+	 * `wpcv_run_terminated`フックのハンドラ(v0.6 §Step7. `WPCV_Update_Event_Recorder`が
+	 * 保持期間を過ぎた更新イベントの掃除を行う.
+	 * `includes/runners/class-wpcv-update-event-recorder.php`の末尾で登録する.
+	 * `dispatch_chunk()`と同じ理由〔クラスdocblock参照〕で、フック登録時点では
+	 * `WPCV_Plugin`自身がまだ定義されていなくても構わない).
+	 *
+	 * @param int    $run_id 終端に達した run の id.
+	 * @param string $status 遷移後の `wpcv_runs.status`.
+	 * @return void
+	 */
+	public static function handle_update_events_run_terminated( $run_id, $status ) {
+		self::update_event_recorder()->handle_run_terminated( (int) $run_id, (string) $status );
+	}
+
+	/**
 	 * `wpcv_run_terminated`フックのハンドラ(v0.5後半 §Step15a.
 	 * `WPCV_Run_Failure_Alerter`が実際の判定・送信を行う.
 	 * `includes/runners/class-wpcv-run-failure-alerter.php`の末尾で登録する.

@@ -212,6 +212,72 @@ class UpdateEventRepositoryTest extends TestCase {
 	}
 
 	/**
+	 * `find_since()` が `$after` より後の行だけを、`event_at` の新しい順で返すことを
+	 * 確認する(v0.6 §Step7. `$before` 省略時).
+	 *
+	 * @return void
+	 */
+	public function test_find_since_returns_rows_after_threshold_newest_first() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+
+		( new WPCV_Update_Event_Repository( $wpdb, static function () {
+			return '2026-09-28 10:00:00';
+		} ) )->insert( 'plugin:before', '1.0.0', 'plugin_update' );
+
+		( new WPCV_Update_Event_Repository( $wpdb, static function () {
+			return '2026-09-29 09:00:00';
+		} ) )->insert( 'plugin:early', '1.0.0', 'plugin_update' );
+
+		( new WPCV_Update_Event_Repository( $wpdb, static function () {
+			return '2026-09-29 11:00:00';
+		} ) )->insert( 'plugin:late', '1.0.0', 'plugin_update' );
+
+		$repository = new WPCV_Update_Event_Repository( $wpdb );
+
+		$found = $repository->find_since( '2026-09-29 00:00:00' );
+
+		$this->assertCount( 2, $found );
+		$this->assertSame( 'plugin:late', $found[0]['target_id'] );
+		$this->assertSame( 'plugin:early', $found[1]['target_id'] );
+	}
+
+	/**
+	 * `find_since()` に `$before` を渡すと、その時刻を超える行を除外することを
+	 * 確認する(v0.6 §Step7. 実行履歴詳細の「直前run〜今回run」の窓を絞り込むため).
+	 *
+	 * @return void
+	 */
+	public function test_find_since_excludes_rows_after_before_threshold() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+
+		( new WPCV_Update_Event_Repository( $wpdb, static function () {
+			return '2026-09-29 09:00:00';
+		} ) )->insert( 'plugin:within-window', '1.0.0', 'plugin_update' );
+
+		( new WPCV_Update_Event_Repository( $wpdb, static function () {
+			return '2026-09-29 12:00:00';
+		} ) )->insert( 'plugin:after-window', '1.0.0', 'plugin_update' );
+
+		$repository = new WPCV_Update_Event_Repository( $wpdb );
+
+		$found = $repository->find_since( '2026-09-29 00:00:00', '2026-09-29 10:00:00' );
+
+		$this->assertCount( 1, $found );
+		$this->assertSame( 'plugin:within-window', $found[0]['target_id'] );
+	}
+
+	/**
+	 * `find_since()` が該当行の無い期間では空配列を返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_find_since_returns_empty_array_when_no_rows_match() {
+		$repository = new WPCV_Update_Event_Repository( new WPCV_Test_Fake_WPDB() );
+
+		$this->assertSame( array(), $repository->find_since( '2026-09-29 00:00:00' ) );
+	}
+
+	/**
 	 * `delete_older_than()` が、しきい値より古い行だけを削除し、新しい行を
 	 * 残すことを確認する.
 	 *

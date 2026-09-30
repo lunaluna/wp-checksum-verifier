@@ -130,6 +130,33 @@ class WPCV_Update_Event_Repository {
 	}
 
 	/**
+	 * `$after` より後(・`$before` 以下、指定があれば)の更新イベントを一覧表示用に返す
+	 * (v0.6 §Step7. 実行履歴詳細の「Update events since the previous run」節から
+	 * 呼ぶ。`find_matching()`と異なりtarget_id・versionでは絞り込まず、`event_at`
+	 * の新しい順に返す。突き合わせ判定〔D5・D6〕には使わない表示専用メソッド).
+	 *
+	 * @param string      $after  この時刻より後の `event_at` を持つ行だけを対象にする(UTC DATETIME文字列).
+	 * @param string|null $before 指定があれば、この時刻以下の `event_at` を持つ行だけに絞る(UTC DATETIME文字列).
+	 * @return array<int, array> `event_at` の新しい順.
+	 */
+	public function find_since( $after, $before = null ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_update_events';
+
+		if ( null === $before ) {
+			$sql  = "SELECT * FROM {$table} WHERE event_at > %s ORDER BY event_at DESC";
+			$args = array( (string) $after );
+		} else {
+			$sql  = "SELECT * FROM {$table} WHERE event_at > %s AND event_at <= %s ORDER BY event_at DESC";
+			$args = array( (string) $after, (string) $before );
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; values are bound via prepare() here.
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, $args ), ARRAY_A );
+
+		return is_array( $rows ) ? $rows : array();
+	}
+
+	/**
 	 * `event_at` が `$days` 日より古い行を削除する(v0.6プラン §2.1「掃除」参照.
 	 * 呼び出し側〔run終端 `wpcv_run_terminated` での接続. 保持日数の定数〕は
 	 * v0.6 Step2以降で実装する. このメソッド自体は日数を引数に取るだけの

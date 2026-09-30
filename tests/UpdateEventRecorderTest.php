@@ -455,4 +455,95 @@ class UpdateEventRecorderTest extends TestCase {
 
 		$this->assertTrue( true );
 	}
+
+	/**
+	 * `handle_run_terminated()` が既定90日より古い行だけを削除することを確認する
+	 * (v0.6 §Step7. Step1で実装した`delete_older_than()`がStep2・3のどちらでも
+	 * 配線されないまま残っていたのを、`wpcv_run_terminated`フックに接続した).
+	 *
+	 * @return void
+	 */
+	public function test_handle_run_terminated_deletes_events_older_than_default_retention() {
+		unset( $GLOBALS['_wpcv_test_filters'] );
+
+		$wpdb = new WPCV_Test_Fake_WPDB();
+
+		( new WPCV_Update_Event_Repository( $wpdb, static function () {
+			return '2026-06-01 00:00:00';
+		} ) )->insert( 'plugin:old', '1.0.0', 'plugin_update' );
+
+		( new WPCV_Update_Event_Repository( $wpdb, static function () {
+			return '2026-09-25 00:00:00';
+		} ) )->insert( 'plugin:new', '1.0.0', 'plugin_update' );
+
+		$recorder = new WPCV_Update_Event_Recorder(
+			new WPCV_Update_Event_Repository( $wpdb, static function () {
+				return '2026-09-29 00:00:00';
+			} )
+		);
+
+		$recorder->handle_run_terminated( 42, 'success' );
+
+		$table = $wpdb->base_prefix . 'wpcv_update_events';
+		$this->assertCount( 1, $wpdb->rows[ $table ] );
+		$this->assertSame( 'plugin:new', reset( $wpdb->rows[ $table ] )['target_id'] );
+	}
+
+	/**
+	 * `handle_run_terminated()` が `wpcv_update_events_retention_days` フィルターで
+	 * 保持日数を変更できることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_handle_run_terminated_respects_retention_days_filter() {
+		unset( $GLOBALS['_wpcv_test_filters'] );
+		$GLOBALS['_wpcv_test_filters']['wpcv_update_events_retention_days'][] = static function () {
+			return 30;
+		};
+
+		$wpdb = new WPCV_Test_Fake_WPDB();
+
+		( new WPCV_Update_Event_Repository( $wpdb, static function () {
+			return '2026-08-15 00:00:00';
+		} ) )->insert( 'plugin:old-enough-for-30-days', '1.0.0', 'plugin_update' );
+
+		$recorder = new WPCV_Update_Event_Recorder(
+			new WPCV_Update_Event_Repository( $wpdb, static function () {
+				return '2026-09-29 00:00:00';
+			} )
+		);
+
+		$recorder->handle_run_terminated( 42, 'success' );
+
+		$table = $wpdb->base_prefix . 'wpcv_update_events';
+		$this->assertCount( 0, $wpdb->rows[ $table ] );
+
+		unset( $GLOBALS['_wpcv_test_filters'] );
+	}
+
+	/**
+	 * `handle_run_terminated()` が `Repository::delete_older_than()` の例外を
+	 * 外へ漏らさないことを確認する(掃除の失敗で他のリスナーやrun確定自体を
+	 * 妨げないため).
+	 *
+	 * @return void
+	 */
+	public function test_handle_run_terminated_swallows_repository_exception() {
+		$wpdb                     = new WPCV_Test_Fake_WPDB();
+		$wpdb->delete_should_fail = true;
+
+		( new WPCV_Update_Event_Repository( $wpdb, static function () {
+			return '2026-06-01 00:00:00';
+		} ) )->insert( 'plugin:old', '1.0.0', 'plugin_update' );
+
+		$recorder = new WPCV_Update_Event_Recorder(
+			new WPCV_Update_Event_Repository( $wpdb, static function () {
+				return '2026-09-29 00:00:00';
+			} )
+		);
+
+		$recorder->handle_run_terminated( 42, 'success' );
+
+		$this->assertTrue( true );
+	}
 }

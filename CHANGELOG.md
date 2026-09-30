@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- The plugin now records an **update event** (target, version, source,
+  who triggered it) whenever WordPress core or a plugin is updated through
+  the admin screens, WP-CLI, or an automatic update. `wp --skip-plugins
+  plugin update` does not fire the hooks this relies on and is not
+  recorded. Events are kept for 90 days (`wpcv_update_events_retention_days`
+  filter), pruned whenever a run terminates.
+- New setting **"Alert on version changes that did not go through the
+  WordPress updater"** (on by default). When a checksum target's version
+  changes with no matching update event, the old baseline is compared as
+  usual instead of being discarded, and the alert email gets a new
+  "Version changed without a WordPress update:" section. Turn this off on
+  sites that deploy via git/FTP/Composer, where every deployment would
+  otherwise trigger it.
+- Run History detail now shows an **"Update events since the previous
+  run"** section listing recorded update events between the previous and
+  current run.
+- Verification runs are now **deferred** (rechecked every 30 seconds,
+  never marked `skipped`) while `.maintenance` is present or an update
+  lock (`core_updater.lock`/`auto_updater.lock`) is held, instead of
+  claiming a target and possibly reading files mid-update.
+
+### Changed
+
+- Stat-based change detection (for plugins without official checksums)
+  now distinguishes a version change backed by a recorded update event
+  (baseline silently rebuilt, as before) from one that isn't (compared
+  against the old baseline instead, and marked
+  `version_changed_unrecorded`).
+- A hash-allowlist suppression (`allowlist_hash`) is now automatically
+  expired when its target's version changes to anything other than the
+  version it was approved for (shown as "version changed" in
+  Suppressions). Previously, an old approved hash could keep suppressing
+  findings indefinitely after reverting to an earlier version.
+  `exclude_path`/`exclude_target` rules are unaffected.
+
 ## [0.5.1] - 2026-09-29
 
 Patch release: fixes an uninstall bug found while reviewing the v0.6

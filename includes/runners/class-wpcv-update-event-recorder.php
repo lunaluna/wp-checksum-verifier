@@ -204,7 +204,43 @@ class WPCV_Update_Event_Recorder {
 			unset( $e );
 		}
 	}
+
+	/**
+	 * 既定の保持日数(v0.6プラン §2.1「掃除」。**未実測**: 連続unverifiableが
+	 * 続いて基準が古いままのtargetでも3か月以内に1回は成功する、という前提の
+	 * 暫定値。v0.9の保持期間の見直しで再検討する).
+	 *
+	 * @var int
+	 */
+	const DEFAULT_RETENTION_DAYS = 90;
+
+	/**
+	 * `wpcv_run_terminated`フックのハンドラ本体(`WPCV_Plugin::handle_update_events_run_terminated()`
+	 * から呼ばれる。v0.6 §Step7で配線 ―― Step1で`WPCV_Update_Event_Repository::delete_older_than()`を
+	 * 実装した時点では「呼び出しはStep2・3で行う」としていたが、実際にはどちらでも
+	 * 配線されないまま残っていた〔Step7のドキュメント作成中に発覚〕).
+	 *
+	 * 毎回のrun終端で掃除するのは、既存の`WPCV_Run_Failure_Alerter`
+	 * (同じ`wpcv_run_terminated`を購読)と同じ設計(掃除専用のcronを新設せず、
+	 * 既にある「runの節目」フックに載せる).掃除の失敗で他のリスナー
+	 * (`WPCV_Run_Failure_Alerter`等)の実行やrun確定自体を妨げないよう
+	 * try/catchで包む.
+	 *
+	 * @param int    $run_id 終端に達した run の id(このハンドラでは使わない).
+	 * @param string $status 遷移後の `wpcv_runs.status`(このハンドラでは使わない).
+	 * @return void
+	 */
+	public function handle_run_terminated( $run_id, $status ) {
+		unset( $run_id, $status );
+
+		try {
+			$this->repository->delete_older_than( max( 1, (int) apply_filters( 'wpcv_update_events_retention_days', self::DEFAULT_RETENTION_DAYS ) ) );
+		} catch ( Throwable $e ) {
+			unset( $e );
+		}
+	}
 }
 
 add_action( 'upgrader_process_complete', array( 'WPCV_Plugin', 'handle_upgrader_process_complete' ), 10, 2 );
 add_action( '_core_updated_successfully', array( 'WPCV_Plugin', 'handle_core_updated_successfully' ), 10, 1 );
+add_action( 'wpcv_run_terminated', array( 'WPCV_Plugin', 'handle_update_events_run_terminated' ), 10, 2 );

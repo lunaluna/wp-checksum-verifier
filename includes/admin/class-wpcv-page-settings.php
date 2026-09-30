@@ -125,6 +125,7 @@ class WPCV_Page_Settings {
 		$external_http_time_budget_seconds = WPCV_Settings::get_external_http_time_budget_seconds();
 		$strict_mode                       = WPCV_Settings::get_strict_mode();
 		$stat_detection                    = WPCV_Settings::get_stat_detection_enabled();
+		$alert_unrecorded_version_change   = WPCV_Settings::get_alert_unrecorded_version_change_enabled();
 		$alert_to                          = WPCV_Settings::get_alert_to();
 		$button_state                      = self::run_now_button_state( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON );
 		?>
@@ -206,6 +207,21 @@ class WPCV_Page_Settings {
 							</label>
 							<p class="description">
 								<?php echo esc_html__( 'Applies to custom or premium plugins and mu-plugin loaders that have no official checksums. The first run only records a baseline. When a plugin version changes, its baseline is rebuilt without reporting changes. File contents are not read.', 'wp-checksum-verifier' ); ?>
+							</p>
+						</td>
+					</tr>
+					<?php // v0.6 §Step7: 更新機構を通らないversion変化の通知(プランU3・§3.1). ?>
+					<tr>
+						<th scope="row">
+							<?php echo esc_html__( 'Unrecorded version change alerts', 'wp-checksum-verifier' ); ?>
+						</th>
+						<td>
+							<label for="wpcv_alert_unrecorded_version_change">
+								<input type="checkbox" name="wpcv_alert_unrecorded_version_change" id="wpcv_alert_unrecorded_version_change" value="1" <?php checked( $alert_unrecorded_version_change ); ?> />
+								<?php echo esc_html__( 'Alert on version changes that did not go through the WordPress updater.', 'wp-checksum-verifier' ); ?>
+							</label>
+							<p class="description">
+								<?php echo esc_html__( 'Turn this off on sites that deploy via git, FTP, or Composer, where legitimate version changes never produce an update event.', 'wp-checksum-verifier' ); ?>
 							</p>
 						</td>
 					</tr>
@@ -403,6 +419,9 @@ class WPCV_Page_Settings {
 
 		// v0.5 §Step8: strict mode と同じく、未チェック時はキー自体が送られてこない.
 		WPCV_Settings::update_stat_detection_enabled( isset( $_POST['wpcv_stat_detection'] ) );
+
+		// v0.6 §Step7: strict mode と同じく、未チェック時はキー自体が送られてこない.
+		WPCV_Settings::update_alert_unrecorded_version_change_enabled( isset( $_POST['wpcv_alert_unrecorded_version_change'] ) );
 
 		// v0.5後半 §Step14: アラートの宛先. プラン §6 の順序(nonce → capability →
 		// `wp_unslash()` → 再サニタイズ)どおり. `sanitize_textarea_field()`は改行を残す
