@@ -303,7 +303,7 @@ class WPCV_Alert_Composer {
 
 		if ( '' !== (string) $input['details_url'] ) {
 			$lines[] = '';
-			/* translators: %s: URL of the findings screen. */
+			/* translators: %s: URL of the detail screen (findings or run history). */
 			$lines[] = sprintf( __( 'Details: %s', 'wp-checksum-verifier' ), self::clean( $input['details_url'] ) );
 		}
 
@@ -492,7 +492,7 @@ class WPCV_Alert_Composer {
 
 		if ( '' !== (string) $input['details_url'] ) {
 			$lines[] = '';
-			/* translators: %s: URL of the run history screen. */
+			/* translators: %s: URL of the detail screen (findings or run history). */
 			$lines[] = sprintf( __( 'Details: %s', 'wp-checksum-verifier' ), self::clean( $input['details_url'] ) );
 		}
 

@@ -38,6 +38,14 @@ All notable changes to this project will be documented in this file.
   `_max_entry_bytes` / `_max_total_bytes` / `_max_compression_ratio`
   (the same provisional limits as for theme zips).
 
+- **Japanese translation** of every string that goes through a translation
+  function: the admin screens (Settings, Run History, Findings,
+  Suppressions), the `error_code` labels, alert emails, and admin notices
+  (`languages/wp-checksum-verifier-ja.po`, compiled to `.mo` and `.l10n.php`;
+  the `.pot` template is included). WP-CLI messages are not translated. The
+  admin screens follow the user's language; alert emails sent by cron or
+  WP-CLI follow the site language.
+
 ### Changed
 
 - **Versions are read from disk when a target is processed** (a plugin's

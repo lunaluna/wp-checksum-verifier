@@ -755,4 +755,21 @@ it up from `vendor/woocommerce/action-scheduler` automatically in a dev
 checkout (see `WPCV_Action_Scheduler_Loader`). The `lib/` copy only exists in
 release zips, produced by `bin/build-zip.pre.sh` during the release build.
 
+### Translations
+
+The admin screens, alert emails, and admin notices are translated into
+Japanese (`languages/wp-checksum-verifier-ja.po`, compiled to `.mo` and
+`.l10n.php`; the latter is what WordPress 6.5+ loads first). WP-CLI messages
+are not translated. After changing a translatable string, regenerate the files
+(the plugin's own `lib/` and `vendor/` are excluded because `lib/l2d-updater`
+uses a different text domain):
+
+```sh
+wp i18n make-pot . languages/wp-checksum-verifier.pot --exclude=vendor,lib,tests,bin,node_modules
+# update languages/wp-checksum-verifier-ja.po (msgmerge -U), translate new entries
+wp i18n make-mo languages
+wp i18n make-php languages
+composer run test   # TranslationFilesTest: no untranslated/fuzzy entries, placeholders match
+```
+
 日本語版は [README-ja.md](README-ja.md) を参照してください。

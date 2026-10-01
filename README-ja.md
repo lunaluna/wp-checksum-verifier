@@ -673,4 +673,20 @@ Scheduler もローカルで使えるようになる(`lib/` への手動コピ�
 (`WPCV_Action_Scheduler_Loader` 参照)。`lib/` へのコピーはリリースビルド時
 (`bin/build-zip.pre.sh`)にのみ生成される、配布zip専用のものである.
 
+### 翻訳
+
+管理画面・アラートメール・管理画面の通知は日本語に翻訳済みです
+(`languages/wp-checksum-verifier-ja.po`。`.mo` と、WordPress 6.5 以降が先に読む
+`.l10n.php` にコンパイルして同梱します)。WP-CLI のメッセージは翻訳しません。
+翻訳対象の文字列を変えたら、次の手順でファイルを作り直してください
+(`lib/l2d-updater` は別のテキストドメインなので `lib/` と `vendor/` は除きます):
+
+```sh
+wp i18n make-pot . languages/wp-checksum-verifier.pot --exclude=vendor,lib,tests,bin,node_modules
+# languages/wp-checksum-verifier-ja.po を更新(msgmerge -U)し、新しい文字列を訳す
+wp i18n make-mo languages
+wp i18n make-php languages
+composer run test   # TranslationFilesTest: 未訳・fuzzy が無く、プレースホルダーが一致すること
+```
+
 English version: [README.md](README.md)
