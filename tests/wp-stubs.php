@@ -1394,3 +1394,47 @@ if ( ! function_exists( 'get_file_data' ) ) {
 		return $headers;
 	}
 }
+
+if ( ! function_exists( 'get_site_transient' ) ) {
+	/**
+	 * Stub get_site_transient() — `$GLOBALS['_wpcv_test_site_transients'][$name]['value']` を返す
+	 * (v0.8 §Step4. 期限は見ない. 期限の判定は呼び出し側が値で行う).
+	 *
+	 * @param string $transient 名前.
+	 * @return mixed 無ければ false.
+	 */
+	function get_site_transient( $transient ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return isset( $GLOBALS['_wpcv_test_site_transients'][ $transient ] ) ? $GLOBALS['_wpcv_test_site_transients'][ $transient ]['value'] : false;
+	}
+}
+
+if ( ! function_exists( 'set_site_transient' ) ) {
+	/**
+	 * Stub set_site_transient() — 値と期限(秒)を `$GLOBALS['_wpcv_test_site_transients']` に記録する.
+	 *
+	 * @param string $transient  名前.
+	 * @param mixed  $value      値.
+	 * @param int    $expiration 期限(秒).
+	 * @return bool
+	 */
+	function set_site_transient( $transient, $value, $expiration = 0 ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_site_transients'][ $transient ] = array(
+			'value'      => $value,
+			'expiration' => $expiration,
+		);
+
+		return true;
+	}
+}
+
+if ( ! function_exists( 'wp_tempnam' ) ) {
+	/**
+	 * Stub wp_tempnam() — システムの一時ディレクトリに空ファイルを作ってパスを返す.
+	 *
+	 * @param string $filename 名前の元.
+	 * @return string
+	 */
+	function wp_tempnam( $filename = '' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return (string) tempnam( sys_get_temp_dir(), $filename );
+	}
+}

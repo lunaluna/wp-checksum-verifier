@@ -154,6 +154,7 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/sources/interface-wpcv-mani
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-core.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-wporg-plugin.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-zip-manifest-reader.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-github-client.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-wporg-theme.php';
 
 /**
