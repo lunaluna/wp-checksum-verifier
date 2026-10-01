@@ -36,6 +36,14 @@ class WPCV_Manifest_Cache_Repository {
 	const SOURCE_WPORG_THEME = 'wporg_theme';
 
 	/**
+	 * GitHub Releases のアセットの zip から作ったマニフェスト(v0.8 Step5. D7).
+	 * slug には `{owner}/{repo}` を、version にはインストールされている version を入れる.
+	 *
+	 * @var string
+	 */
+	const SOURCE_GITHUB = 'github';
+
+	/**
 	 * コアのマニフェスト(v0.7 Step4. slug には locale を入れる想定. §3.5).
 	 *
 	 * @var string

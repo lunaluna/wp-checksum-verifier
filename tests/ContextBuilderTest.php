@@ -6,6 +6,9 @@
  */
 
 require_once __DIR__ . '/wp-stubs.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
+require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-github-client.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-github-mappings.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-context-builder.php';
 
 use PHPUnit\Framework\TestCase;

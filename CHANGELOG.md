@@ -2,6 +2,86 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.0] - 2026-10-01
+
+### Added
+
+- **GitHub Releases verification.** A plugin or theme can be mapped to a
+  GitHub repository (Settings screen "GitHub repository mappings", or the
+  `wpcv_github_mappings` filter) and is then compared against the asset of
+  the GitHub Release for the *installed* version instead of wordpress.org.
+  Nothing is detected automatically. The tag is tried as `{version}` then
+  `v{version}`; the asset is chosen by the optional asset-name prefix,
+  `{slug}.{version}.zip`, or a single `{slug}*.zip`. The zip is hashed
+  without extracting it, after the same safety checks as theme zips; the
+  asset's `sha256` digest, a single top-level directory, and the `Version`
+  header of the main file inside the zip must all agree with what is
+  installed. Manifests are cached (`source = github`, key `owner/repo` +
+  version, no schema change). Targets use `source = github`
+  (also for their findings). Directories containing `.git` are not compared
+  with GitHub (`unknown_source`); themes bundled with core ignore a mapping
+  (the Settings screen warns once the core manifest is cached). New error
+  codes in use: `no_release_asset`, `asset_ambiguous`, `rate_limited`
+  (the three were defined but never returned before). See README.
+- **GitHub token** via the `WPCV_GITHUB_TOKEN` constant or the
+  `wpcv_github_token` filter only (never stored in the database; the
+  Settings screen shows only whether one is configured). With a token,
+  assets are downloaded through the GitHub API, so private repositories work.
+- **Rate-limit handling.** A 403/429 with `x-ratelimit-remaining: 0` or a
+  `retry-after` header makes the target `rate_limited` and pauses all GitHub
+  requests until the time GitHub gave (`retry-after`, then
+  `x-ratelimit-reset`, otherwise 60 seconds); the next run tries again.
+- Filters: `wpcv_github_mappings`, `wpcv_github_token`,
+  `wpcv_github_tag_candidates`, `wpcv_github_api_version`,
+  `wpcv_github_api_timeout` (10 s; measured 0.2–0.5 s), `wpcv_github_download_timeout`
+  (30 s), and `wpcv_github_zip_max_archive_bytes` / `_max_entries` /
+  `_max_entry_bytes` / `_max_total_bytes` / `_max_compression_ratio`
+  (the same provisional limits as for theme zips).
+
+- **Japanese translation** of every string that goes through a translation
+  function: the admin screens (Settings, Run History, Findings,
+  Suppressions), the `error_code` labels, alert emails, and admin notices
+  (`languages/wp-checksum-verifier-ja.po`, compiled to `.mo` and `.l10n.php`;
+  the `.pot` template is included). WP-CLI messages are not translated. The
+  admin screens follow the user's language; alert emails sent by cron or
+  WP-CLI follow the site language.
+
+### Changed
+
+- **Versions are read from disk when a target is processed** (a plugin's
+  main file, a theme's `style.css`, `wp-includes/version.php`), and a chunk
+  whose result may mix files from before and after an update is discarded
+  and retried. Previously, an automatic update that landed after a run was
+  planned made the run compare the new files against the old version's
+  manifest and report false `modified` findings (reproduced with 2 files on
+  a real site; `get_plugins()` and `wp_get_themes()` cache their results
+  within a process, so rebuilding the context was not enough). Not covered:
+  an update that reinstalls the same version between two chunks, and the
+  unknown-file scans.
+- A GitHub-mapped target whose lookup ends in `no_release_asset` or
+  `asset_ambiguous` is now handled by stat-based change detection (like
+  `manifest_not_found`), so a wrong mapping never leaves it unchecked.
+- The Settings screen always shows the daily run time's hour and minute with
+  two digits (`03:00`). The stored values are unchanged.
+- The zip inspection and hashing code was moved out of the wordpress.org
+  theme source into a shared class; behavior for theme zips is unchanged.
+
+### Known limitations
+
+- A release asset replaced under the same tag is not noticed until the
+  installed version changes (the cache is keyed by version).
+- Must-use plugin loaders and single-file plugins directly in
+  `wp-content/plugins/` cannot be mapped yet.
+- A Release that is still a draft cannot be seen through the API, so it
+  cannot be compared until it is published.
+
+### Verified
+
+- Private repositories: a fine-grained GitHub token limited to one repository
+  with only "Contents: Read-only" is enough (Release lookup 0.39 s and asset
+  download through the Assets API 0.61 s on shared hosting; without the token
+  the repository is `manifest_not_found`).
+
 ## [0.7.0] - 2026-10-01
 
 ### Added

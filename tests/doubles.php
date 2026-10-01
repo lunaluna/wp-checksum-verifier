@@ -1069,7 +1069,7 @@ class WPCV_Test_Fake_WPDB {
  *     wpdb: WPCV_Test_Fake_WPDB,
  * }
  */
-function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = null, $continuation_scheduler = null, ?WPCV_Update_Event_Matcher $update_event_matcher = null, ?WPCV_Manifest_Source $theme_source = null ) {
+function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = null, $continuation_scheduler = null, ?WPCV_Update_Event_Matcher $update_event_matcher = null, ?WPCV_Manifest_Source $theme_source = null, ?WPCV_Manifest_Source $github_source = null ) {
 	$core_source   = $core_source ?? new WPCV_Test_Fake_Manifest_Source(
 		array(
 			'manifest_status' => 'ok',
@@ -1084,6 +1084,8 @@ function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = 
 			'files'           => array(),
 		)
 	);
+
+	unset( $GLOBALS['_wpcv_test_dispatcher_now'] );
 
 	$wpdb                    = new WPCV_Test_Fake_WPDB();
 	$now                     = static function () {
@@ -1118,14 +1120,18 @@ function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = 
 		// (`WPCV_Chunk_Dispatcher` の `$now` プロパティのdocblock参照。ずれると
 		// `deadline_at` が常に「過去」と誤判定され、すべてのrunが即座に
 		// `aborted` になる).
+		// v0.8 §Step1: chunk の再確認(更新イベントが chunk を始めた時刻以降にあるか)を
+		// 確かめるテストのため、`$GLOBALS['_wpcv_test_dispatcher_now']`(`Y-m-d H:i:s`)で
+		// dispatcher の時計だけを進められるようにしている. 環境を作るたびに消える.
 		static function () use ( $now ) {
-			return strtotime( call_user_func( $now ) );
+			return strtotime( $GLOBALS['_wpcv_test_dispatcher_now'] ?? call_user_func( $now ) );
 		},
 		$file_state_repository,
 		null,
 		$update_event_matcher,
 		null,
-		$theme_source
+		$theme_source,
+		$github_source
 	);
 
 	$coordinator = new WPCV_Run_Coordinator( new WPCV_Run_Planner( $suppression_repository ), $run_repository, $target_run_repository, $dispatcher );

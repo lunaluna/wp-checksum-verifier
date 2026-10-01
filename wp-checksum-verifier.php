@@ -3,7 +3,7 @@
  * Plugin Name:       WP Checksum Verifier
  * Plugin URI:        https://github.com/lunaluna/wp-checksum-verifier
  * Description:       WordPress コア・プラグイン・テーマ・MU プラグインの checksum を日次で検証し、改ざんを検出するプラグイン.
- * Version:           0.7.0
+ * Version:           0.8.0
  * Requires at least: 6.8
  * Tested up to:      7.1
  * Requires PHP:      7.4
@@ -153,6 +153,9 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-path-norm
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/interface-wpcv-manifest-source.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-core.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-wporg-plugin.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-zip-manifest-reader.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-github-client.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-github.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-wporg-theme.php';
 
 /**
@@ -211,6 +214,12 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-alert-com
  * 純粋ロジック).
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-update-lock-detector.php';
+
+/**
+ * プラグイン・テーマ・コアの「今のディスク上の version」を読む(v0.8 §Step1. D13.
+ * run の途中の更新に追従するため、キャッシュを通さずファイルから直接読む).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-current-version-reader.php';
 
 /**
  * DB 永続化層(§4.2. v0.4.0 §Step1でrun/target_run/findingの3責務に分割)と、
@@ -350,6 +359,11 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-runner-a
  * 自己連鎖(v0.3 §Step6).
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-settings.php';
+
+/**
+ * プラグイン・テーマと GitHub リポジトリの対応付け(v0.8 §Step6. 設定とフィルターから集める).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-github-mappings.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-scheduler.php';
 WPCV_Scheduler::init();
 register_activation_hook( __FILE__, array( 'WPCV_Scheduler', 'activate' ) );

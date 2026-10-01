@@ -19,6 +19,7 @@ require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-sou
 require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-source-core.php';
 require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-source-wporg-plugin.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-manifest-cache-repository.php';
+require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-zip-manifest-reader.php';
 require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-source-wporg-theme.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-verifier.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
@@ -37,7 +38,10 @@ require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-coordinator.
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-cursor.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-verifier.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-chunk-result-repository.php';
+require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-github-client.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-github-mappings.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-context-builder.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-current-version-reader.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-generation-differ.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-alert-composer.php';

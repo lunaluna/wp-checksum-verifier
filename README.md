@@ -5,7 +5,7 @@ tampering by comparing installed files against official checksum manifests
 (wp.org core/plugin checksums, and manifests built from wp.org theme zips)
 and reports unknown files not present in any manifest.
 
-> **Status**: v0.7.0. The verification engine, all planned execution model
+> **Status**: v0.8.0. The verification engine, all planned execution model
 > entry points (WP-CLI, WP-Cron, admin "Run now" button, REST API),
 > file-level chunked execution with resume, the suppression engine
 > (`exclude_target`/`exclude_path`/`allowlist_hash` plus strict mode),
@@ -13,8 +13,9 @@ and reports unknown files not present in any manifest.
 > (with optional content-hash comparison), configuration-file and drop-in
 > monitoring, update-event tracking, diff-based email alerts (see Alerts
 > below), official theme verification, and the Findings/Suppressions/Run
-> History admin screens are implemented. GitHub-hosted plugin/theme
-> verification is not implemented yet. See `CHANGELOG.md` for details.
+> History admin screens are implemented, as is verification of plugins and
+> themes mapped to a GitHub repository (see "GitHub Releases verification"
+> below). See `CHANGELOG.md` for details.
 
 ## Verification targets
 
@@ -38,8 +39,10 @@ and reports unknown files not present in any manifest.
   content-hash comparison (see "Content-hash comparison" below) — these
   targets exist unconditionally, independent of the "Stat-based change
   detection" setting.
-- Not yet implemented: checksum verification for unofficial plugins/themes
-  hosted on GitHub Releases.
+- **Plugins and themes mapped to a GitHub repository** (e.g. unofficial plugins
+  distributed through GitHub Releases): compared against the asset of the
+  Release for the installed version (see "GitHub Releases verification"
+  below).
 
 ### Official theme verification
 
@@ -106,6 +109,103 @@ was not published yet).
   seconds (`wpcv_theme_zip_download_timeout`); measured downloads took at most
   about 2 seconds per theme on shared hosting and 4.6 seconds locally.
 
+### GitHub Releases verification
+
+Plugins and themes that are not on wordpress.org but publish their releases on
+GitHub can be verified against the assets of their GitHub Releases. Nothing is
+detected automatically: you map each plugin or theme to a repository on the
+Settings screen ("GitHub repository mappings", one line each) or with the
+`wpcv_github_mappings` filter. Plugins and themes without a mapping are
+verified exactly as before.
+
+```
+plugin:forced-auto-update-controller lunaluna/forced-auto-update-controller
+theme:my-theme lunaluna/my-theme my-theme-pro
+```
+
+The first field is `plugin:{slug}` or `theme:{stylesheet}`, the second is
+`owner/repo`, and the optional third is the start of the asset file name.
+Invalid lines and repeated targets are dropped when saving (the screen says
+which), and comment lines are not kept. The filter receives and returns a list
+of `array( 'target' => ..., 'repo' => ..., 'asset' => ... )`; it is applied
+after the saved mappings, and a target already mapped on the screen wins.
+
+- **Which release**: the Release for the version installed on this site, not
+  the latest one (`/releases/latest` is never used, so a site that has not
+  been updated is not reported as modified). The tag is tried as `{version}`
+  and then, only if that was a 404, as `v{version}`; change the candidates
+  with `wpcv_github_tag_candidates`. A Release that is still a draft is not
+  visible, so it cannot be compared until it is published (the target goes
+  to stat-based change detection).
+- **Which asset**: with a third field, the `.zip` asset whose name starts with
+  it; otherwise `{slug}.{version}.zip` if it exists, otherwise the single
+  `.zip` whose name starts with `{slug}`. Several candidates give
+  `asset_ambiguous`; none gives `no_release_asset`. GitHub's automatic
+  source archives (zipball/tarball) are never used.
+- **Checks on the asset**: if GitHub reports a `sha256` digest for the asset
+  it must match the downloaded file (`archive_invalid` otherwise); the zip
+  must have exactly one top-level directory (its name does not have to match
+  the slug) and passes the same safety checks as theme zips; and the `Version`
+  header of the plugin's main file (or the theme's `style.css`) inside the zip
+  must equal the installed version, so a wrong mapping or a tag that does not
+  match its contents becomes `asset_ambiguous` instead of a wall of
+  `modified` findings. Size limits are the same provisional values as for
+  theme zips, adjustable with `wpcv_github_zip_max_archive_bytes`,
+  `wpcv_github_zip_max_entries`, `wpcv_github_zip_max_entry_bytes`,
+  `wpcv_github_zip_max_total_bytes` and
+  `wpcv_github_zip_max_compression_ratio`. The asset download timeout is 30
+  seconds (`wpcv_github_download_timeout`); the API timeout is 10 seconds
+  (`wpcv_github_api_timeout`; measured at 0.2–0.5 seconds locally and 0.26
+  seconds on shared hosting, release asset downloads at most 0.9 seconds). The `X-GitHub-Api-Version` header is `2022-11-28`
+  (`wpcv_github_api_version`).
+- **Cache**: the manifest is stored in the manifest cache with the key
+  `owner/repo` + installed version and reused until the version changes, so
+  an ordinary run makes no GitHub request. Rows no longer used (a mapping
+  that was removed, an older version) are deleted when a run ends as
+  `success` or `partial`. A release asset replaced under the same tag is not
+  noticed until the version changes.
+- **Directories with `.git`**: a plugin or theme directory that contains a
+  `.git` entry (a development checkout, or a symlink to one — the repository
+  tree differs from the release zip) is never compared with GitHub; it
+  becomes `unknown_source` and goes to stat-based change detection.
+- **Outcomes**: the target's `source` (and its findings' `source`) is
+  `github`; wordpress.org is not asked about a mapped target.
+
+  | Result | Stat-based change detection |
+  | --- | --- |
+  | Compared (`success`) | skipped (`checksum_covered`) |
+  | `manifest_not_found` (no such tag, draft, or a private repository without a token), `unknown_source` (`.git`), `version_unknown`, `no_release_asset`, `asset_ambiguous` | runs, so a wrong mapping never leaves the target unchecked |
+  | `rate_limited`, `http_error`, `archive_invalid`, `archive_rejected`, `ziparchive_missing` | skipped for that run (no baseline is created by accident) |
+
+- **Token and private repositories**: define `WPCV_GITHUB_TOKEN` in
+  `wp-config.php` (or return a token from the `wpcv_github_token` filter,
+  which also receives `owner/repo`). The token is never stored in the
+  database and is never shown; the Settings screen only says whether one is
+  configured. With a token, assets are downloaded through the GitHub API
+  (`Accept: application/octet-stream`), which also works for private
+  repositories; without one, the public `browser_download_url` is used.
+  Verified on 2026-10-01: a fine-grained token limited to one private
+  repository with only the "Contents: Read-only" permission was enough to find
+  the Release and download its asset (without a token the same repository
+  was `manifest_not_found`). Classic tokens also work but are far broader than
+  needed.
+- **Rate limits**: unauthenticated GitHub API requests are limited to 60 per
+  hour (measured: a 404 and an `If-None-Match` request also count; downloading a
+  public asset through `browser_download_url` does not). Because manifests are
+  cached, a run only calls the API after a mapped plugin or theme changes
+  version. When GitHub answers 403/429 with `x-ratelimit-remaining: 0` or a
+  `retry-after` header, the target is `rate_limited` and GitHub is not
+  contacted again until the time GitHub gave (`retry-after`, otherwise
+  `x-ratelimit-reset`, otherwise 60 seconds as the GitHub documentation
+  advises); the next run tries again. `rate_limited` counts toward the
+  repeated-unverifiable alert like `http_error`.
+- **Themes bundled with WordPress core** (e.g. twentytwentyfive) ignore a
+  mapping and are verified against wordpress.org and the core checksums; the
+  Settings screen warns about this once the core manifest is cached (after the
+  first run).
+- **Not supported yet**: must-use plugin loaders, and plugins that consist of
+  a single file directly in `wp-content/plugins/`.
+
 ### Stat-based change detection
 
 Checksums can only prove a file is correct when an official copy exists to
@@ -117,7 +217,8 @@ whether a change is malicious.
 
 - **Which targets**: only plugins and themes whose checksum lookup came back
   as "no checksums exist" (`manifest_not_found`, `unknown_source`,
-  `version_unknown`) and MU-plugin loaders. Plugins and themes that verified
+  `version_unknown`, and for GitHub-mapped targets `no_release_asset` and
+  `asset_ambiguous`) and MU-plugin loaders. Plugins and themes that verified
   against checksums are skipped (`checksum_covered`), and those whose lookup
   failed temporarily (`http_error`, `rate_limited`, or for themes a zip that
   could not be used — see "Official theme verification" above) are skipped
@@ -241,7 +342,17 @@ tracked in the database, then processes them one file-chunk at a time:
 - If the manifest fingerprint or the target's version changed since the
   cursor was saved (e.g. the plugin was updated mid-run), the target is
   reset and retried from scratch rather than silently continuing with
-  possibly-mismatched data.
+  possibly-mismatched data. Versions are read from the files on disk
+  (a plugin's main file, a theme's `style.css`, `wp-includes/version.php`)
+  when each chunk is processed, not from a list built when the run started
+  or cached by WordPress in the same process, so an automatic update that
+  lands after the run was planned is compared against the new version
+  instead of producing false `modified` findings. A chunk whose result may
+  mix files from before and after an update (the version changed during
+  the chunk, `.maintenance` or an updater lock appeared, or an update event
+  was recorded since the chunk started) is discarded and retried. Not
+  covered: an update that reinstalls the same version *between* two chunks,
+  and the unknown-file scans (`core:_scan`, `theme:{stylesheet}:_scan`).
 - WP-Cron, CLI `--async`, and `POST /run` all drive the same dispatcher via
   Action Scheduler actions (or the caller's next poll, for the REST case) —
   there is no separate "async" verification logic to keep in sync.
@@ -614,7 +725,10 @@ comparison for custom plugins and MU-plugin loaders (off by default; see
 always content-hashed regardless of this setting), whether to alert on
 version changes that did not go through the WordPress updater (on by
 default; see Alerts above), alert recipients and the "Send test alert"
-button (see Alerts above), and REST token issuance.
+button (see Alerts above), the GitHub repository mappings and whether a
+GitHub token is configured (see "GitHub Releases verification" above), and
+REST token issuance. Hours and minutes of the run time are always shown with
+two digits.
 
 ## Distribution
 
@@ -643,5 +757,22 @@ v0.3+) available locally — no manual copy into `lib/` needed. The plugin picks
 it up from `vendor/woocommerce/action-scheduler` automatically in a dev
 checkout (see `WPCV_Action_Scheduler_Loader`). The `lib/` copy only exists in
 release zips, produced by `bin/build-zip.pre.sh` during the release build.
+
+### Translations
+
+The admin screens, alert emails, and admin notices are translated into
+Japanese (`languages/wp-checksum-verifier-ja.po`, compiled to `.mo` and
+`.l10n.php`; the latter is what WordPress 6.5+ loads first). WP-CLI messages
+are not translated. After changing a translatable string, regenerate the files
+(the plugin's own `lib/` and `vendor/` are excluded because `lib/l2d-updater`
+uses a different text domain):
+
+```sh
+wp i18n make-pot . languages/wp-checksum-verifier.pot --exclude=vendor,lib,tests,bin,node_modules
+# update languages/wp-checksum-verifier-ja.po (msgmerge -U), translate new entries
+wp i18n make-mo languages
+wp i18n make-php languages
+composer run test   # TranslationFilesTest: no untranslated/fuzzy entries, placeholders match
+```
 
 日本語版は [README-ja.md](README-ja.md) を参照してください。

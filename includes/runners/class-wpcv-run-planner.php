@@ -129,6 +129,10 @@ class WPCV_Run_Planner {
 	 *     @type array  $themes        stylesheet => `version` 等(v0.7 §Step3.
 	 *                                 `WPCV_Context_Builder::describe_themes()` の形).
 	 *                                 既定は空配列.
+	 *     @type array  $github_mappings target_id => `repo`・`asset`(v0.8 §Step6.
+	 *                                 `WPCV_GitHub_Mappings::resolve()` の形). 対応付けのある
+	 *                                 プラグイン・テーマの本体の source が `github` になる.
+	 *                                 既定は空配列.
 	 * }
 	 * @return array `WPCV_Target_Status::QUEUED` 状態の target_run の配列
 	 *               (id/run_id 無し。§5.3 のスキーマに準拠).
@@ -147,6 +151,8 @@ class WPCV_Run_Planner {
 		if ( ! empty( $plugins ) && '' === $plugin_dir ) {
 			throw new InvalidArgumentException( esc_html( 'WPCV_Run_Planner::plan() requires $context[\'plugin_dir\'] when $context[\'plugins\'] is not empty.' ) );
 		}
+
+		$github_mappings = isset( $context['github_mappings'] ) ? (array) $context['github_mappings'] : array();
 
 		$target_runs = array();
 
@@ -220,7 +226,7 @@ class WPCV_Run_Planner {
 					WPCV_Target_Resolver::DIMENSION_PLUGIN,
 					$resolved['slug'],
 					'' === $plugin_version ? null : $plugin_version,
-					'wporg'
+					isset( $github_mappings[ $body_target_id ] ) ? 'github' : 'wporg'
 				)
 			);
 
@@ -240,13 +246,17 @@ class WPCV_Run_Planner {
 			$theme_version  = isset( $theme['version'] ) ? (string) $theme['version'] : '';
 			$body_target_id = WPCV_Target_Resolver::build_id( WPCV_Target_Resolver::DIMENSION_THEME, (string) $stylesheet );
 
+			// v0.8 §Step6(D11): 対応付けのあるテーマは GitHub で照合する(`:_stat` は stat のまま).
+			// コア同梱テーマの扱い(R2)は HTTP が要るので、ここでは判定せず dispatcher が行う.
+			$theme_source_label = isset( $github_mappings[ $body_target_id ] ) ? 'github' : 'wporg';
+
 			$target_runs[] = $this->maybe_apply_exclude_target(
 				self::queued_target_run(
 					$body_target_id,
 					WPCV_Target_Resolver::DIMENSION_THEME,
 					(string) $stylesheet,
 					'' === $theme_version ? null : $theme_version,
-					'wporg'
+					$theme_source_label
 				)
 			);
 
@@ -264,7 +274,7 @@ class WPCV_Run_Planner {
 					WPCV_Target_Resolver::DIMENSION_THEME,
 					(string) $stylesheet,
 					'' === $theme_version ? null : $theme_version,
-					'wporg'
+					$theme_source_label
 				)
 			);
 		}
@@ -273,7 +283,7 @@ class WPCV_Run_Planner {
 			$mu_plugins = isset( $context['mu_plugins'] ) ? (array) $context['mu_plugins'] : array();
 			$dimension  = WPCV_Target_Resolver::DIMENSION_MUPLUGIN;
 
-			// §3.6: loader ごとの target(wp.org/GitHub マッピング未実装のため、
+			// §3.6: loader ごとの target(wp.org にも GitHub の対応付け〔v0.8 では対象外〕にも載らないため、
 			// 現時点では検証の結果は必ず unverifiable になるが、その判定自体は
 			// Step3のchunk verifierが行う。ここではqueuedとして列挙するのみ).
 			foreach ( array_keys( $mu_plugins ) as $basename ) {

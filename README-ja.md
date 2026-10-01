@@ -5,15 +5,15 @@ WordPress のコア・プラグイン・テーマ・MU プラグインの checks
 wp.org のテーマの zip から作るマニフェスト)と実ファイルを突き合わせ、どのマニフェスト
 にも存在しない未知のファイルも報告する。
 
-> **ステータス**: v0.7.0。検証エンジン、計画していた全ての実行モデル
+> **ステータス**: v0.8.0。検証エンジン、計画していた全ての実行モデル
 > (WP-CLI・WP-Cron・管理画面の「今すぐ実行」ボタン・REST API)、resume対応の
 > ファイル単位分割実行、抑制エンジン(`exclude_target`/`exclude_path`/
 > `allowlist_hash`とstrict mode)、公式checksumの無いプラグイン向けのstat
 > 差分検知(内容ハッシュ比較のオプション付き)、設定ファイル・ドロップインの
 > 監視、更新イベントの記録、差分検知に基づくメールアラート(下記「アラート」
 > 参照)、公式テーマの照合、検出結果・抑制一覧・実行履歴の管理画面を実装済み。
-> GitHub Releases 上の非公式プラグイン/テーマの照合はまだ未実装。詳細は
-> `CHANGELOG.md` を参照.
+> GitHub リポジトリに対応付けたプラグイン・テーマの照合(下記「GitHub Releases の
+> 照合」参照)も実装済み。詳細は `CHANGELOG.md` を参照.
 
 ## 検証対象
 
@@ -31,7 +31,9 @@ wp.org のテーマの zip から作るマニフェスト)と実ファイルを�
   追跡するが、常に内容ハッシュ比較(下記「内容ハッシュ比較」参照)も行う ――
   これらのtargetは「Stat-based change detection」の設定とは無関係に無条件で
   存在する.
-- 未実装: GitHub Releases 上の非公式プラグイン/テーマの照合.
+- **GitHub リポジトリに対応付けたプラグイン・テーマ**(GitHub Releases で配布している
+  非公式プラグインなど): インストール済みバージョンの Release のアセットと照合する
+  (下記「GitHub Releases の照合」参照).
 
 ### 公式テーマの照合
 
@@ -88,6 +90,90 @@ run に出てこなくなったテーマ・version の行は、run が `success`
   (`wpcv_theme_zip_download_timeout`。実測では1テーマあたり共有ホスティングで最大
   約2秒、ローカルで4.6秒).
 
+### GitHub Releases の照合
+
+wordpress.org に無いが、GitHub で Release を配布しているプラグイン・テーマは、
+GitHub Releases のアセットと照合できます。自動検出はしません。設定画面の
+「GitHub repository mappings」(1行1件)か、フィルター `wpcv_github_mappings` で、
+プラグイン・テーマごとにリポジトリを対応付けます。対応付けの無いプラグイン・
+テーマは今までどおりに照合します.
+
+```
+plugin:forced-auto-update-controller lunaluna/forced-auto-update-controller
+theme:my-theme lunaluna/my-theme my-theme-pro
+```
+
+1つ目は `plugin:{slug}` または `theme:{stylesheet}`、2つ目は `owner/repo`、省略できる
+3つ目はアセットのファイル名の前方一致です。不正な行と、同じ対象の重複は保存時に
+捨てられ(画面に理由が出ます)、コメント行は保存されません。フィルターは
+`array( 'target' => ..., 'repo' => ..., 'asset' => ... )` の配列を受け取って返します。
+設定画面の値のあとに適用され、設定画面で対応付け済みの対象はそちらが優先されます.
+
+- **どの Release か**: 最新ではなく、このサイトにインストールされている version の
+  Release です(`/releases/latest` は使いません。更新前のサイトが丸ごと改変扱いになる
+  のを避けるため)。tag は `{version}`、404 のときだけ `v{version}` の順に試します。候補は
+  `wpcv_github_tag_candidates` で変えられます。下書き(draft)の Release は見えないため、
+  公開するまで照合できません(その対象は stat 差分検知に回ります).
+- **どのアセットか**: 3つ目の項目があれば、その名前で始まる `.zip`。無ければ
+  `{slug}.{version}.zip`、それも無ければ名前が `{slug}` で始まる `.zip` が1つだけのとき
+  それを使います。候補が複数なら `asset_ambiguous`、0 なら `no_release_asset` です。
+  GitHub が自動生成するソースアーカイブ(zipball/tarball)は使いません.
+- **アセットの検査**: GitHub がアセットに `sha256` の digest を付けていれば、ダウンロード
+  したファイルと一致する必要があります(違えば `archive_invalid`)。zip の最上位
+  ディレクトリはちょうど1つ(名前が slug と同じである必要はありません)で、テーマの
+  zip と同じ安全検査を通ります。zip の中のメインファイル(プラグインのメインファイル、
+  テーマは `style.css`)の `Version` ヘッダーがインストール済みの version と同じである
+  必要もあり、対応付けの誤りや tag と中身の食い違いは、大量の `modified` ではなく
+  `asset_ambiguous` になります。サイズの上限はテーマの zip と同じ暫定値で、
+  `wpcv_github_zip_max_archive_bytes`・`wpcv_github_zip_max_entries`・
+  `wpcv_github_zip_max_entry_bytes`・`wpcv_github_zip_max_total_bytes`・
+  `wpcv_github_zip_max_compression_ratio` で変えられます。アセットのダウンロードの
+  タイムアウトは30秒(`wpcv_github_download_timeout`)、API のタイムアウトは10秒
+  (`wpcv_github_api_timeout`。実測はローカルで0.2〜0.5秒、共有ホスティングで0.26秒、
+  アセットのダウンロードは最大0.9秒)です。
+  `X-GitHub-Api-Version` ヘッダーは `2022-11-28`(`wpcv_github_api_version`)です.
+- **キャッシュ**: マニフェストは `owner/repo` + インストール済み version をキーにして
+  マニフェストキャッシュに保存し、version が変わるまで再利用します。通常の run では
+  GitHub に問い合わせません。使われなくなった行(外した対応付け・古い version)は、
+  run が `success` / `partial` で終わるときに削除されます。同じ tag のままアセットが
+  差し替えられても、version が変わるまで気づきません.
+- **`.git` があるディレクトリ**: ディレクトリの直下に `.git`(開発用のチェックアウト、
+  またはそれへのシンボリックリンク。リポジトリのツリーは配布 zip と中身が違う)が
+  あるプラグイン・テーマは GitHub と照合せず、`unknown_source` として stat 差分検知に
+  回ります.
+- **結果**: 対応付けた target の `source`(finding の `source` も)は `github` になり、
+  wordpress.org には問い合わせません.
+
+  | 結果 | stat 差分検知 |
+  | --- | --- |
+  | 照合できた(`success`) | 省略(`checksum_covered`) |
+  | `manifest_not_found`(tag が無い・下書き・トークン無しの非公開リポジトリ)・`unknown_source`(`.git`)・`version_unknown`・`no_release_asset`・`asset_ambiguous` | 実行する(対応付けを誤っても、その対象が何も見られなくならない) |
+  | `rate_limited`・`http_error`・`archive_invalid`・`archive_rejected`・`ziparchive_missing` | その run では省略(不意にベースラインを作らない) |
+
+- **トークンと非公開リポジトリ**: `wp-config.php` で `WPCV_GITHUB_TOKEN` を定義します
+  (または `wpcv_github_token` フィルターでトークンを返します。第2引数は `owner/repo`)。
+  トークンは DB に保存せず、画面にも出しません(設定画面は設定済みかどうかだけを表示)。
+  トークンがあるときはアセットを GitHub API(`Accept: application/octet-stream`)で
+  ダウンロードし、非公開リポジトリでも取得できます。無いときは公開の
+  `browser_download_url` を使います。2026-10-01に実機で確認しました: 非公開リポジトリ
+  1つに限定し、権限を「Contents: Read-only」だけにした fine-grained トークンで、
+  Release の検索とアセットのダウンロードができました(トークン無しでは同じリポジトリが
+  `manifest_not_found` になります)。classic トークンでも動きますが、必要以上に権限が広くなります.
+- **レート制限**: 認証なしの GitHub API は1時間に60回までです(実測: 404 と
+  `If-None-Match` 付きのリクエストも1回に数えられ、`browser_download_url` での公開アセットの
+  ダウンロードは数えられません)。マニフェストをキャッシュするので、API を呼ぶのは
+  対応付けたプラグイン・テーマの version が変わった後の run だけです。GitHub が
+  `x-ratelimit-remaining: 0` つきの 403/429、または `retry-after` つきの応答を返すと、その対象は
+  `rate_limited` になり、GitHub が示した時刻(`retry-after`、無ければ `x-ratelimit-reset`、
+  それも無ければ GitHub のドキュメントに従い60秒)まで GitHub に問い合わせません。次の
+  run でまた試します。`rate_limited` は `http_error` と同じく、連続 unverifiable のアラートの
+  数に入ります.
+- **WordPress コアに同梱のテーマ**(例: twentytwentyfive)は対応付けを無視し、
+  wordpress.org とコアの checksum で照合します。コアのマニフェストがキャッシュされた後
+  (最初の run のあと)は、設定画面が警告を出します.
+- **未対応**: MU プラグインの loader と、`wp-content/plugins/` 直下の単一ファイルの
+  プラグイン.
+
 ### stat 差分検知
 
 checksum で「正しいファイルか」を確かめられるのは、比べる公式の配布物がある場合だけです。
@@ -97,7 +183,7 @@ checksum で「正しいファイルか」を確かめられるのは、比べ�
 どうかは判定しません.
 
 - **対象**: checksum の取得結果が「配布物が無い」(`manifest_not_found`・`unknown_source`・
-  `version_unknown`)だったプラグイン・テーマと、MU プラグインの loader だけです。checksum で
+  `version_unknown`、GitHub に対応付けた対象では `no_release_asset`・`asset_ambiguous`)だったプラグイン・テーマと、MU プラグインの loader だけです。checksum で
   照合できたものは省略します(`checksum_covered`)。取得が一時的に失敗したもの
   (`http_error`・`rate_limited`、テーマでは使えなかった zip。上記「公式テーマの照合」参照)も
   その run では省略し、wordpress.org の障害で不意にベースラインが作られないようにしています。
@@ -201,7 +287,15 @@ update` はこの記録が使うフックを発火しないため、その方法
   のversion)を保存する。次のchunkはそのcursorから再開する.
 - cursor保存後にmanifestのfingerprintやtargetのversionが変わっていた場合
   (例: run途中でプラグインが更新された)は、そのままの内容で続行せず
-  targetを最初からやり直す(retry)扱いにする.
+  targetを最初からやり直す(retry)扱いにする。versionは各chunkを処理する時点の
+  ディスク上のファイル(プラグインのメインファイル・テーマの`style.css`・
+  `wp-includes/version.php`)から読み、runの開始時に作った一覧や、同じプロセスで
+  WordPressがキャッシュした値は使わない。そのため、planのあとに入った自動更新を
+  新しいversionと比べ、誤った`modified`を出さない。更新の前後のファイルが混ざった
+  可能性があるchunk(chunkの間にversionが変わった・`.maintenance`や更新のlockが
+  出た・chunkの開始以降に更新イベントが記録された)は結果を捨てて取り直す。対象外:
+  2つのchunkの*間*に同じversionを入れ直す更新と、未知ファイルの走査
+  (`core:_scan`・`theme:{stylesheet}:_scan`).
 - WP-Cron・CLI `--async`・`POST /run` はすべて同じdispatcherをAction
   Scheduler action経由(RESTの場合は呼び出し元の次回ポーリング経由)で
   起動する ―― 「非同期用の別ロジック」を別途保守する必要はない.
@@ -551,7 +645,8 @@ run」を反映するだけで、サーバーにWP-CLI自体がインストー�
 この設定に関わらず常に内容ハッシュ比較の対象)・WordPressの更新機構を
 通らないversion変化を通知するか(既定は有効。上記「アラート」参照)・
 アラートの宛先と「Send test alert」ボタン(上記「アラート」参照)・
-RESTトークンの発行を設定できる.
+GitHub リポジトリの対応付けとGitHubのトークンが設定済みかどうか(上記「GitHub Releases の
+照合」参照)・RESTトークンの発行を設定できる。実行時刻の時・分は常に2桁で表示される.
 
 ## 配布方針
 
@@ -580,5 +675,21 @@ Scheduler もローカルで使えるようになる(`lib/` への手動コピ�
 開発環境では `vendor/woocommerce/action-scheduler` から自動的に読み込む
 (`WPCV_Action_Scheduler_Loader` 参照)。`lib/` へのコピーはリリースビルド時
 (`bin/build-zip.pre.sh`)にのみ生成される、配布zip専用のものである.
+
+### 翻訳
+
+管理画面・アラートメール・管理画面の通知は日本語に翻訳済みです
+(`languages/wp-checksum-verifier-ja.po`。`.mo` と、WordPress 6.5 以降が先に読む
+`.l10n.php` にコンパイルして同梱します)。WP-CLI のメッセージは翻訳しません。
+翻訳対象の文字列を変えたら、次の手順でファイルを作り直してください
+(`lib/l2d-updater` は別のテキストドメインなので `lib/` と `vendor/` は除きます):
+
+```sh
+wp i18n make-pot . languages/wp-checksum-verifier.pot --exclude=vendor,lib,tests,bin,node_modules
+# languages/wp-checksum-verifier-ja.po を更新(msgmerge -U)し、新しい文字列を訳す
+wp i18n make-mo languages
+wp i18n make-php languages
+composer run test   # TranslationFilesTest: 未訳・fuzzy が無く、プレースホルダーが一致すること
+```
 
 English version: [README.md](README.md)

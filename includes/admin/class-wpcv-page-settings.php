@@ -32,6 +32,8 @@ if ( ! defined( 'ABSPATH' ) ) {
  * v0.5後半 §Step14aでアラートの宛先(`alert_to`)フォームを追加し、§Step14dで
  * 「Send test alert」ボタン(`WPCV_Alert_Sender::send_test()`を同期的に呼ぶ)を
  * 追加した.
+ * v0.8 §Step7で、GitHub リポジトリとの対応付け(`github_mappings`. テキストエリア・
+ * 保存時の検査結果・コア同梱テーマの警告)と、`WPCV_GITHUB_TOKEN` の有無の表示を追加した.
  */
 class WPCV_Page_Settings {
 
@@ -106,6 +108,16 @@ class WPCV_Page_Settings {
 	const SEND_TEST_ALERT_NONCE_NAME = 'wpcv_send_test_alert_nonce';
 
 	/**
+	 * 直近の保存で捨てた対応付けの行(`WPCV_GitHub_Mappings::parse_text()` の `errors`).
+	 *
+	 * 保存処理(`maybe_handle_save()`)と描画(`render()`)は同じリクエストの中で続けて
+	 * 呼ばれるので、戻り値の型(bool)を変えずに受け渡すため静的に持つ.
+	 *
+	 * @var array<int, array{line: int, reason: string}>
+	 */
+	private static $github_mapping_errors = array();
+
+	/**
 	 * 画面を描画する.
 	 *
 	 * @return void
@@ -128,6 +140,12 @@ class WPCV_Page_Settings {
 		$content_hash_stat_targets_enabled = WPCV_Settings::get_content_hash_stat_targets_enabled();
 		$alert_unrecorded_version_change   = WPCV_Settings::get_alert_unrecorded_version_change_enabled();
 		$alert_to                          = WPCV_Settings::get_alert_to();
+		$github_mappings_text              = WPCV_GitHub_Mappings::format_text( WPCV_Settings::get_github_mappings() );
+		$github_resolved                   = WPCV_GitHub_Mappings::resolve();
+		$github_filter_only                = self::filter_only_mappings( $github_resolved, WPCV_Settings::get_github_mappings() );
+		$github_bundled_themes             = self::find_core_bundled_themes( $github_resolved, self::load_cached_core_files() );
+		$github_has_token                  = WPCV_GitHub_Client::has_token();
+		$github_rate_limited_until         = ( new WPCV_GitHub_Client() )->get_rate_limited_until();
 		$button_state                      = self::run_now_button_state( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON );
 		?>
 		<div class="wrap">
@@ -136,6 +154,17 @@ class WPCV_Page_Settings {
 			<?php if ( $saved ) : ?>
 				<div class="notice notice-success is-dismissible">
 					<p><?php echo esc_html__( 'Settings saved.', 'wp-checksum-verifier' ); ?></p>
+				</div>
+			<?php endif; ?>
+
+			<?php if ( array() !== self::$github_mapping_errors ) : ?>
+				<div class="notice notice-warning is-dismissible">
+					<p><?php echo esc_html__( 'Some GitHub repository mappings were not saved:', 'wp-checksum-verifier' ); ?></p>
+					<ul>
+						<?php foreach ( self::$github_mapping_errors as $mapping_error ) : ?>
+							<li><?php echo esc_html( self::format_mapping_error( $mapping_error['line'], $mapping_error['reason'] ) ); ?></li>
+						<?php endforeach; ?>
+					</ul>
 				</div>
 			<?php endif; ?>
 
@@ -163,9 +192,9 @@ class WPCV_Page_Settings {
 							<label for="wpcv_run_hour"><?php echo esc_html__( 'Daily run time (UTC)', 'wp-checksum-verifier' ); ?></label>
 						</th>
 						<td>
-							<input type="number" min="0" max="23" step="1" name="wpcv_run_hour" id="wpcv_run_hour" value="<?php echo esc_attr( (string) $run_time['hour'] ); ?>" style="width: 4em;" />
+							<input type="number" min="0" max="23" step="1" name="wpcv_run_hour" id="wpcv_run_hour" value="<?php echo esc_attr( self::format_two_digits( $run_time['hour'] ) ); ?>" style="width: 4em;" />
 							:
-							<input type="number" min="0" max="59" step="1" name="wpcv_run_minute" id="wpcv_run_minute" value="<?php echo esc_attr( (string) $run_time['minute'] ); ?>" style="width: 4em;" />
+							<input type="number" min="0" max="59" step="1" name="wpcv_run_minute" id="wpcv_run_minute" value="<?php echo esc_attr( self::format_two_digits( $run_time['minute'] ) ); ?>" style="width: 4em;" />
 							<p class="description">
 								<?php echo esc_html__( 'The verification run starts automatically at this time every day (UTC). External HTTP mode (below) also uses this time to decide when to start the daily run.', 'wp-checksum-verifier' ); ?>
 							</p>
@@ -239,6 +268,71 @@ class WPCV_Page_Settings {
 							<p class="description">
 								<?php echo esc_html__( 'Turn this off on sites that deploy via git, FTP, or Composer, where legitimate version changes never produce an update event.', 'wp-checksum-verifier' ); ?>
 							</p>
+						</td>
+					</tr>
+					<?php // v0.8 §Step7: GitHub リポジトリとの対応付け(プラン §4.1・U2)と、トークンの有無(U3). ?>
+					<tr>
+						<th scope="row">
+							<label for="wpcv_github_mappings"><?php echo esc_html__( 'GitHub repository mappings', 'wp-checksum-verifier' ); ?></label>
+						</th>
+						<td>
+							<textarea name="wpcv_github_mappings" id="wpcv_github_mappings" rows="4" cols="50" class="large-text code" placeholder="plugin:my-plugin owner/my-plugin"><?php echo esc_textarea( $github_mappings_text ); ?></textarea>
+							<p class="description">
+								<?php echo esc_html__( 'Verify a plugin or theme against the assets of its GitHub Release instead of wordpress.org. One mapping per line: plugin:{slug} or theme:{stylesheet}, then owner/repo, then optionally the start of the asset file name. The Release is found by the installed version (tag "1.2.3" or "v1.2.3"). Plugins and themes that are not listed are verified as before. Invalid lines and repeated targets are dropped when saving; comment lines (starting with #) are not kept. Directories that contain a .git entry are never compared with GitHub.', 'wp-checksum-verifier' ); ?>
+							</p>
+							<?php if ( array() !== $github_filter_only ) : ?>
+								<p class="description">
+									<?php
+									echo esc_html(
+										sprintf(
+											/* translators: %s: comma-separated list of "target → owner/repo". */
+											__( 'Also mapped by the wpcv_github_mappings filter: %s', 'wp-checksum-verifier' ),
+											implode( ', ', $github_filter_only )
+										)
+									);
+									?>
+								</p>
+							<?php endif; ?>
+							<?php if ( array() !== $github_bundled_themes ) : ?>
+								<p class="description">
+									<strong><?php echo esc_html__( 'Warning:', 'wp-checksum-verifier' ); ?></strong>
+									<?php
+									echo esc_html(
+										sprintf(
+											/* translators: %s: comma-separated list of theme stylesheets. */
+											__( 'These themes are bundled with WordPress core, so their mappings are ignored and they are verified against wordpress.org and the core checksums: %s', 'wp-checksum-verifier' ),
+											implode( ', ', $github_bundled_themes )
+										)
+									);
+									?>
+								</p>
+							<?php endif; ?>
+						</td>
+					</tr>
+					<tr>
+						<th scope="row"><?php echo esc_html__( 'GitHub token', 'wp-checksum-verifier' ); ?></th>
+						<td>
+							<?php if ( $github_has_token ) : ?>
+								<?php echo esc_html__( 'A token is configured (WPCV_GITHUB_TOKEN or the wpcv_github_token filter). Its value is never shown or stored in the database.', 'wp-checksum-verifier' ); ?>
+							<?php else : ?>
+								<?php echo esc_html__( 'No token is configured.', 'wp-checksum-verifier' ); ?>
+								<p class="description">
+									<?php echo esc_html__( 'Public repositories work without one, but unauthenticated GitHub API requests have a low rate limit. For private repositories or a higher limit, define WPCV_GITHUB_TOKEN in wp-config.php.', 'wp-checksum-verifier' ); ?>
+								</p>
+							<?php endif; ?>
+							<?php if ( null !== $github_rate_limited_until ) : ?>
+								<p class="description">
+									<?php
+									echo esc_html(
+										sprintf(
+											/* translators: %s: date and time (UTC). */
+											__( 'The GitHub rate limit has been reached. GitHub is not contacted until %s (UTC).', 'wp-checksum-verifier' ),
+											gmdate( 'Y-m-d H:i:s', $github_rate_limited_until )
+										)
+									);
+									?>
+								</p>
+							<?php endif; ?>
 						</td>
 					</tr>
 					<?php // v0.5後半 §Step14: アラートの宛先. 空なら送らず、管理画面に警告を出す(プラン U1). ?>
@@ -386,6 +480,21 @@ class WPCV_Page_Settings {
 	}
 
 	/**
+	 * 時・分を常に2桁の文字列にする(例: 5 → `05`, 0 → `00`).
+	 *
+	 * 保存する値は整数のままで、2桁にするのは表示だけ(v0.8 §Step2. U8・U9).
+	 * `type="number"` の入力欄でも、`value` の文字列 `05` はそのまま表示される
+	 * (Chrome で確認. 2026-10-01). 1桁で入力された値は保存時に整数になり、
+	 * 次の表示から 0 が補われる(`05` と `5` は同じ値).
+	 *
+	 * @param int|string $number 時または分.
+	 * @return string 2桁(3桁以上の値はそのまま).
+	 */
+	public static function format_two_digits( $number ) {
+		return sprintf( '%02d', (int) $number );
+	}
+
+	/**
 	 * フォームが POST されていれば nonce・capability を検証したうえで実行時刻を
 	 * 保存し、WP-Cron の予約を新しい時刻に更新する.
 	 *
@@ -455,7 +564,119 @@ class WPCV_Page_Settings {
 			WPCV_Settings::update_alert_to( sanitize_textarea_field( wp_unslash( $_POST['wpcv_alert_to'] ) ) );
 		}
 
+		// v0.8 §Step7: GitHub リポジトリとの対応付け. 検査に落ちた行は保存せず、理由を
+		// 画面に出す(`$github_mapping_errors`). alert_to と同じく、キーが無いとき
+		// (このフォーム以外からの POST)は既存の値を変えない.
+		if ( isset( $_POST['wpcv_github_mappings'] ) ) {
+			$parsed = WPCV_GitHub_Mappings::parse_text( sanitize_textarea_field( wp_unslash( $_POST['wpcv_github_mappings'] ) ) );
+
+			WPCV_Settings::update_github_mappings( $parsed['entries'] );
+
+			self::$github_mapping_errors = $parsed['errors'];
+		}
+
 		return true;
+	}
+
+	/**
+	 * 対応付けを捨てた理由のコードを、行番号つきの文言にする.
+	 *
+	 * @param int    $line   テキストエリアの行番号(1始まり).
+	 * @param string $reason `WPCV_GitHub_Mappings::REASON_*`.
+	 * @return string
+	 */
+	public static function format_mapping_error( $line, $reason ) {
+		switch ( $reason ) {
+			case WPCV_GitHub_Mappings::REASON_INVALID_TARGET:
+				/* translators: %d: line number. */
+				return sprintf( __( 'Line %d: the target must look like plugin:{slug} or theme:{stylesheet}. Skipped.', 'wp-checksum-verifier' ), (int) $line );
+			case WPCV_GitHub_Mappings::REASON_INVALID_REPO:
+				/* translators: %d: line number. */
+				return sprintf( __( 'Line %d: the repository must look like owner/repo. Skipped.', 'wp-checksum-verifier' ), (int) $line );
+			case WPCV_GitHub_Mappings::REASON_DUPLICATE_TARGET:
+				/* translators: %d: line number. */
+				return sprintf( __( 'Line %d: this target is already mapped on an earlier line. Skipped.', 'wp-checksum-verifier' ), (int) $line );
+			default:
+				/* translators: %d: line number. */
+				return sprintf( __( 'Line %d: expected "target owner/repo" with an optional asset name. Skipped.', 'wp-checksum-verifier' ), (int) $line );
+		}
+	}
+
+	/**
+	 * フィルター(`wpcv_github_mappings`)だけが足した対応付けを「target → owner/repo」の
+	 * 文字列で返す(設定画面のテキストエリアに出ないので、別に知らせるため).
+	 *
+	 * @param array<string, array{repo: string, asset: string}>              $resolved `WPCV_GitHub_Mappings::resolve()`.
+	 * @param array<int, array{target: string, repo: string, asset: string}> $stored   設定に保存された対応付け.
+	 * @return string[]
+	 */
+	public static function filter_only_mappings( array $resolved, array $stored ) {
+		$stored_targets = array_column( $stored, 'target' );
+		$list           = array();
+
+		foreach ( $resolved as $target => $mapping ) {
+			if ( ! in_array( $target, $stored_targets, true ) ) {
+				$list[] = $target . ' → ' . $mapping['repo'];
+			}
+		}
+
+		return $list;
+	}
+
+	/**
+	 * 対応付けのうち、コア同梱テーマ(今のコアのマニフェストに `wp-content/themes/{stylesheet}/` が
+	 * あるもの)の stylesheet を返す(v0.8 §Step7. R2).
+	 *
+	 * このようなテーマの対応付けは、実行時に無視される(`WPCV_Chunk_Dispatcher::process_theme()`).
+	 * 判定にコアのマニフェストが要るが、画面の表示で HTTP は出さないため、キャッシュ済みのもの
+	 * だけを使う(まだ run が一度も走っていないと null で、警告は出ない).
+	 *
+	 * @param array<string, array{repo: string, asset: string}> $resolved   `WPCV_GitHub_Mappings::resolve()`.
+	 * @param array|null                                        $core_files コアのマニフェストの `files`(パスをキーにした配列). 無ければ null.
+	 * @return string[]
+	 */
+	public static function find_core_bundled_themes( array $resolved, ?array $core_files ) {
+		if ( null === $core_files ) {
+			return array();
+		}
+
+		$bundled = array();
+
+		foreach ( array_keys( $resolved ) as $target_id ) {
+			if ( 0 !== strpos( (string) $target_id, 'theme:' ) ) {
+				continue;
+			}
+
+			$stylesheet = substr( (string) $target_id, 6 );
+			$prefix     = 'wp-content/themes/' . $stylesheet . '/';
+
+			foreach ( array_keys( $core_files ) as $path ) {
+				if ( 0 === strpos( (string) $path, $prefix ) ) {
+					$bundled[] = $stylesheet;
+					break;
+				}
+			}
+		}
+
+		return $bundled;
+	}
+
+	/**
+	 * キャッシュ済みのコアのマニフェストの `files` を返す(HTTP は出さない).
+	 *
+	 * @return array|null まだキャッシュされていなければ null.
+	 */
+	private static function load_cached_core_files() {
+		$version = WPCV_Current_Version_Reader::core_version();
+		$version = null !== $version ? $version : (string) get_bloginfo( 'version' );
+
+		if ( '' === $version ) {
+			return null;
+		}
+
+		$cached = WPCV_Plugin::manifest_cache_repository()->find( WPCV_Manifest_Cache_Repository::SOURCE_CORE, WPCV_Source_Core::current_locale(), $version );
+
+		return null === $cached ? null : $cached['files'];
 	}
 
 	/**

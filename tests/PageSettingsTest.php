@@ -6,6 +6,9 @@
  */
 
 require_once __DIR__ . '/wp-stubs.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
+require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-github-client.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-github-mappings.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-settings.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-run-history.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
@@ -22,6 +25,39 @@ use PHPUnit\Framework\TestCase;
  * クリックして run が作られることの確認は実地検証側の責務.
  */
 class PageSettingsTest extends TestCase {
+
+	/**
+	 * 時・分は常に2桁で表示する(v0.8 §Step2. U8・U9).
+	 *
+	 * @return void
+	 */
+	public function test_format_two_digits_pads_hour_and_minute() {
+		$this->assertSame( '00', WPCV_Page_Settings::format_two_digits( 0 ) );
+		$this->assertSame( '05', WPCV_Page_Settings::format_two_digits( 5 ) );
+		$this->assertSame( '05', WPCV_Page_Settings::format_two_digits( '5' ) );
+		$this->assertSame( '23', WPCV_Page_Settings::format_two_digits( 23 ) );
+		$this->assertSame( '59', WPCV_Page_Settings::format_two_digits( '59' ) );
+	}
+
+	/**
+	 * 1桁の入力は整数で保存され、5 と 05 は同じ値になる(保存値は整数のまま).
+	 *
+	 * @return void
+	 */
+	public function test_single_digit_input_is_stored_as_integer() {
+		unset( $GLOBALS['_wpcv_test_options'] );
+
+		WPCV_Settings::update_run_time( absint( '05' ), absint( '5' ) );
+
+		$this->assertSame(
+			array(
+				'hour'   => 5,
+				'minute' => 5,
+			),
+			WPCV_Settings::get_run_time()
+		);
+		$this->assertSame( '05', WPCV_Page_Settings::format_two_digits( WPCV_Settings::get_run_time()['hour'] ) );
+	}
 
 	/**
 	 * `DISABLE_WP_CRON` が真のとき、ボタンを無効化し案内文を返すことを確認する.
@@ -143,5 +179,91 @@ class PageSettingsTest extends TestCase {
 		// diff: —・alert: — になることの確認.
 		$this->assertStringContainsString( 'diff: —', $summary );
 		$this->assertStringContainsString( 'alert: —', $summary );
+	}
+
+	/**
+	 * 対応付けを捨てた理由が、行番号つきの文言になる(v0.8 §Step7).
+	 *
+	 * @return void
+	 */
+	public function test_format_mapping_error_names_line_and_reason() {
+		$reasons = array(
+			WPCV_GitHub_Mappings::REASON_INVALID_FORMAT,
+			WPCV_GitHub_Mappings::REASON_INVALID_TARGET,
+			WPCV_GitHub_Mappings::REASON_INVALID_REPO,
+			WPCV_GitHub_Mappings::REASON_DUPLICATE_TARGET,
+		);
+
+		$messages = array();
+
+		foreach ( $reasons as $reason ) {
+			$message = WPCV_Page_Settings::format_mapping_error( 7, $reason );
+
+			$this->assertStringContainsString( 'Line 7', $message, $reason );
+			$messages[] = $message;
+		}
+
+		$this->assertCount( 4, array_unique( $messages ) );
+	}
+
+	/**
+	 * フィルターだけが足した対応付けを、設定の対応付けと区別して列挙する.
+	 *
+	 * @return void
+	 */
+	public function test_filter_only_mappings_excludes_stored_targets() {
+		$resolved = array(
+			'plugin:stored'  => array(
+				'repo'  => 'o/stored',
+				'asset' => '',
+			),
+			'plugin:by-code' => array(
+				'repo'  => 'o/by-code',
+				'asset' => '',
+			),
+		);
+		$stored   = array(
+			array(
+				'target' => 'plugin:stored',
+				'repo'   => 'o/stored',
+				'asset'  => '',
+			),
+		);
+
+		$this->assertSame( array( 'plugin:by-code → o/by-code' ), WPCV_Page_Settings::filter_only_mappings( $resolved, $stored ) );
+		$this->assertSame( array(), WPCV_Page_Settings::filter_only_mappings( array(), $stored ) );
+	}
+
+	/**
+	 * コアのマニフェストに `wp-content/themes/{stylesheet}/` があるテーマの対応付けだけを
+	 * 警告の対象にする(R2). プラグインや、コアに無いテーマは対象外. マニフェストが
+	 * キャッシュされていなければ(null)警告しない.
+	 *
+	 * @return void
+	 */
+	public function test_find_core_bundled_themes_uses_core_manifest_paths() {
+		$resolved = array(
+			'theme:twentytwentyfive' => array(
+				'repo'  => 'o/a',
+				'asset' => '',
+			),
+			'theme:custom'           => array(
+				'repo'  => 'o/b',
+				'asset' => '',
+			),
+			'plugin:twentytwentyfive' => array(
+				'repo'  => 'o/c',
+				'asset' => '',
+			),
+		);
+		$core     = array(
+			'wp-content/themes/twentytwentyfive/style.css' => array(),
+			'wp-includes/version.php'                     => array(),
+			'wp-content/themes/twentytwentyfivex/a.css'    => array(),
+		);
+
+		$this->assertSame( array( 'twentytwentyfive' ), WPCV_Page_Settings::find_core_bundled_themes( $resolved, $core ) );
+		$this->assertSame( array(), WPCV_Page_Settings::find_core_bundled_themes( $resolved, null ) );
+		$this->assertSame( array(), WPCV_Page_Settings::find_core_bundled_themes( array(), $core ) );
 	}
 }

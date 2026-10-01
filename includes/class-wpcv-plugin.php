@@ -604,7 +604,8 @@ class WPCV_Plugin {
 			self::diff_dispatcher(),
 			self::update_event_matcher(),
 			self::update_lock_detector(),
-			new WPCV_Source_Wporg_Theme( self::manifest_cache_repository(), null, null, $core_source )
+			new WPCV_Source_Wporg_Theme( self::manifest_cache_repository(), null, null, $core_source ),
+			new WPCV_Source_GitHub( self::manifest_cache_repository(), new WPCV_GitHub_Client() )
 		);
 	}
 

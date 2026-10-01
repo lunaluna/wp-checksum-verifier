@@ -4,7 +4,7 @@ Tags: security, checksum, integrity, malware, audit
 Requires at least: 6.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.7.0
+Stable tag: 0.8.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -14,7 +14,7 @@ WordPress core, plugin, theme, and must-use plugin checksum verifier. Detects ta
 
 WP Checksum Verifier compares the files on disk against official checksum manifests for WordPress core and official plugins, and against manifests built from the WordPress.org zips of official themes, and reports unknown files not present in any manifest (including must-use plugins). It is not published on the WordPress.org Plugin Directory; see README.md for distribution details.
 
-GitHub-hosted plugin/theme verification is not implemented yet; see CHANGELOG.md for progress.
+Plugins and themes distributed through GitHub Releases can be mapped to a repository and verified against the Release asset for the installed version; see README.md (GitHub Releases verification).
 
 = Running a verification =
 

@@ -278,6 +278,26 @@ class UpdateEventRepositoryTest extends TestCase {
 	}
 
 	/**
+	 * `exists_since()`(v0.8 §Step1. §3.3-3)が、同じ target の指定時刻以降(その時刻ちょうどを
+	 * 含む)の記録だけを「あり」と判定することを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_exists_since_matches_same_target_at_or_after_threshold() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Update_Event_Repository( $wpdb, static function () {
+			return '2026-10-01 12:00:05';
+		} );
+
+		$repository->insert( 'plugin:acme-widgets', '1.2.0', 'plugin_update' );
+
+		$this->assertTrue( $repository->exists_since( 'plugin:acme-widgets', '2026-10-01 12:00:00' ) );
+		$this->assertTrue( $repository->exists_since( 'plugin:acme-widgets', '2026-10-01 12:00:05' ) );
+		$this->assertFalse( $repository->exists_since( 'plugin:acme-widgets', '2026-10-01 12:00:06' ) );
+		$this->assertFalse( $repository->exists_since( 'plugin:other', '2026-10-01 12:00:00' ) );
+	}
+
+	/**
 	 * `delete_older_than()` が、しきい値より古い行だけを削除し、新しい行を
 	 * 残すことを確認する.
 	 *

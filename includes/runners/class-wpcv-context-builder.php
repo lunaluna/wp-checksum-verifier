@@ -50,6 +50,10 @@ class WPCV_Context_Builder {
 
 		$context['themes'] = self::describe_themes();
 
+		// v0.8 §Step6: GitHub との対応付け(target_id => repo・asset). Planner は HTTP・DB に
+		// 触れない不変条件なので、設定とフィルターの解決はここで済ませて渡す.
+		$context['github_mappings'] = WPCV_GitHub_Mappings::resolve();
+
 		return $context;
 	}
 

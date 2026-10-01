@@ -4,7 +4,7 @@ Tags: security, checksum, integrity, malware, audit
 Requires at least: 6.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.7.0
+Stable tag: 0.8.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -14,7 +14,7 @@ WordPress のコア・プラグイン・テーマ・MU プラグインの checks
 
 WP Checksum Verifier は、WordPress コア・公式プラグインの公式 checksum マニフェストや、公式テーマの WordPress.org の zip から作ったマニフェストと、実際に配置されているファイルを突き合わせて検証し、どのマニフェストにも存在しない未知のファイル(MU プラグインを含む)も報告します。WordPress.org Plugin Directory には公開していません。配布方法の詳細は README-ja.md を参照してください。
 
-GitHub Releases 上の非公式プラグイン/テーマの照合はまだ未実装です。進捗は CHANGELOG.md を参照してください。
+GitHub Releases で配布しているプラグイン・テーマは、リポジトリに対応付けると、インストール済みバージョンの Release のアセットと照合できます。詳しくは README-ja.md の「GitHub Releases の照合」を参照してください。
 
 = 検証の実行方法 =
 

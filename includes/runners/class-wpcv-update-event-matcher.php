@@ -75,6 +75,21 @@ class WPCV_Update_Event_Matcher {
 	}
 
 	/**
+	 * 指定target に、指定時刻以降の更新イベントがあるかを判定する(v0.8 §Step1. §3.3-3).
+	 *
+	 * D5 の `has_matching_event()` と違い、version・基準 run は見ない. chunk を始めた
+	 * 時刻より後に記録があれば、chunk の途中で更新(同じ version の入れ直しを含む)が
+	 * 入った可能性がある.
+	 *
+	 * @param string $target_id 本体の target_id.
+	 * @param string $since     `Y-m-d H:i:s` 形式の UTC 日時(chunk を始めた時刻).
+	 * @return bool
+	 */
+	public function has_event_since( $target_id, $since ) {
+		return $this->update_event_repository->exists_since( $target_id, $since );
+	}
+
+	/**
 	 * D6: 基準target_runのrun開始が`wpcv_update_events_since`より前(=期間外)かを
 	 * 判定する。基準が引けない・`wpcv_update_events_since`が未設定の場合も安全側で
 	 * `true`(判定不能=期間外と同じ扱い)を返す(`WPCV_Migrator::get_update_events_since()`
