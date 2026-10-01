@@ -55,6 +55,38 @@ class WPCV_Current_Version_Reader {
 	}
 
 	/**
+	 * ヘッダーを含む文字列(ファイルの先頭部分)から `Version` ヘッダーを読む(v0.8 §Step5. D6).
+	 *
+	 * Zip の中のメインファイルの先頭を、ディスクに展開せずに読むための関数. 読み方を
+	 * `get_file_data()` と揃えるため、一時ファイルに書いてそれを読ませる(WordPress の
+	 * ヘッダーの解釈を自前で複製しない).
+	 *
+	 * @param string $head    ファイルの先頭部分(8KB 程度).
+	 * @param string $context `get_file_data()` の第3引数(`plugin`|`theme`).
+	 * @return string|null 一時ファイルを作れない、または `Version` ヘッダーが無ければ null.
+	 */
+	public static function version_from_head( $head, $context ) {
+		if ( ! function_exists( 'wp_tempnam' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/file.php';
+		}
+
+		$tmp = wp_tempnam( 'wpcv-head' );
+
+		if ( ! $tmp ) {
+			return null;
+		}
+
+		try {
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- 一時ファイルへの書き込み(WP_Filesystem の対象外).
+			file_put_contents( $tmp, (string) $head );
+
+			return self::read_header( $tmp, (string) $context );
+		} finally {
+			wp_delete_file( $tmp );
+		}
+	}
+
+	/**
 	 * コアの version を `wp-includes/version.php` から読む.
 	 *
 	 * `include` しない理由は v0.6 §Step6(`.maintenance` の読み方)と同じ: PHPStan が

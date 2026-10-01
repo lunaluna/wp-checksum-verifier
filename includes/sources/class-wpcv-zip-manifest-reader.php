@@ -85,6 +85,40 @@ class WPCV_Zip_Manifest_Reader {
 	}
 
 	/**
+	 * ルートを除いた相対パスのエントリの先頭を読む(v0.8 §Step5. D6).
+	 *
+	 * メインファイルの `Version` ヘッダーを zip から読むための関数. `read()` が成功した zip
+	 * (全エントリの検査済み)にだけ使う前提で、ルートは `read( $path, null, ... )` と同じく
+	 * 「最上位のディレクトリが1つだけ」から求める.
+	 *
+	 * @param string $path     zip のパス.
+	 * @param string $relative ルートを除いた相対パス(`foo.php`・`style.css`).
+	 * @param int    $bytes    読む最大バイト数(ヘッダーは先頭 8KB. `get_file_data()` と同じ).
+	 * @return string|null エントリが無い、または読めなければ null.
+	 */
+	public static function read_entry_head( $path, $relative, $bytes = 8192 ) {
+		$zip = new ZipArchive();
+
+		if ( true !== $zip->open( $path, ZipArchive::CHECKCONS ) ) {
+			return null;
+		}
+
+		try {
+			$root = self::detect_single_root( $zip );
+
+			if ( null === $root ) {
+				return null;
+			}
+
+			$contents = $zip->getFromName( $root . '/' . ltrim( (string) $relative, '/' ), max( 1, (int) $bytes ) );
+
+			return false === $contents ? null : (string) $contents;
+		} finally {
+			$zip->close();
+		}
+	}
+
+	/**
 	 * 最上位のディレクトリが1つだけのとき、その名前を返す(`$root` が null のとき用).
 	 *
 	 * `__MACOSX/` は数えない. 最上位にファイルが直接ある場合は、その名前が「ルート」として
