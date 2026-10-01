@@ -7,6 +7,8 @@
 
 require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
+require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-github-client.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-github-mappings.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-settings.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-run-history.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
@@ -177,5 +179,91 @@ class PageSettingsTest extends TestCase {
 		// diff: —・alert: — になることの確認.
 		$this->assertStringContainsString( 'diff: —', $summary );
 		$this->assertStringContainsString( 'alert: —', $summary );
+	}
+
+	/**
+	 * 対応付けを捨てた理由が、行番号つきの文言になる(v0.8 §Step7).
+	 *
+	 * @return void
+	 */
+	public function test_format_mapping_error_names_line_and_reason() {
+		$reasons = array(
+			WPCV_GitHub_Mappings::REASON_INVALID_FORMAT,
+			WPCV_GitHub_Mappings::REASON_INVALID_TARGET,
+			WPCV_GitHub_Mappings::REASON_INVALID_REPO,
+			WPCV_GitHub_Mappings::REASON_DUPLICATE_TARGET,
+		);
+
+		$messages = array();
+
+		foreach ( $reasons as $reason ) {
+			$message = WPCV_Page_Settings::format_mapping_error( 7, $reason );
+
+			$this->assertStringContainsString( 'Line 7', $message, $reason );
+			$messages[] = $message;
+		}
+
+		$this->assertCount( 4, array_unique( $messages ) );
+	}
+
+	/**
+	 * フィルターだけが足した対応付けを、設定の対応付けと区別して列挙する.
+	 *
+	 * @return void
+	 */
+	public function test_filter_only_mappings_excludes_stored_targets() {
+		$resolved = array(
+			'plugin:stored'  => array(
+				'repo'  => 'o/stored',
+				'asset' => '',
+			),
+			'plugin:by-code' => array(
+				'repo'  => 'o/by-code',
+				'asset' => '',
+			),
+		);
+		$stored   = array(
+			array(
+				'target' => 'plugin:stored',
+				'repo'   => 'o/stored',
+				'asset'  => '',
+			),
+		);
+
+		$this->assertSame( array( 'plugin:by-code → o/by-code' ), WPCV_Page_Settings::filter_only_mappings( $resolved, $stored ) );
+		$this->assertSame( array(), WPCV_Page_Settings::filter_only_mappings( array(), $stored ) );
+	}
+
+	/**
+	 * コアのマニフェストに `wp-content/themes/{stylesheet}/` があるテーマの対応付けだけを
+	 * 警告の対象にする(R2). プラグインや、コアに無いテーマは対象外. マニフェストが
+	 * キャッシュされていなければ(null)警告しない.
+	 *
+	 * @return void
+	 */
+	public function test_find_core_bundled_themes_uses_core_manifest_paths() {
+		$resolved = array(
+			'theme:twentytwentyfive' => array(
+				'repo'  => 'o/a',
+				'asset' => '',
+			),
+			'theme:custom'           => array(
+				'repo'  => 'o/b',
+				'asset' => '',
+			),
+			'plugin:twentytwentyfive' => array(
+				'repo'  => 'o/c',
+				'asset' => '',
+			),
+		);
+		$core     = array(
+			'wp-content/themes/twentytwentyfive/style.css' => array(),
+			'wp-includes/version.php'                     => array(),
+			'wp-content/themes/twentytwentyfivex/a.css'    => array(),
+		);
+
+		$this->assertSame( array( 'twentytwentyfive' ), WPCV_Page_Settings::find_core_bundled_themes( $resolved, $core ) );
+		$this->assertSame( array(), WPCV_Page_Settings::find_core_bundled_themes( $resolved, null ) );
+		$this->assertSame( array(), WPCV_Page_Settings::find_core_bundled_themes( array(), $core ) );
 	}
 }

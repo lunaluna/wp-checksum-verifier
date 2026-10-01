@@ -283,7 +283,7 @@ class WPCV_Run_Planner {
 			$mu_plugins = isset( $context['mu_plugins'] ) ? (array) $context['mu_plugins'] : array();
 			$dimension  = WPCV_Target_Resolver::DIMENSION_MUPLUGIN;
 
-			// §3.6: loader ごとの target(wp.org/GitHub マッピング未実装のため、
+			// §3.6: loader ごとの target(wp.org にも GitHub の対応付け〔v0.8 では対象外〕にも載らないため、
 			// 現時点では検証の結果は必ず unverifiable になるが、その判定自体は
 			// Step3のchunk verifierが行う。ここではqueuedとして列挙するのみ).
 			foreach ( array_keys( $mu_plugins ) as $basename ) {

@@ -732,7 +732,7 @@ class WPCV_Chunk_Dispatcher {
 		}
 
 		if ( WPCV_Target_Resolver::DIMENSION_MUPLUGIN === $dimension ) {
-			// §3.6: wp.org/GitHub マッピング未実装のため、loaderは常にunverifiable/
+			// §3.6: MU プラグインの loader は wp.org にも GitHub の対応付け(v0.8 では対象外)にも載らないため、常にunverifiable/
 			// unknown_source(`WPCV_Verifier::verify_muplugin_area()` と同じ挙動).
 			// chunk処理を伴わないため即時終端化する.
 			$this->target_run_repository->finalize_immediate(
@@ -2080,7 +2080,7 @@ class WPCV_Chunk_Dispatcher {
 	 * @param array                $manifest_context `$source->get_manifest()` に渡すcontext.
 	 * @param string               $base_dir        manifestの相対パスを解決する基準ディレクトリ.
 	 * @param string               $version         今回dispatcherが観測した「現在の」version.
-	 * @param string               $source_label     findings.source に記録する値(常に `wporg`).
+	 * @param string               $source_label     findings.source に記録する値(`wporg`|`github`. v0.8 §Step6 で `github` を追加).
 	 * @param callable|null        $filter_files     マニフェストの `files` を照合の前に絞り込む
 	 *                                               callable(v0.7 §Step4. コアの照合から
 	 *                                               `wp-content/themes/` を外すのに使う).
