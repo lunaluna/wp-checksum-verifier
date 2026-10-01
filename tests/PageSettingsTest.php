@@ -6,6 +6,7 @@
  */
 
 require_once __DIR__ . '/wp-stubs.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-settings.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-run-history.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
@@ -22,6 +23,39 @@ use PHPUnit\Framework\TestCase;
  * クリックして run が作られることの確認は実地検証側の責務.
  */
 class PageSettingsTest extends TestCase {
+
+	/**
+	 * 時・分は常に2桁で表示する(v0.8 §Step2. U8・U9).
+	 *
+	 * @return void
+	 */
+	public function test_format_two_digits_pads_hour_and_minute() {
+		$this->assertSame( '00', WPCV_Page_Settings::format_two_digits( 0 ) );
+		$this->assertSame( '05', WPCV_Page_Settings::format_two_digits( 5 ) );
+		$this->assertSame( '05', WPCV_Page_Settings::format_two_digits( '5' ) );
+		$this->assertSame( '23', WPCV_Page_Settings::format_two_digits( 23 ) );
+		$this->assertSame( '59', WPCV_Page_Settings::format_two_digits( '59' ) );
+	}
+
+	/**
+	 * 1桁の入力は整数で保存され、5 と 05 は同じ値になる(保存値は整数のまま).
+	 *
+	 * @return void
+	 */
+	public function test_single_digit_input_is_stored_as_integer() {
+		unset( $GLOBALS['_wpcv_test_options'] );
+
+		WPCV_Settings::update_run_time( absint( '05' ), absint( '5' ) );
+
+		$this->assertSame(
+			array(
+				'hour'   => 5,
+				'minute' => 5,
+			),
+			WPCV_Settings::get_run_time()
+		);
+		$this->assertSame( '05', WPCV_Page_Settings::format_two_digits( WPCV_Settings::get_run_time()['hour'] ) );
+	}
 
 	/**
 	 * `DISABLE_WP_CRON` が真のとき、ボタンを無効化し案内文を返すことを確認する.

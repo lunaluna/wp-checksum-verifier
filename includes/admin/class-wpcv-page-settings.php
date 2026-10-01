@@ -163,9 +163,9 @@ class WPCV_Page_Settings {
 							<label for="wpcv_run_hour"><?php echo esc_html__( 'Daily run time (UTC)', 'wp-checksum-verifier' ); ?></label>
 						</th>
 						<td>
-							<input type="number" min="0" max="23" step="1" name="wpcv_run_hour" id="wpcv_run_hour" value="<?php echo esc_attr( (string) $run_time['hour'] ); ?>" style="width: 4em;" />
+							<input type="number" min="0" max="23" step="1" name="wpcv_run_hour" id="wpcv_run_hour" value="<?php echo esc_attr( self::format_two_digits( $run_time['hour'] ) ); ?>" style="width: 4em;" />
 							:
-							<input type="number" min="0" max="59" step="1" name="wpcv_run_minute" id="wpcv_run_minute" value="<?php echo esc_attr( (string) $run_time['minute'] ); ?>" style="width: 4em;" />
+							<input type="number" min="0" max="59" step="1" name="wpcv_run_minute" id="wpcv_run_minute" value="<?php echo esc_attr( self::format_two_digits( $run_time['minute'] ) ); ?>" style="width: 4em;" />
 							<p class="description">
 								<?php echo esc_html__( 'The verification run starts automatically at this time every day (UTC). External HTTP mode (below) also uses this time to decide when to start the daily run.', 'wp-checksum-verifier' ); ?>
 							</p>
@@ -383,6 +383,21 @@ class WPCV_Page_Settings {
 			'disabled' => false,
 			'notice'   => null,
 		);
+	}
+
+	/**
+	 * 時・分を常に2桁の文字列にする(例: 5 → `05`, 0 → `00`).
+	 *
+	 * 保存する値は整数のままで、2桁にするのは表示だけ(v0.8 §Step2. U8・U9).
+	 * `type="number"` の入力欄でも、`value` の文字列 `05` はそのまま表示される
+	 * (Chrome で確認. 2026-10-01). 1桁で入力された値は保存時に整数になり、
+	 * 次の表示から 0 が補われる(`05` と `5` は同じ値).
+	 *
+	 * @param int|string $number 時または分.
+	 * @return string 2桁(3桁以上の値はそのまま).
+	 */
+	public static function format_two_digits( $number ) {
+		return sprintf( '%02d', (int) $number );
 	}
 
 	/**
