@@ -146,11 +146,14 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-file-hash
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-path-normalizer.php';
 
 /**
- * 照合ソース(§3). コア照合(§3.2)と wp.org 公式プラグイン照合(§3.4).
+ * 照合ソース(§3). コア照合(§3.2)と wp.org 公式プラグイン照合(§3.4)、
+ * wp.org 公式テーマ照合(v0.7 §3.2. zip から作ったマニフェストを
+ * `WPCV_Manifest_Cache_Repository` に保存する).
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/interface-wpcv-manifest-source.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-core.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-wporg-plugin.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-wporg-theme.php';
 
 /**
  * Chunk予算(時間・件数・メモリ)判定の共有ロジック(v0.4.0コードレビューCR-08是正)。

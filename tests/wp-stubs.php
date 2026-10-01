@@ -1239,3 +1239,31 @@ if ( ! function_exists( 'network_admin_url' ) ) {
 		return 'http://example.com/wp-admin/network/' . ltrim( $path, '/' );
 	}
 }
+
+if ( ! function_exists( 'wp_parse_url' ) ) {
+	/**
+	 * Stub wp_parse_url() — PHP の parse_url() をそのまま呼ぶ(v0.7 §Step2.
+	 * `WPCV_Source_Wporg_Theme` の Update URI のホスト判定用. 本物は PHP 5.4.7 より
+	 * 前の不具合の回避を含むが、テストの PHP では不要).
+	 *
+	 * @param string $url       URL.
+	 * @param int    $component 取り出す部分(`PHP_URL_*`). -1 なら全体.
+	 * @return mixed
+	 */
+	function wp_parse_url( $url, $component = -1 ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return parse_url( $url, $component ); // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url
+	}
+}
+
+if ( ! function_exists( 'wp_delete_file' ) ) {
+	/**
+	 * Stub wp_delete_file() — ファイルを消す(v0.7 §Step2. 本物は
+	 * `wp_delete_file` フィルターを通してから unlink() する).
+	 *
+	 * @param string $file 消すファイルのパス.
+	 * @return void
+	 */
+	function wp_delete_file( $file ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		@unlink( $file ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.unlink_unlink
+	}
+}
