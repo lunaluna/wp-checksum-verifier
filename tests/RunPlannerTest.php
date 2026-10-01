@@ -451,8 +451,9 @@ class RunPlannerTest extends TestCase {
 	}
 
 	/**
-	 * テーマごとに本体(`theme:{stylesheet}`. source = wporg)と `:_stat`(source = stat)が
-	 * この順で、プラグインの後・MU プラグインの前に列挙されることを確認する(v0.7 §3.3).
+	 * テーマごとに本体(`theme:{stylesheet}`. source = wporg)・`:_stat`(source = stat)・
+	 * `:_scan`(v0.7 §Step5)がこの順で、プラグインの後・MU プラグインの前に列挙される
+	 * ことを確認する(v0.7 §3.3).
 	 * Version が空のテーマは version を null にする(照合ソースが `version_unknown` を返す).
 	 * 入れ子のテーマ(`dir/sub`)も target_id にそのまま入る.
 	 *
@@ -484,8 +485,10 @@ class RunPlannerTest extends TestCase {
 				'plugin:akismet:_stat',
 				'theme:twentytwentyfive',
 				'theme:twentytwentyfive:_stat',
+				'theme:twentytwentyfive:_scan',
 				'theme:collection/acme',
 				'theme:collection/acme:_stat',
+				'theme:collection/acme:_scan',
 				'muplugin:_scan',
 			),
 			array_column( $target_runs, 'target_id' )
@@ -501,9 +504,16 @@ class RunPlannerTest extends TestCase {
 		$this->assertSame( '1.5', $target_runs[7]['version'] );
 		$this->assertSame( 'stat', $target_runs[7]['source'] );
 
-		$this->assertSame( 'collection/acme', $target_runs[8]['slug'] );
-		$this->assertNull( $target_runs[8]['version'] );
+		// `:_scan`(v0.7 §Step5)も本体と同じ dimension/slug/version を持つ.
+		$this->assertSame( 'theme', $target_runs[8]['dimension'] );
+		$this->assertSame( 'twentytwentyfive', $target_runs[8]['slug'] );
+		$this->assertSame( '1.5', $target_runs[8]['version'] );
+		$this->assertSame( 'wporg', $target_runs[8]['source'] );
+
+		$this->assertSame( 'collection/acme', $target_runs[9]['slug'] );
 		$this->assertNull( $target_runs[9]['version'] );
+		$this->assertNull( $target_runs[10]['version'] );
+		$this->assertNull( $target_runs[11]['version'] );
 	}
 
 	/**
@@ -522,10 +532,12 @@ class RunPlannerTest extends TestCase {
 
 		$this->assertContains( 'theme:acme', array_column( $target_runs, 'target_id' ) );
 		$this->assertNotContains( 'theme:acme:_stat', array_column( $target_runs, 'target_id' ) );
+		// `:_scan` は stat ではないので、stat 差分検知を無効にしても列挙する(v0.7 §Step5).
+		$this->assertContains( 'theme:acme:_scan', array_column( $target_runs, 'target_id' ) );
 	}
 
 	/**
-	 * テーマに `exclude_target` ルールがあれば、本体と `:_stat` がどちらも skipped/excluded に
+	 * テーマに `exclude_target` ルールがあれば、本体・`:_stat`・`:_scan` がすべて skipped/excluded に
 	 * なる(dimension を決め打ちしていないので、テーマにもそのまま効く. v0.7 §3.3).
 	 *
 	 * @return void
@@ -555,7 +567,7 @@ class RunPlannerTest extends TestCase {
 
 		$by_id = array_column( $target_runs, null, 'target_id' );
 
-		foreach ( array( 'theme:acme', 'theme:acme:_stat' ) as $target_id ) {
+		foreach ( array( 'theme:acme', 'theme:acme:_stat', 'theme:acme:_scan' ) as $target_id ) {
 			$this->assertSame( 'skipped', $by_id[ $target_id ]['status'] );
 			$this->assertSame( WPCV_Error_Code::EXCLUDED, $by_id[ $target_id ]['error_code'] );
 		}

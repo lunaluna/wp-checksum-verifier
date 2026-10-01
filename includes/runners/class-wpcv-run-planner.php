@@ -65,7 +65,8 @@ if ( ! defined( 'ABSPATH' ) ) {
  * docblock「ファイルシステムアクセスを一切行わない」不変条件のまま。
  * `WPCV_Chunk_Dispatcher` が dispatch 時点で絞り込む).
  * v0.7 §Step3 で、プラグインの後にテーマ(`theme:{stylesheet}` と `:_stat`)を
- * 列挙するようにした(`$context['themes']`. テーマの数 × 2 件増える).
+ * 列挙するようにした(`$context['themes']`). §Step5 で `:_scan` も足した
+ * (テーマの数 × 3 件増える. stat 差分検知が無効なら × 2).
  */
 class WPCV_Run_Planner {
 
@@ -229,10 +230,10 @@ class WPCV_Run_Planner {
 		}
 
 		// v0.7 §3.3(D5): テーマごとに本体(`theme:{stylesheet}`. WordPress.org の zip と
-		// 照合)と、stat 差分検知が有効なら `:_stat` を列挙する(プラグインと同じ並び).
-		// WordPress.org と照合しない条件(D6)の判定は、ここではなく照合ソースが行う
-		// (version の空・入れ子・Update URI. どれも HTTP を出さずに unverifiable になり、
-		// `:_stat` が走査する). 未知ファイル走査の `:_scan` は v0.7 Step5 で足す.
+		// 照合)、stat 差分検知が有効なら `:_stat`、未知ファイル走査の `:_scan`(Step5)を
+		// この順で列挙する. WordPress.org と照合しない条件(D6)の判定は、ここではなく
+		// 照合ソースが行う(version の空・入れ子・Update URI. どれも HTTP を出さずに
+		// unverifiable になり、`:_stat` が走査する).
 		$themes = isset( $context['themes'] ) ? (array) $context['themes'] : array();
 
 		foreach ( $themes as $stylesheet => $theme ) {
@@ -252,6 +253,20 @@ class WPCV_Run_Planner {
 			if ( $this->stat_detection_enabled ) {
 				$target_runs[] = $this->maybe_apply_exclude_target( self::queued_stat_target_run( $body_target_id, WPCV_Target_Resolver::DIMENSION_THEME, (string) $stylesheet, $theme_version ) );
 			}
+
+			// v0.7 §Step5(D8・U5): 未知ファイルの走査. 本体が wp.org と照合できたとき
+			// だけ走査する判定は dispatcher が行う(ここでは無条件に列挙する). stat ではない
+			// ので `stat_detection_enabled` とは無関係. 本体と同じ dimension/slug を持つ
+			// ので、本体の `exclude_target` もそのまま効く.
+			$target_runs[] = $this->maybe_apply_exclude_target(
+				self::queued_target_run(
+					WPCV_Target_Resolver::build_scan_id( $body_target_id ),
+					WPCV_Target_Resolver::DIMENSION_THEME,
+					(string) $stylesheet,
+					'' === $theme_version ? null : $theme_version,
+					'wporg'
+				)
+			);
 		}
 
 		if ( ! empty( $context['mu_plugin_dir'] ) ) {

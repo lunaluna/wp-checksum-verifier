@@ -634,4 +634,116 @@ class ThemeTargetDispatchTest extends TestCase {
 		// 入っていない gone テーマの欠落は v0.5 U2 のとおり出さない.
 		$this->assertSame( array( 'wp-content/themes/acme/style.css', 'wp-login.php' ), $core_paths );
 	}
+
+	/**
+	 * D8・U5(v0.7 §Step5): wp.org と照合できたテーマは `:_scan` が走査し、zip に無い
+	 * ファイルを `added` として出す(PHP は high、それ以外は medium). zip にあるファイルは
+	 * 出さない. 消せば次の run では出ない.
+	 *
+	 * @return void
+	 */
+	public function test_scan_reports_files_not_in_zip_for_verified_theme() {
+		$this->put_theme_file( 'acme', 'style.css', 'css' );
+		$this->put_theme_file( 'acme', 'inc/backdoor.php', '<?php // x' );
+		$this->put_theme_file( 'acme', 'notes.txt', 'memo' );
+
+		$made    = wpcv_test_make_fake_environment(
+			null,
+			null,
+			null,
+			null,
+			$this->theme_source( array( 'acme' => self::ok_manifest( array( 'style.css' => 'css' ) ) ) )
+		);
+		$context = $this->context_with_themes( array( 'acme' => array( 'version' => '1.2' ) ) );
+
+		$this->reserve_and_run( $made, $context );
+
+		$scan = $this->find_target_run( $made, 'theme:acme:_scan' );
+		$this->assertSame( WPCV_Target_Status::SUCCESS, $scan['status'] );
+		$this->assertSame( 'theme', $scan['dimension'] );
+		$this->assertSame( 'acme', $scan['slug'] );
+
+		$findings = array_column( $this->findings_of( $made, 'theme:acme:_scan' ), null, 'path' );
+		ksort( $findings );
+
+		$this->assertSame( array( 'wp-content/themes/acme/inc/backdoor.php', 'wp-content/themes/acme/notes.txt' ), array_keys( $findings ) );
+		$this->assertSame( 'added', $findings['wp-content/themes/acme/inc/backdoor.php']['status'] );
+		$this->assertSame( 'high', $findings['wp-content/themes/acme/inc/backdoor.php']['severity'] );
+		$this->assertSame( 'medium', $findings['wp-content/themes/acme/notes.txt']['severity'] );
+		$this->assertSame( '1.2', $findings['wp-content/themes/acme/notes.txt']['version'] );
+
+		unlink( $this->theme_dir( 'acme' ) . '/inc/backdoor.php' );
+		unlink( $this->theme_dir( 'acme' ) . '/notes.txt' );
+
+		$this->reserve_and_run( $made, $context );
+
+		$this->assertSame( array(), $this->findings_of( $made, 'theme:acme:_scan', 2 ) );
+	}
+
+	/**
+	 * コア同梱テーマでは、コアのマニフェストにだけあるファイル(zip には無い)を
+	 * 未知として出さない(D7 と合わせた既知のファイルの集合. v0.7 §Step5).
+	 *
+	 * @return void
+	 */
+	public function test_scan_treats_core_only_files_of_bundled_theme_as_known() {
+		$this->put_theme_file( 'acme', 'style.css', 'css' );
+		$this->put_theme_file( 'acme', 'core-only.php', 'from core package' );
+		$this->put_theme_file( 'acme', 'unknown.php', 'x' );
+
+		$core = new WPCV_Test_Fake_Manifest_Source(
+			array(
+				'manifest_status' => 'ok',
+				'error_code'      => null,
+				'files'           => array(
+					'wp-content/themes/acme/core-only.php' => array(
+						'algorithm' => 'md5',
+						'hashes'    => array( md5( 'from core package' ) ),
+					),
+				),
+			)
+		);
+
+		$made = wpcv_test_make_fake_environment(
+			$core,
+			null,
+			null,
+			null,
+			$this->theme_source( array( 'acme' => self::ok_manifest( array( 'style.css' => 'css' ) ) ) )
+		);
+
+		$this->reserve_and_run( $made, $this->context_with_themes( array( 'acme' => array() ) ) );
+
+		$this->assertSame(
+			array( 'wp-content/themes/acme/unknown.php' ),
+			array_column( $this->findings_of( $made, 'theme:acme:_scan' ), 'path' )
+		);
+	}
+
+	/**
+	 * 本体が照合できなかったテーマは `:_scan` を走査せず、本体の error_code を引き継いで
+	 * skipped になる(追加されたファイルは `:_stat` が出すので二重に出さない. D8).
+	 *
+	 * @return void
+	 */
+	public function test_scan_is_skipped_when_body_is_not_verified() {
+		$this->put_theme_file( 'custom', 'style.css', 'css' );
+		$this->put_theme_file( 'custom', 'extra.php', '<?php' );
+
+		$made = wpcv_test_make_fake_environment(
+			null,
+			null,
+			null,
+			null,
+			$this->theme_source( array( 'custom' => self::missing_manifest( WPCV_Error_Code::MANIFEST_NOT_FOUND ) ) )
+		);
+
+		$this->reserve_and_run( $made, $this->context_with_themes( array( 'custom' => array() ) ) );
+
+		$scan = $this->find_target_run( $made, 'theme:custom:_scan' );
+
+		$this->assertSame( WPCV_Target_Status::SKIPPED, $scan['status'] );
+		$this->assertSame( WPCV_Error_Code::MANIFEST_NOT_FOUND, $scan['error_code'] );
+		$this->assertSame( array(), $this->findings_of( $made, 'theme:custom:_scan' ) );
+	}
 }

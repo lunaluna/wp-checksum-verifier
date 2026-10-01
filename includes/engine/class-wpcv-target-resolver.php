@@ -176,6 +176,56 @@ class WPCV_Target_Resolver {
 	}
 
 	/**
+	 * 本体ごとの未知ファイル走査 target の target_id に付ける接尾辞(v0.7 §Step5. D8).
+	 *
+	 * @var string
+	 */
+	const SCAN_SUFFIX = ':_scan';
+
+	/**
+	 * 本体 target の target_id から、その本体の未知ファイル走査 target の target_id
+	 * (`{dimension}:{slug}:_scan`)を作る(v0.7 §Step5. テーマ専用).
+	 *
+	 * `core:_scan`・`muplugin:_scan` は領域全体の走査で、slug が `_scan` の合成 target
+	 * (本体を持たない)。こちらは本体と同じ dimension/slug を持ち(抑制ルールを共有する
+	 * ため. `build_stat_id()` と同じ考え方)、target_id の接尾辞だけで区別する.
+	 *
+	 * @param string $body_target_id 本体 target の target_id(`theme:{stylesheet}`).
+	 * @return string
+	 */
+	public static function build_scan_id( $body_target_id ) {
+		return $body_target_id . self::SCAN_SUFFIX;
+	}
+
+	/**
+	 * 本体ごとの未知ファイル走査 target の target_id から、本体の target_id を取り出す
+	 * (v0.7 §Step5).
+	 *
+	 * `core:_scan`・`muplugin:_scan`(領域全体の走査. 本体を持たない)は対象外で、
+	 * null を返す.
+	 *
+	 * @param string $target_id 判定対象.
+	 * @return string|null 本体の target_id. 本体ごとの走査 target でなければ null.
+	 */
+	public static function body_id_of_scan( $target_id ) {
+		$suffix_length = strlen( self::SCAN_SUFFIX );
+
+		if ( strlen( $target_id ) <= $suffix_length || self::SCAN_SUFFIX !== substr( $target_id, -$suffix_length ) ) {
+			return null;
+		}
+
+		$body_id = substr( $target_id, 0, -$suffix_length );
+
+		// `core:_scan` → `core`、`muplugin:_scan` → `muplugin` は本体の target_id ではない
+		// (`muplugin` には区切りの `:` が無く、`core` は素のコアの照合 target).
+		if ( false === strpos( $body_id, ':' ) ) {
+			return null;
+		}
+
+		return $body_id;
+	}
+
+	/**
 	 * 検証対象の target_id を dimension と identifier に分解する.
 	 *
 	 * @param string $target_id build_id() が生成した形式の文字列.
