@@ -64,6 +64,8 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 見ずに常に列挙する。実在するファイルの絞り込みはここでは行わない(クラス
  * docblock「ファイルシステムアクセスを一切行わない」不変条件のまま。
  * `WPCV_Chunk_Dispatcher` が dispatch 時点で絞り込む).
+ * v0.7 §Step3 で、プラグインの後にテーマ(`theme:{stylesheet}` と `:_stat`)を
+ * 列挙するようにした(`$context['themes']`. テーマの数 × 2 件増える).
  */
 class WPCV_Run_Planner {
 
@@ -123,6 +125,9 @@ class WPCV_Run_Planner {
 	 *                                 MU プラグイン領域を列挙しない.
 	 *     @type array  $mu_plugins    `get_mu_plugins()` と同じ形式(ファイル名 =>
 	 *                                 ヘッダー配列。キーのみ使う). 既定は空配列.
+	 *     @type array  $themes        stylesheet => `version` 等(v0.7 §Step3.
+	 *                                 `WPCV_Context_Builder::describe_themes()` の形).
+	 *                                 既定は空配列.
 	 * }
 	 * @return array `WPCV_Target_Status::QUEUED` 状態の target_run の配列
 	 *               (id/run_id 無し。§5.3 のスキーマに準拠).
@@ -220,6 +225,32 @@ class WPCV_Run_Planner {
 
 			if ( $this->stat_detection_enabled ) {
 				$target_runs[] = $this->maybe_apply_exclude_target( self::queued_stat_target_run( $body_target_id, WPCV_Target_Resolver::DIMENSION_PLUGIN, $resolved['slug'], $plugin_version ) );
+			}
+		}
+
+		// v0.7 §3.3(D5): テーマごとに本体(`theme:{stylesheet}`. WordPress.org の zip と
+		// 照合)と、stat 差分検知が有効なら `:_stat` を列挙する(プラグインと同じ並び).
+		// WordPress.org と照合しない条件(D6)の判定は、ここではなく照合ソースが行う
+		// (version の空・入れ子・Update URI. どれも HTTP を出さずに unverifiable になり、
+		// `:_stat` が走査する). 未知ファイル走査の `:_scan` は v0.7 Step5 で足す.
+		$themes = isset( $context['themes'] ) ? (array) $context['themes'] : array();
+
+		foreach ( $themes as $stylesheet => $theme ) {
+			$theme_version  = isset( $theme['version'] ) ? (string) $theme['version'] : '';
+			$body_target_id = WPCV_Target_Resolver::build_id( WPCV_Target_Resolver::DIMENSION_THEME, (string) $stylesheet );
+
+			$target_runs[] = $this->maybe_apply_exclude_target(
+				self::queued_target_run(
+					$body_target_id,
+					WPCV_Target_Resolver::DIMENSION_THEME,
+					(string) $stylesheet,
+					'' === $theme_version ? null : $theme_version,
+					'wporg'
+				)
+			);
+
+			if ( $this->stat_detection_enabled ) {
+				$target_runs[] = $this->maybe_apply_exclude_target( self::queued_stat_target_run( $body_target_id, WPCV_Target_Resolver::DIMENSION_THEME, (string) $stylesheet, $theme_version ) );
 			}
 		}
 

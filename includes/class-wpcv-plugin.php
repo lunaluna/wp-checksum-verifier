@@ -174,6 +174,14 @@ class WPCV_Plugin {
 	private static $update_lock_detector = null;
 
 	/**
+	 * 組み立て済みの `WPCV_Manifest_Cache_Repository`(1リクエスト内で使い回す.
+	 * v0.7 §Step3).
+	 *
+	 * @var WPCV_Manifest_Cache_Repository|null
+	 */
+	private static $manifest_cache_repository = null;
+
+	/**
 	 * 本番用に配線された `WPCV_Run_Coordinator` を返す.
 	 *
 	 * @return WPCV_Run_Coordinator
@@ -422,6 +430,23 @@ class WPCV_Plugin {
 	}
 
 	/**
+	 * 本番用に配線された `WPCV_Manifest_Cache_Repository` を返す(v0.7 §Step3.
+	 * テーマのマニフェストのキャッシュ. Step4 でコアのマニフェスト、Step7 で
+	 * run 終端の掃除からも使う).
+	 *
+	 * @return WPCV_Manifest_Cache_Repository
+	 */
+	public static function manifest_cache_repository() {
+		if ( null === self::$manifest_cache_repository ) {
+			global $wpdb;
+
+			self::$manifest_cache_repository = new WPCV_Manifest_Cache_Repository( $wpdb );
+		}
+
+		return self::$manifest_cache_repository;
+	}
+
+	/**
 	 * `upgrader_process_complete`フックのハンドラ(v0.6 §Step2.
 	 * `WPCV_Update_Event_Recorder`が実際の判定・記録を行う.
 	 * `includes/runners/class-wpcv-update-event-recorder.php`の末尾で登録する.
@@ -540,7 +565,8 @@ class WPCV_Plugin {
 			self::file_state_repository(),
 			self::diff_dispatcher(),
 			self::update_event_matcher(),
-			self::update_lock_detector()
+			self::update_lock_detector(),
+			new WPCV_Source_Wporg_Theme( self::manifest_cache_repository() )
 		);
 	}
 

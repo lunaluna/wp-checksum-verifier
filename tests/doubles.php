@@ -1052,6 +1052,9 @@ class WPCV_Test_Fake_WPDB {
  *                                                          のクラス docblock 参照).
  * @param WPCV_Update_Event_Matcher|null $update_event_matcher   D5・D6の突き合わせ(v0.6 §Step4).
  *                                                          省略時は`null`(既存v0.5の挙動のまま).
+ * @param WPCV_Manifest_Source|null      $theme_source           公式テーマ照合ソース(v0.7 §Step3).
+ *                                                          省略時は`null`(テーマの本体は
+ *                                                          unknown_sourceになる).
  * @return array{
  *     coordinator: WPCV_Run_Coordinator,
  *     dispatcher: WPCV_Chunk_Dispatcher,
@@ -1066,7 +1069,7 @@ class WPCV_Test_Fake_WPDB {
  *     wpdb: WPCV_Test_Fake_WPDB,
  * }
  */
-function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = null, $continuation_scheduler = null, ?WPCV_Update_Event_Matcher $update_event_matcher = null ) {
+function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = null, $continuation_scheduler = null, ?WPCV_Update_Event_Matcher $update_event_matcher = null, ?WPCV_Manifest_Source $theme_source = null ) {
 	$core_source   = $core_source ?? new WPCV_Test_Fake_Manifest_Source(
 		array(
 			'manifest_status' => 'ok',
@@ -1120,7 +1123,9 @@ function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = 
 		},
 		$file_state_repository,
 		null,
-		$update_event_matcher
+		$update_event_matcher,
+		null,
+		$theme_source
 	);
 
 	$coordinator = new WPCV_Run_Coordinator( new WPCV_Run_Planner( $suppression_repository ), $run_repository, $target_run_repository, $dispatcher );

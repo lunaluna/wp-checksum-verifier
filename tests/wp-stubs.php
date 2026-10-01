@@ -1267,3 +1267,90 @@ if ( ! function_exists( 'wp_delete_file' ) ) {
 		@unlink( $file ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.unlink_unlink
 	}
 }
+
+if ( ! class_exists( 'WPCV_Test_Fake_Theme' ) ) {
+	/**
+	 * `WP_Theme` の代わり(v0.7 §Step3. `WPCV_Context_Builder::describe_themes()` が
+	 * 呼ぶメソッドだけを持つ).
+	 */
+	class WPCV_Test_Fake_Theme {
+
+		/**
+		 * ヘッダー値(`Version`・`UpdateURI` など).
+		 *
+		 * @var array<string, string>
+		 */
+		private $headers;
+
+		/**
+		 * 親テーマの stylesheet.
+		 *
+		 * @var string
+		 */
+		private $template;
+
+		/**
+		 * テーマのディレクトリ.
+		 *
+		 * @var string
+		 */
+		private $stylesheet_dir;
+
+		/**
+		 * コンストラクタ.
+		 *
+		 * @param array  $headers        ヘッダー値.
+		 * @param string $template       親テーマの stylesheet.
+		 * @param string $stylesheet_dir テーマのディレクトリ.
+		 */
+		public function __construct( array $headers, $template, $stylesheet_dir ) {
+			$this->headers        = $headers;
+			$this->template       = $template;
+			$this->stylesheet_dir = $stylesheet_dir;
+		}
+
+		/**
+		 * ヘッダー値を返す(無ければ空文字列. 本物は false を返す場合がある).
+		 *
+		 * @param string $header ヘッダー名.
+		 * @return string
+		 */
+		public function get( $header ) {
+			return $this->headers[ $header ] ?? '';
+		}
+
+		/**
+		 * 親テーマの stylesheet を返す.
+		 *
+		 * @return string
+		 */
+		public function get_template() {
+			return $this->template;
+		}
+
+		/**
+		 * テーマのディレクトリを返す.
+		 *
+		 * @return string
+		 */
+		public function get_stylesheet_directory() {
+			return $this->stylesheet_dir;
+		}
+	}
+}
+
+if ( ! function_exists( 'wp_get_themes' ) ) {
+	/**
+	 * Stub wp_get_themes() — `$GLOBALS['_wpcv_test_themes']`(stylesheet =>
+	 * `WPCV_Test_Fake_Theme`)を返す. 渡された引数は `$GLOBALS['_wpcv_test_wp_get_themes_args']`
+	 * に記録する(v0.7 §Step3. `errors => null` で呼んでいるかを確かめるため).
+	 *
+	 * @param array $args 引数.
+	 * @return array
+	 */
+	function wp_get_themes( $args = array() ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_wp_get_themes_args'] = $args;
+
+		return $GLOBALS['_wpcv_test_themes'] ?? array();
+	}
+}

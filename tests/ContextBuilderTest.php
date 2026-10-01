@@ -22,7 +22,19 @@ class ContextBuilderTest extends TestCase {
 	 */
 	protected function setUp(): void {
 		parent::setUp();
-		unset( $GLOBALS['_wpcv_test_bloginfo'], $GLOBALS['_wpcv_test_plugins'], $GLOBALS['_wpcv_test_mu_plugins'] );
+		unset( $GLOBALS['_wpcv_test_bloginfo'], $GLOBALS['_wpcv_test_plugins'], $GLOBALS['_wpcv_test_mu_plugins'], $GLOBALS['_wpcv_test_themes'], $GLOBALS['_wpcv_test_wp_get_themes_args'] );
+	}
+
+	/**
+	 * テスト用のテーマ一覧を後のテストに残さない(v0.7 §Step3). 残すと、
+	 * `WPCV_Context_Builder::build()` を使う別のファイルのテストの run に
+	 * 架空のテーマが混ざり、run が partial になる(全体のスイートで実際に起きた).
+	 *
+	 * @return void
+	 */
+	protected function tearDown(): void {
+		unset( $GLOBALS['_wpcv_test_themes'], $GLOBALS['_wpcv_test_wp_get_themes_args'] );
+		parent::tearDown();
 	}
 
 	/**
@@ -70,5 +82,47 @@ class ContextBuilderTest extends TestCase {
 		$context = WPCV_Context_Builder::build();
 
 		$this->assertSame( array(), $context['plugins'] );
+	}
+
+	/**
+	 * テーマの version・template・ディレクトリ・Update URI を stylesheet ごとにまとめ、
+	 * エラーのあるテーマも含めるため `errors => null` で `wp_get_themes()` を呼ぶことを
+	 * 確認する(v0.7 §3.3・D5).
+	 *
+	 * @return void
+	 */
+	public function test_build_describes_themes_including_broken_ones() {
+		$GLOBALS['_wpcv_test_themes'] = array(
+			'twentytwentyfive' => new WPCV_Test_Fake_Theme( array( 'Version' => '1.5' ), 'twentytwentyfive', '/var/www/wp-content/themes/twentytwentyfive' ),
+			'child'            => new WPCV_Test_Fake_Theme(
+				array(
+					'Version'   => '0.1',
+					'UpdateURI' => 'false',
+				),
+				'missing-parent',
+				'/var/www/wp-content/themes/child'
+			),
+		);
+
+		$context = WPCV_Context_Builder::build();
+
+		$this->assertSame( array( 'errors' => null ), $GLOBALS['_wpcv_test_wp_get_themes_args'] );
+		$this->assertSame(
+			array(
+				'twentytwentyfive' => array(
+					'version'        => '1.5',
+					'template'       => 'twentytwentyfive',
+					'stylesheet_dir' => '/var/www/wp-content/themes/twentytwentyfive',
+					'update_uri'     => '',
+				),
+				'child'            => array(
+					'version'        => '0.1',
+					'template'       => 'missing-parent',
+					'stylesheet_dir' => '/var/www/wp-content/themes/child',
+					'update_uri'     => 'false',
+				),
+			),
+			$context['themes']
+		);
 	}
 }
