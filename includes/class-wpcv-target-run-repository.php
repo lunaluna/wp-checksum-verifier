@@ -534,6 +534,49 @@ class WPCV_Target_Run_Repository {
 	}
 
 	/**
+	 * Target_run の `source` を書き換える(v0.8 §Step6. R2).
+	 *
+	 * Planner が `github` にした target を、dispatcher が処理の時点で wp.org の処理に
+	 * 切り替えた(コア同梱テーマ)ときに、実際に使った照合ソースと記録を一致させる.
+	 *
+	 * `$lease_owner` を(`id` に加えて)`status = running` とともに WHERE へ含めて fencing
+	 * する理由は `update_chunk_progress()` と同じ.
+	 *
+	 * @param int    $target_run_id 対象の target_run の id.
+	 * @param string $lease_owner   `claim_next()` がこの処理エピソードに割り当てた lease owner.
+	 * @param string $source        新しい source(`wporg`|`github`|`stat`).
+	 * @return bool 更新できたら true. false は対象行が無い、または fencing に失敗した.
+	 *
+	 * @throws RuntimeException `$wpdb->update()` が SQL エラーで `false` を返した場合.
+	 */
+	public function set_source( $target_run_id, $lease_owner, $source ) {
+		$updated = $this->wpdb->update(
+			$this->wpdb->base_prefix . 'wpcv_target_runs',
+			array( 'source' => (string) $source ),
+			array(
+				'id'          => (int) $target_run_id,
+				'status'      => WPCV_Target_Status::RUNNING,
+				'lease_owner' => (string) $lease_owner,
+			),
+			array( '%s' ),
+			array( '%d', '%s', '%s' )
+		);
+
+		if ( false === $updated ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf(
+						'WPCV_Target_Run_Repository::set_source() の update に失敗しました: %s',
+						(string) $this->wpdb->last_error
+					)
+				)
+			);
+		}
+
+		return $updated > 0;
+	}
+
+	/**
 	 * 依存先の target_run(stat 差分検知 target にとっての本体 target)がまだ
 	 * 終わっていないため、処理せずに retry へ戻し、指定秒数だけ claim されない
 	 * ようにする(v0.5 §Step6. rev.3 §3.4).

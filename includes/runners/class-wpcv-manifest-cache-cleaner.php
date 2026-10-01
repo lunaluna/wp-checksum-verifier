@@ -20,6 +20,10 @@ if ( ! defined( 'ABSPATH' ) ) {
  *   (stylesheet, version) だけを残す. 削除したテーマ・更新前の version の行が消える.
  * - コア(`source = core`): 今回の run の `core` の target_run の version と、今の locale
  *   (`WPCV_Source_Core::current_locale()`)の組だけを残す.
+ * - GitHub(`source = github`. v0.8 §Step6): 今回の run の、`source = github` のプラグイン・
+ *   テーマの target_run の (`{owner}/{repo}`, version) だけを残す. repo は target_run に
+ *   無いので、run の終端の時点の対応付け(`WPCV_GitHub_Mappings::resolve()`)から求める.
+ *   対応付けを外したリポジトリの行は、次の run の終端で消える.
  *
  * 消すのは run が `success` / `partial` で終わったときだけ. `failed` は列挙が途中で
  * 止まっている可能性があり(§3.1)、`aborted` は計画を保存する前に止まった run だと
@@ -46,14 +50,24 @@ class WPCV_Manifest_Cache_Cleaner {
 	private $target_run_repository;
 
 	/**
+	 * GitHub との対応付け(target_id => repo・asset)を返す callable(v0.8 §Step6).
+	 *
+	 * @var callable
+	 */
+	private $github_mappings;
+
+	/**
 	 * コンストラクタ.
 	 *
 	 * @param WPCV_Manifest_Cache_Repository $cache                 マニフェストのキャッシュ.
 	 * @param WPCV_Target_Run_Repository     $target_run_repository `wpcv_target_runs` の永続化層.
+	 * @param callable|null                  $github_mappings       GitHub との対応付けを返す. 省略時は
+	 *                                                              `WPCV_GitHub_Mappings::resolve()`.
 	 */
-	public function __construct( WPCV_Manifest_Cache_Repository $cache, WPCV_Target_Run_Repository $target_run_repository ) {
+	public function __construct( WPCV_Manifest_Cache_Repository $cache, WPCV_Target_Run_Repository $target_run_repository, ?callable $github_mappings = null ) {
 		$this->cache                 = $cache;
 		$this->target_run_repository = $target_run_repository;
+		$this->github_mappings       = $github_mappings ?? array( 'WPCV_GitHub_Mappings', 'resolve' );
 	}
 
 	/**
@@ -86,6 +100,8 @@ class WPCV_Manifest_Cache_Cleaner {
 	private function clean( $run_id ) {
 		$keep_themes = array();
 		$keep_core   = array();
+		$keep_github = array();
+		$mappings    = (array) call_user_func( $this->github_mappings );
 
 		foreach ( $this->target_run_repository->find_all_by_run( $run_id ) as $target_run ) {
 			$target_id = (string) $target_run['target_id'];
@@ -101,13 +117,30 @@ class WPCV_Manifest_Cache_Cleaner {
 			}
 
 			// 本体の target だけを見る(`:_stat`・`:_scan` は本体と同じ組なので不要).
-			if ( WPCV_Target_Resolver::DIMENSION_THEME === $target_run['dimension'] && WPCV_Target_Resolver::build_id( WPCV_Target_Resolver::DIMENSION_THEME, (string) $target_run['slug'] ) === $target_id ) {
+			$is_body = in_array( $target_run['dimension'], array( WPCV_Target_Resolver::DIMENSION_THEME, WPCV_Target_Resolver::DIMENSION_PLUGIN ), true )
+				&& WPCV_Target_Resolver::build_id( (string) $target_run['dimension'], (string) $target_run['slug'] ) === $target_id;
+
+			if ( ! $is_body ) {
+				continue;
+			}
+
+			// GitHub で照合した target は、`wporg_theme` のキャッシュを使っていない. 取り違えて
+			// 残さないよう、`github` の target は別の組に入れる.
+			if ( 'github' === ( $target_run['source'] ?? null ) ) {
+				if ( isset( $mappings[ $target_id ]['repo'] ) ) {
+					$keep_github[] = array( (string) $mappings[ $target_id ]['repo'], $version );
+				}
+				continue;
+			}
+
+			if ( WPCV_Target_Resolver::DIMENSION_THEME === $target_run['dimension'] ) {
 				$keep_themes[] = array( (string) $target_run['slug'], $version );
 			}
 		}
 
 		$this->cache->delete_except( WPCV_Manifest_Cache_Repository::SOURCE_WPORG_THEME, $keep_themes );
 		$this->cache->delete_except( WPCV_Manifest_Cache_Repository::SOURCE_CORE, $keep_core );
+		$this->cache->delete_except( WPCV_Manifest_Cache_Repository::SOURCE_GITHUB, $keep_github );
 	}
 }
 

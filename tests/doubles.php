@@ -1069,7 +1069,7 @@ class WPCV_Test_Fake_WPDB {
  *     wpdb: WPCV_Test_Fake_WPDB,
  * }
  */
-function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = null, $continuation_scheduler = null, ?WPCV_Update_Event_Matcher $update_event_matcher = null, ?WPCV_Manifest_Source $theme_source = null ) {
+function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = null, $continuation_scheduler = null, ?WPCV_Update_Event_Matcher $update_event_matcher = null, ?WPCV_Manifest_Source $theme_source = null, ?WPCV_Manifest_Source $github_source = null ) {
 	$core_source   = $core_source ?? new WPCV_Test_Fake_Manifest_Source(
 		array(
 			'manifest_status' => 'ok',
@@ -1130,7 +1130,8 @@ function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = 
 		null,
 		$update_event_matcher,
 		null,
-		$theme_source
+		$theme_source,
+		$github_source
 	);
 
 	$coordinator = new WPCV_Run_Coordinator( new WPCV_Run_Planner( $suppression_repository ), $run_repository, $target_run_repository, $dispatcher );

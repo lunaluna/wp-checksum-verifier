@@ -359,6 +359,11 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-runner-a
  * 自己連鎖(v0.3 §Step6).
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-settings.php';
+
+/**
+ * プラグイン・テーマと GitHub リポジトリの対応付け(v0.8 §Step6. 設定とフィルターから集める).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-github-mappings.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-scheduler.php';
 WPCV_Scheduler::init();
 register_activation_hook( __FILE__, array( 'WPCV_Scheduler', 'activate' ) );

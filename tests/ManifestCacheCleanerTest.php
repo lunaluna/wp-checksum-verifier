@@ -15,6 +15,9 @@ require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-sou
 require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-source-core.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-manifest-cache-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
+require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-github-client.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-github-mappings.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-manifest-cache-cleaner.php';
 require_once __DIR__ . '/doubles.php';
 
@@ -54,9 +57,10 @@ class ManifestCacheCleanerTest extends TestCase {
 	 * @param string              $dimension dimension.
 	 * @param string              $slug      slug.
 	 * @param string|null         $version   version.
+	 * @param string|null         $source    source(`github` のときだけ掃除の対象が変わる. v0.8 §Step6).
 	 * @return void
 	 */
-	private static function insert_target_run( WPCV_Test_Fake_WPDB $wpdb, $run_id, $target_id, $dimension, $slug, $version ) {
+	private static function insert_target_run( WPCV_Test_Fake_WPDB $wpdb, $run_id, $target_id, $dimension, $slug, $version, $source = null ) {
 		$wpdb->insert(
 			'wp_wpcv_target_runs',
 			array(
@@ -65,6 +69,7 @@ class ManifestCacheCleanerTest extends TestCase {
 				'dimension' => $dimension,
 				'slug'      => $slug,
 				'version'   => $version,
+				'source'    => $source,
 				'status'    => 'success',
 			)
 		);
@@ -184,5 +189,88 @@ class ManifestCacheCleanerTest extends TestCase {
 		$cleaner->handle_run_terminated( 1, WPCV_Run_Status::SUCCESS );
 
 		$this->assertCount( 7, $wpdb->rows['wp_wpcv_manifest_cache'] );
+	}
+
+	/**
+	 * GitHub で照合した target(プラグイン・テーマ)は、今回の run の
+	 * (`{owner}/{repo}`, version) だけが残る. 更新前の version・対応付けを外したリポジトリ・
+	 * 別の run にだけ出た組の行は消える(v0.8 §Step6. §4.6).
+	 *
+	 * @return void
+	 */
+	public function test_github_rows_keep_only_mapped_repo_and_version_of_this_run() {
+		$wpdb  = new WPCV_Test_Fake_WPDB();
+		$cache = new WPCV_Manifest_Cache_Repository( $wpdb );
+		$files = array(
+			'a.php' => array(
+				'sha256' => str_repeat( 'a', 64 ),
+				'md5'    => str_repeat( 'b', 32 ),
+			),
+		);
+
+		self::insert_target_run( $wpdb, 1, 'plugin:fresh', 'plugin', 'fresh', '1.1', 'github' );
+		self::insert_target_run( $wpdb, 1, 'plugin:fresh:_stat', 'plugin', 'fresh', '1.1', 'stat' );
+		self::insert_target_run( $wpdb, 1, 'theme:acme', 'theme', 'acme', '2.0', 'github' );
+		// 対応付けを外したプラグイン(source は wporg に戻る).
+		self::insert_target_run( $wpdb, 1, 'plugin:unmapped', 'plugin', 'unmapped', '3.0', 'wporg' );
+
+		$cache->save( WPCV_Manifest_Cache_Repository::SOURCE_GITHUB, 'lunaluna/fresh', '1.1', $files );
+		$cache->save( WPCV_Manifest_Cache_Repository::SOURCE_GITHUB, 'lunaluna/fresh', '1.0', $files );
+		$cache->save( WPCV_Manifest_Cache_Repository::SOURCE_GITHUB, 'lunaluna/acme-theme', '2.0', $files );
+		$cache->save( WPCV_Manifest_Cache_Repository::SOURCE_GITHUB, 'lunaluna/unmapped', '3.0', $files );
+
+		$cleaner = new WPCV_Manifest_Cache_Cleaner(
+			$cache,
+			new WPCV_Target_Run_Repository( $wpdb ),
+			static function () {
+				return array(
+					'plugin:fresh' => array(
+						'repo'  => 'lunaluna/fresh',
+						'asset' => '',
+					),
+					'theme:acme'   => array(
+						'repo'  => 'lunaluna/acme-theme',
+						'asset' => '',
+					),
+				);
+			}
+		);
+
+		$cleaner->handle_run_terminated( 1, WPCV_Run_Status::SUCCESS );
+
+		$this->assertSame( array( 'github/lunaluna/acme-theme/2.0', 'github/lunaluna/fresh/1.1' ), self::remaining( $wpdb ) );
+	}
+
+	/**
+	 * GitHub で照合したテーマは、`wporg_theme` のキャッシュを残す理由にならない
+	 * (照合のソースを GitHub に切り替えたテーマの古い wp.org の行が、残り続けない).
+	 *
+	 * @return void
+	 */
+	public function test_github_theme_does_not_keep_wporg_theme_row() {
+		$wpdb  = new WPCV_Test_Fake_WPDB();
+		$cache = new WPCV_Manifest_Cache_Repository( $wpdb );
+		$files = array(
+			'style.css' => array(
+				'sha256' => str_repeat( 'a', 64 ),
+				'md5'    => str_repeat( 'b', 32 ),
+			),
+		);
+
+		self::insert_target_run( $wpdb, 1, 'theme:acme', 'theme', 'acme', '2.0', 'github' );
+
+		$cache->save( WPCV_Manifest_Cache_Repository::SOURCE_WPORG_THEME, 'acme', '2.0', $files );
+
+		$cleaner = new WPCV_Manifest_Cache_Cleaner(
+			$cache,
+			new WPCV_Target_Run_Repository( $wpdb ),
+			static function () {
+				return array();
+			}
+		);
+
+		$cleaner->handle_run_terminated( 1, WPCV_Run_Status::SUCCESS );
+
+		$this->assertSame( array(), self::remaining( $wpdb ) );
 	}
 }

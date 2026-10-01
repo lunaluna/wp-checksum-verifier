@@ -216,6 +216,15 @@ class WPCV_Chunk_Dispatcher {
 	private $theme_source;
 
 	/**
+	 * GitHub Releases のマニフェスト取得ソース(v0.8 §Step6. `WPCV_Source_GitHub`).
+	 * `null` なら、対応付けのある target は `unknown_source` になる(既存の呼び出し元との後方互換.
+	 * そのとき `:_stat` が stat で走査する).
+	 *
+	 * @var WPCV_Manifest_Source|null
+	 */
+	private $github_source;
+
+	/**
 	 * 未知ファイル走査エンジン.
 	 *
 	 * @var WPCV_Unknown_File_Scanner
@@ -309,6 +318,12 @@ class WPCV_Chunk_Dispatcher {
 		WPCV_Error_Code::MANIFEST_NOT_FOUND,
 		WPCV_Error_Code::UNKNOWN_SOURCE,
 		WPCV_Error_Code::VERSION_UNKNOWN,
+		// v0.8 §Step6(D10・R1): GitHub と対応付けたが、照合できる配布物が無い状態.
+		// 対応付けの誤りやアセットの付け忘れが続くあいだ、その target が何も見られなく
+		// ならないよう stat に回す. `rate_limited` / `http_error` / `archive_*` は一時的な
+		// 障害なので含めない(このリストの方針は上の docblock のとおり).
+		WPCV_Error_Code::NO_RELEASE_ASSET,
+		WPCV_Error_Code::ASSET_AMBIGUOUS,
 	);
 
 	/**
@@ -359,6 +374,9 @@ class WPCV_Chunk_Dispatcher {
 	 * @param WPCV_Manifest_Source|null       $theme_source         公式テーマ照合ソース(v0.7 §Step3).
 	 *                                                                `null`ならテーマの本体targetは
 	 *                                                                unknown_sourceになる(後方互換).
+	 * @param WPCV_Manifest_Source|null       $github_source        GitHub Releases の照合ソース(v0.8 §Step6).
+	 *                                                                `null`なら対応付けのあるtargetは
+	 *                                                                unknown_sourceになる(後方互換).
 	 */
 	public function __construct(
 		WPCV_Run_Repository $run_repository,
@@ -375,7 +393,8 @@ class WPCV_Chunk_Dispatcher {
 		?WPCV_Diff_Dispatcher $diff_dispatcher = null,
 		?WPCV_Update_Event_Matcher $update_event_matcher = null,
 		?WPCV_Update_Lock_Detector $update_lock_detector = null,
-		?WPCV_Manifest_Source $theme_source = null
+		?WPCV_Manifest_Source $theme_source = null,
+		?WPCV_Manifest_Source $github_source = null
 	) {
 		$this->run_repository          = $run_repository;
 		$this->target_run_repository   = $target_run_repository;
@@ -400,6 +419,7 @@ class WPCV_Chunk_Dispatcher {
 		$this->update_event_matcher  = $update_event_matcher;
 		$this->update_lock_detector  = $update_lock_detector;
 		$this->theme_source          = $theme_source;
+		$this->github_source         = $github_source;
 	}
 
 	/**
@@ -738,7 +758,7 @@ class WPCV_Chunk_Dispatcher {
 			return;
 		}
 
-		if ( WPCV_Target_Resolver::DIMENSION_THEME === $dimension && null !== $this->theme_source ) {
+		if ( WPCV_Target_Resolver::DIMENSION_THEME === $dimension && ( null !== $this->theme_source || null !== $this->github_source ) ) {
 			$this->process_theme( $run_id, $target_run, $context );
 			return;
 		}
@@ -881,6 +901,12 @@ class WPCV_Chunk_Dispatcher {
 			return;
 		}
 
+		// v0.8 §Step6(D11): GitHub と対応付けた target は wp.org に問い合わせない.
+		if ( 'github' === ( $target_run['source'] ?? null ) ) {
+			$this->process_github_plugin( $run_id, $target_run, $context, $resolved );
+			return;
+		}
+
 		$this->process_manifest_chunk(
 			$run_id,
 			$target_run,
@@ -894,6 +920,138 @@ class WPCV_Chunk_Dispatcher {
 			'wporg',
 			null,
 			$this->version_rereader( $target_run, $context )
+		);
+	}
+
+	/**
+	 * GitHub と対応付けたプラグイン1件を処理する(v0.8 §Step6. D11).
+	 *
+	 * 対応付け(`$context['github_mappings']`)は action ごとに作り直す `$context` から引く.
+	 * run の途中で対応付けが外れていたら(または GitHub のソースが無ければ)、wp.org に
+	 * 問い合わせず `unknown_source` にする(`:_stat` が stat で走査する).
+	 *
+	 * @param int   $run_id     対象の run の id.
+	 * @param array $target_run claim済みのtarget_run行.
+	 * @param array $context    `dispatch()` に渡された `$context`.
+	 * @param array $resolved   `resolve_current_plugin_context()` の戻り値.
+	 * @return void
+	 */
+	private function process_github_plugin( $run_id, array $target_run, array $context, array $resolved ) {
+		$mapping = self::github_mapping_for( $context, (string) $target_run['target_id'] );
+
+		if ( null === $mapping || null === $this->github_source ) {
+			$this->finalize_unknown_source( $target_run );
+			return;
+		}
+
+		$plugin_dir  = rtrim( WPCV_Path_Normalizer::to_forward_slashes( isset( $context['plugin_dir'] ) ? (string) $context['plugin_dir'] : '' ), '/' );
+		$root_dir    = rtrim( WPCV_Path_Normalizer::to_forward_slashes( $resolved['plugin_root_dir'] ), '/' );
+		$plugin_file = (string) $resolved['plugin_file'];
+		$single_file = $root_dir === $plugin_dir;
+
+		$this->process_manifest_chunk(
+			$run_id,
+			$target_run,
+			$this->github_source,
+			array(
+				'dimension' => WPCV_Target_Resolver::DIMENSION_PLUGIN,
+				'slug'      => (string) $target_run['slug'],
+				'version'   => $resolved['version'],
+				'repo'      => $mapping['repo'],
+				'asset'     => $mapping['asset'],
+				// 単一ファイルのプラグインのルートは plugins ディレクトリ自体なので、`.git` の
+				// 判定(`WPCV_Source_GitHub`)はしない(空にすると判定を行わない).
+				'base_dir'  => $single_file ? '' : $root_dir,
+				// ルート(zip の最上位のディレクトリ)からの相対パス.
+				'main_file' => $single_file ? basename( $plugin_file ) : (string) substr( $plugin_file, (int) strpos( $plugin_file, '/' ) + 1 ),
+			),
+			$resolved['plugin_root_dir'],
+			$resolved['version'],
+			'github',
+			null,
+			$this->version_rereader( $target_run, $context )
+		);
+	}
+
+	/**
+	 * GitHub と対応付けたテーマ1件を処理する(v0.8 §Step6. D11. `process_theme()` から呼ぶ).
+	 *
+	 * @param int   $run_id     対象の run の id.
+	 * @param array $target_run claim済みのtarget_run行.
+	 * @param array $context    `dispatch()` に渡された `$context`.
+	 * @param array $theme      `resolve_current_theme_context()` の戻り値.
+	 * @param array $mapping    `array{repo: string, asset: string}`.
+	 * @return void
+	 */
+	private function process_github_theme( $run_id, array $target_run, array $context, array $theme, array $mapping ) {
+		$root_dir = rtrim( WPCV_Path_Normalizer::to_forward_slashes( $theme['stylesheet_dir'] ), '/' );
+
+		$this->process_manifest_chunk(
+			$run_id,
+			$target_run,
+			$this->github_source,
+			self::github_theme_context( (string) $target_run['slug'], $theme, $mapping ),
+			$root_dir,
+			$theme['version'],
+			'github',
+			null,
+			$this->version_rereader( $target_run, $context )
+		);
+	}
+
+	/**
+	 * `WPCV_Source_GitHub::get_manifest()` に渡すテーマの context(`process_github_theme()`・
+	 * `process_theme_scan()` で共有).
+	 *
+	 * @param string $stylesheet テーマの stylesheet.
+	 * @param array  $theme      `resolve_current_theme_context()` の戻り値.
+	 * @param array  $mapping    `array{repo: string, asset: string}`.
+	 * @return array
+	 */
+	private static function github_theme_context( $stylesheet, array $theme, array $mapping ) {
+		return array(
+			'dimension' => WPCV_Target_Resolver::DIMENSION_THEME,
+			'slug'      => $stylesheet,
+			'version'   => $theme['version'],
+			'repo'      => $mapping['repo'],
+			'asset'     => $mapping['asset'],
+			'base_dir'  => rtrim( WPCV_Path_Normalizer::to_forward_slashes( $theme['stylesheet_dir'] ), '/' ),
+			'main_file' => 'style.css',
+		);
+	}
+
+	/**
+	 * `$context['github_mappings']` から、target の対応付けを引く(v0.8 §Step6).
+	 *
+	 * @param array  $context   `dispatch()` に渡された `$context`.
+	 * @param string $target_id 本体の target_id(`plugin:foo`・`theme:bar`).
+	 * @return array{repo: string, asset: string}|null 対応付けが無ければ null.
+	 */
+	private static function github_mapping_for( array $context, $target_id ) {
+		if ( empty( $context['github_mappings'][ $target_id ]['repo'] ) ) {
+			return null;
+		}
+
+		return array(
+			'repo'  => (string) $context['github_mappings'][ $target_id ]['repo'],
+			'asset' => isset( $context['github_mappings'][ $target_id ]['asset'] ) ? (string) $context['github_mappings'][ $target_id ]['asset'] : '',
+		);
+	}
+
+	/**
+	 * Target を `unverifiable` / `unknown_source` で即時に終端させる.
+	 *
+	 * @param array $target_run claim済みのtarget_run行.
+	 * @return void
+	 */
+	private function finalize_unknown_source( array $target_run ) {
+		$this->target_run_repository->finalize_immediate(
+			$target_run['id'],
+			array(
+				'status'     => WPCV_Target_Status::UNVERIFIABLE,
+				'error_code' => WPCV_Error_Code::UNKNOWN_SOURCE,
+			),
+			$target_run['lease_owner']
 		);
 	}
 
@@ -966,7 +1124,20 @@ class WPCV_Chunk_Dispatcher {
 		$theme        = self::resolve_current_theme_context( $context, (string) $target_run['slug'] );
 		$core_version = self::current_core_version( $context );
 
-		if ( WPCV_Target_Status::SUCCESS !== $body['status'] || null === $this->theme_source || null === $theme ) {
+		// v0.8 §Step6: Planner は本体と同じ source を `:_scan` にも付けるが、本体が処理の時点で
+		// 切り替わる(R2: コア同梱テーマの `github` → `wporg`)ことがある. 記録を本体に合わせる.
+		if ( ! empty( $body['source'] ) && ( $target_run['source'] ?? null ) !== $body['source'] ) {
+			$this->target_run_repository->set_source( $target_run['id'], $target_run['lease_owner'], (string) $body['source'] );
+		}
+
+		// v0.8 §Step6: 本体を GitHub で照合したテーマは、同じ GitHub のマニフェスト(2回目以降は
+		// キャッシュから返る)で既知のファイルを決める. 本体の source(`process_theme()` が
+		// コア同梱テーマを `wporg` に直すこともある)で照合ソースを選ぶ.
+		$use_github     = 'github' === ( $body['source'] ?? null );
+		$github_mapping = $use_github ? self::github_mapping_for( $context, $body_target_id ) : null;
+		$scan_source    = $use_github ? ( null === $github_mapping ? null : $this->github_source ) : $this->theme_source;
+
+		if ( WPCV_Target_Status::SUCCESS !== $body['status'] || null === $scan_source || null === $theme ) {
 			$body_error_code = isset( $body['error_code'] ) ? (string) $body['error_code'] : '';
 
 			$this->target_run_repository->finalize_immediate(
@@ -981,13 +1152,15 @@ class WPCV_Chunk_Dispatcher {
 			return;
 		}
 
-		$manifest = $this->theme_source->get_manifest(
-			array(
-				'slug'         => (string) $target_run['slug'],
-				'version'      => $theme['version'],
-				'update_uri'   => $theme['update_uri'],
-				'core_version' => $core_version,
-			)
+		$manifest = $scan_source->get_manifest(
+			$use_github
+				? self::github_theme_context( (string) $target_run['slug'], $theme, $github_mapping )
+				: array(
+					'slug'         => (string) $target_run['slug'],
+					'version'      => $theme['version'],
+					'update_uri'   => $theme['update_uri'],
+					'core_version' => $core_version,
+				)
 		);
 
 		if ( null !== $manifest['error_code'] ) {
@@ -1013,7 +1186,8 @@ class WPCV_Chunk_Dispatcher {
 			$known_files[ $root_relative . '/' . $path ] = true;
 		}
 
-		foreach ( $this->core_bundled_theme_paths( (string) $target_run['slug'], $core_version ) as $path ) {
+		// コア同梱テーマの合成は wp.org の照合のときだけ(GitHub で照合したテーマは対象外. R2).
+		foreach ( $use_github ? array() : $this->core_bundled_theme_paths( (string) $target_run['slug'], $core_version ) as $path ) {
 			$known_files[ $root_relative . '/' . $path ] = true;
 		}
 
@@ -1035,7 +1209,7 @@ class WPCV_Chunk_Dispatcher {
 			return;
 		}
 
-		$this->process_scan_chunk( $run_id, $target_run, $scan_result['items'], $theme['version'], 'wporg' );
+		$this->process_scan_chunk( $run_id, $target_run, $scan_result['items'], $theme['version'], $use_github ? 'github' : 'wporg' );
 	}
 
 	/**
@@ -1127,6 +1301,32 @@ class WPCV_Chunk_Dispatcher {
 				),
 				$target_run['lease_owner']
 			);
+			return;
+		}
+
+		// v0.8 §Step6(D11・R2): GitHub と対応付けたテーマは wp.org に問い合わせない. ただし
+		// コア同梱テーマ(今のコアのマニフェストに `wp-content/themes/{slug}/` があるもの)は、
+		// 対応付けを無視して wp.org の処理にする(v0.7 D7 のコアとの合成を壊さないため).
+		// その場合、target_run の source も `wporg` に直す(`:_scan` が本体の source で
+		// 照合ソースを選ぶので、実際に使ったソースと一致させる).
+		if ( 'github' === ( $target_run['source'] ?? null ) ) {
+			$mapping = self::github_mapping_for( $context, (string) $target_run['target_id'] );
+
+			if ( null === $mapping || null === $this->github_source ) {
+				$this->finalize_unknown_source( $target_run );
+				return;
+			}
+
+			if ( array() === $this->core_bundled_theme_paths( (string) $target_run['slug'], self::current_core_version( $context ) ) ) {
+				$this->process_github_theme( $run_id, $target_run, $context, $theme, $mapping );
+				return;
+			}
+
+			$this->target_run_repository->set_source( $target_run['id'], $target_run['lease_owner'], 'wporg' );
+		}
+
+		if ( null === $this->theme_source ) {
+			$this->finalize_unknown_source( $target_run );
 			return;
 		}
 

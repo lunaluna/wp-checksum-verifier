@@ -34,6 +34,8 @@ require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-planner.php'
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-current-version-reader.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-coordinator.php';
+require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-github-client.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-github-mappings.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-context-builder.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-runner-async.php';

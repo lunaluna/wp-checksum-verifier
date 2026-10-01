@@ -372,4 +372,68 @@ class SettingsTest extends TestCase {
 
 		$this->assertSame( array( 'ok@example.com', 'evil@example.com' ), WPCV_Settings::get_alert_to() );
 	}
+
+	/**
+	 * GitHub との対応付け(v0.8 §Step6)は、未設定なら空. 保存した値がそのまま返る.
+	 *
+	 * @return void
+	 */
+	public function test_github_mappings_default_empty_and_persist() {
+		$this->assertSame( array(), WPCV_Settings::get_github_mappings() );
+
+		WPCV_Settings::update_github_mappings(
+			array(
+				array(
+					'target' => 'plugin:fresh',
+					'repo'   => 'lunaluna/fresh',
+				),
+				array(
+					'target' => 'theme:acme',
+					'repo'   => 'lunaluna/acme',
+					'asset'  => 'acme-pro',
+				),
+			)
+		);
+
+		$this->assertSame(
+			array(
+				array(
+					'target' => 'plugin:fresh',
+					'repo'   => 'lunaluna/fresh',
+					'asset'  => '',
+				),
+				array(
+					'target' => 'theme:acme',
+					'repo'   => 'lunaluna/acme',
+					'asset'  => 'acme-pro',
+				),
+			),
+			WPCV_Settings::get_github_mappings()
+		);
+
+		// 他の設定を壊さない.
+		$this->assertSame( WPCV_Settings::DEFAULT_RUN_HOUR, WPCV_Settings::get_run_time()['hour'] );
+	}
+
+	/**
+	 * Option が壊れた形(配列でない・配列でない件)に書き換えられていても、空・文字列として読む.
+	 *
+	 * @return void
+	 */
+	public function test_get_github_mappings_ignores_malformed_stored_value() {
+		$GLOBALS['_wpcv_test_options'][ WPCV_Settings::OPTION_NAME ] = array( 'github_mappings' => 'nope' );
+		$this->assertSame( array(), WPCV_Settings::get_github_mappings() );
+
+		$GLOBALS['_wpcv_test_options'][ WPCV_Settings::OPTION_NAME ] = array( 'github_mappings' => array( 'str', array( 'target' => 'plugin:x' ) ) );
+		$this->assertSame(
+			array(
+				array(
+					'target' => 'plugin:x',
+					'repo'   => '',
+					'asset'  => '',
+				),
+			),
+			WPCV_Settings::get_github_mappings()
+		);
+	}
 }

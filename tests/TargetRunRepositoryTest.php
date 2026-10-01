@@ -1330,4 +1330,51 @@ class TargetRunRepositoryTest extends TestCase {
 			$this->assertMatchesRegularExpression( '/\\s(WHERE|LIMIT)\\s/i', $query, "全件取得のSELECTが発行された: {$query}" );
 		}
 	}
+
+	/**
+	 * `set_source()`(v0.8 §Step6. R2)が、claim 中の行の source だけを書き換える.
+	 *
+	 * @return void
+	 */
+	public function test_set_source_updates_only_source_of_claimed_row() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$target_run_ids = $repository->save_target_runs(
+			1,
+			array( wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::RUNNING ) ) )
+		);
+		$target_run_id = $target_run_ids['core'];
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['lease_owner'] = 'lease-1';
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['source']      = 'github';
+
+		$this->assertTrue( $repository->set_source( $target_run_id, 'lease-1', 'wporg' ) );
+
+		$row = $wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ];
+
+		$this->assertSame( 'wporg', $row['source'] );
+		$this->assertSame( WPCV_Target_Status::RUNNING, $row['status'] );
+		$this->assertSame( 'lease-1', $row['lease_owner'] );
+	}
+
+	/**
+	 * `set_source()` は lease owner が違えば何もしない(fencing).
+	 *
+	 * @return void
+	 */
+	public function test_set_source_returns_false_when_lease_owner_mismatched() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$target_run_ids = $repository->save_target_runs(
+			1,
+			array( wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::RUNNING ) ) )
+		);
+		$target_run_id = $target_run_ids['core'];
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['lease_owner'] = 'worker-b';
+		$wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['source']      = 'github';
+
+		$this->assertFalse( $repository->set_source( $target_run_id, 'worker-a', 'wporg' ) );
+		$this->assertSame( 'github', $wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['source'] );
+	}
 }

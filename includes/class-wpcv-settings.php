@@ -156,6 +156,7 @@ class WPCV_Settings {
 			'alert_to'                          => array(),
 			'alert_unrecorded_version_change'   => self::DEFAULT_ALERT_UNRECORDED_VERSION_CHANGE,
 			'content_hash_mode'                 => self::DEFAULT_CONTENT_HASH_MODE,
+			'github_mappings'                   => array(),
 		);
 	}
 
@@ -320,6 +321,62 @@ class WPCV_Settings {
 		$settings['content_hash_mode'] = in_array( $mode, array( self::CONTENT_HASH_MODE_OFF, self::CONTENT_HASH_MODE_STAT_TARGETS ), true )
 			? $mode
 			: self::DEFAULT_CONTENT_HASH_MODE;
+
+		return self::write_option( $settings );
+	}
+
+	/**
+	 * GitHub リポジトリとの対応付け(v0.8 §Step6. U2)を返す.
+	 *
+	 * 形の検査は `WPCV_GitHub_Mappings` が行う(読み取り時に通す). ここでは配列でない値・
+	 * 配列でない件を捨て、文字列にそろえるだけ.
+	 *
+	 * @return array<int, array{target: string, repo: string, asset: string}> 未設定なら空配列.
+	 */
+	public static function get_github_mappings() {
+		// `get_all()` ではなく生の値から読む. option が配列以外・不正な形に書き換えられていても
+		// 安全に空として扱うため(`get_alert_to()` と同じ考え方).
+		$stored = self::read_option();
+		$raw    = is_array( $stored ) && isset( $stored['github_mappings'] ) && is_array( $stored['github_mappings'] ) ? $stored['github_mappings'] : array();
+		$list   = array();
+
+		foreach ( $raw as $entry ) {
+			if ( ! is_array( $entry ) ) {
+				continue;
+			}
+
+			$list[] = array(
+				'target' => isset( $entry['target'] ) ? (string) $entry['target'] : '',
+				'repo'   => isset( $entry['repo'] ) ? (string) $entry['repo'] : '',
+				'asset'  => isset( $entry['asset'] ) ? (string) $entry['asset'] : '',
+			);
+		}
+
+		return $list;
+	}
+
+	/**
+	 * GitHub リポジトリとの対応付けを保存する(v0.8 §Step6. U2).
+	 *
+	 * 形の検査は `WPCV_GitHub_Mappings::parse_text()` / `normalize()` が行う.
+	 * ここは検査済みの配列を保存するだけ.
+	 *
+	 * @param array<int, array<string, string>> $entries `target`・`repo`・`asset`(省略可)を持つ対応付け.
+	 * @return bool `update_option()`/`update_site_option()` の戻り値.
+	 */
+	public static function update_github_mappings( array $entries ) {
+		$settings = self::get_all();
+		$list     = array();
+
+		foreach ( $entries as $entry ) {
+			$list[] = array(
+				'target' => (string) ( $entry['target'] ?? '' ),
+				'repo'   => (string) ( $entry['repo'] ?? '' ),
+				'asset'  => (string) ( $entry['asset'] ?? '' ),
+			);
+		}
+
+		$settings['github_mappings'] = $list;
 
 		return self::write_option( $settings );
 	}
