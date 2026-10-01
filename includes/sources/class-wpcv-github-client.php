@@ -58,8 +58,10 @@ class WPCV_GitHub_Client {
 	/**
 	 * API のタイムアウト秒数の既定値(`wpcv_github_api_timeout`).
 	 *
-	 * 暫定・未実測: `lib/l2d-updater` と同じ値. ローカルの実測は 0.22〜0.29 秒(プラン §2.1).
-	 * Step9 でエックスサーバーで測って見直す.
+	 * 実測(2026-10-01. 未認証で `releases/tags/{tag}`): ローカル 0.23〜0.52 秒(11件)、
+	 * エックスサーバー(共有ホスティング)0.26 秒. 10秒は実測の最大の約19倍で、
+	 * `lib/l2d-updater` と同じ値. target の lease(`WPCV_Target_Run_Repository::DEFAULT_LEASE_SECONDS`.
+	 * 120秒)より十分短い. 短くしすぎると、回線が一時的に遅いだけで `http_error` になる.
 	 */
 	const DEFAULT_API_TIMEOUT = 10;
 
@@ -67,7 +69,8 @@ class WPCV_GitHub_Client {
 	 * アセットの取得のタイムアウト秒数の既定値(`wpcv_github_download_timeout`).
 	 *
 	 * Zip の取得に v0.7 で確定した値(エックスサーバー最大 2.06 秒の約15倍. v0.7 Step8).
-	 * GitHub の実測はローカルで 0.11 秒(WPCV の zip は 620KB. プラン §2.1).
+	 * GitHub の実測(2026-10-01. `browser_download_url`): ローカル 0.58〜0.63 秒(54KB・620KB)、
+	 * エックスサーバー 0.92 秒(WPMAR 1.6.0 の zip 567KB).
 	 */
 	const DEFAULT_DOWNLOAD_TIMEOUT = 30;
 

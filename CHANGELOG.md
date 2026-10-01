@@ -33,7 +33,7 @@ All notable changes to this project will be documented in this file.
   `x-ratelimit-reset`, otherwise 60 seconds); the next run tries again.
 - Filters: `wpcv_github_mappings`, `wpcv_github_token`,
   `wpcv_github_tag_candidates`, `wpcv_github_api_version`,
-  `wpcv_github_api_timeout` (10 s, unmeasured), `wpcv_github_download_timeout`
+  `wpcv_github_api_timeout` (10 s; measured 0.2–0.5 s), `wpcv_github_download_timeout`
   (30 s), and `wpcv_github_zip_max_archive_bytes` / `_max_entries` /
   `_max_entry_bytes` / `_max_total_bytes` / `_max_compression_ratio`
   (the same provisional limits as for theme zips).

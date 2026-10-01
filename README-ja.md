@@ -129,7 +129,8 @@ theme:my-theme lunaluna/my-theme my-theme-pro
   `wpcv_github_zip_max_entry_bytes`・`wpcv_github_zip_max_total_bytes`・
   `wpcv_github_zip_max_compression_ratio` で変えられます。アセットのダウンロードの
   タイムアウトは30秒(`wpcv_github_download_timeout`)、API のタイムアウトは10秒
-  (`wpcv_github_api_timeout`。未実測の暫定値で、ローカルでは0.2〜0.5秒)です。
+  (`wpcv_github_api_timeout`。実測はローカルで0.2〜0.5秒、共有ホスティングで0.26秒、
+  アセットのダウンロードは最大0.9秒)です。
   `X-GitHub-Api-Version` ヘッダーは `2022-11-28`(`wpcv_github_api_version`)です.
 - **キャッシュ**: マニフェストは `owner/repo` + インストール済み version をキーにして
   マニフェストキャッシュに保存し、version が変わるまで再利用します。通常の run では

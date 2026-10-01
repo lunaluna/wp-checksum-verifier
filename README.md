@@ -155,8 +155,8 @@ after the saved mappings, and a target already mapped on the screen wins.
   `wpcv_github_zip_max_total_bytes` and
   `wpcv_github_zip_max_compression_ratio`. The asset download timeout is 30
   seconds (`wpcv_github_download_timeout`); the API timeout is 10 seconds
-  (`wpcv_github_api_timeout`; unmeasured provisional value, local requests took
-  0.2–0.5 seconds). The `X-GitHub-Api-Version` header is `2022-11-28`
+  (`wpcv_github_api_timeout`; measured at 0.2–0.5 seconds locally and 0.26
+  seconds on shared hosting, release asset downloads at most 0.9 seconds). The `X-GitHub-Api-Version` header is `2022-11-28`
   (`wpcv_github_api_version`).
 - **Cache**: the manifest is stored in the manifest cache with the key
   `owner/repo` + installed version and reused until the version changes, so
