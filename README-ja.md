@@ -85,7 +85,8 @@ run に出てこなくなったテーマ・version の行は、run が `success`
   (`wpcv_theme_zip_max_entries`)、1ファイル 50MB(`wpcv_theme_zip_max_entry_bytes`)、
   合計 500MB(`wpcv_theme_zip_max_total_bytes`)、圧縮率 100 倍
   (`wpcv_theme_zip_max_compression_ratio`)。取得のタイムアウトは30秒
-  (`wpcv_theme_zip_download_timeout`。共有ホスティングでは未実測).
+  (`wpcv_theme_zip_download_timeout`。実測では1テーマあたり共有ホスティングで最大
+  約2秒、ローカルで4.6秒).
 
 ### stat 差分検知
 

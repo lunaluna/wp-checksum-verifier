@@ -49,11 +49,17 @@ class WPCV_Source_Wporg_Theme implements WPCV_Manifest_Source {
 	/**
 	 * ZIP 取得のタイムアウト秒数の既定値(`wpcv_theme_zip_download_timeout` で変えられる).
 	 *
-	 * 未実測(暫定値. 2026-10-01 ユーザー確認済み). ローカル開発環境の実測は1テーマ
-	 * 最大 2.38 秒(7.8MB. プラン §2.2). 共有ホスティングでの取得時間は測っていない
-	 * ため、v0.7 Step8 でエックスサーバーで測ってから決め直す. 取得中もワーカーは
-	 * target の lease を持っているので、`WPCV_Target_Run_Repository::DEFAULT_LEASE_SECONDS`
-	 * (120秒)より十分短くしておく必要がある.
+	 * 実測(2026-10-01. `download_url()` で wp.org のテーマ24件. 最大は twentytwentyfive
+	 * 7.8MB): エックスサーバー(共有ホスティング)で 1.37〜2.06 秒を2回(合計 40.9 秒)、
+	 * ローカル開発環境で 0.57〜4.56 秒. 30秒はエックスサーバーの最大の約15倍、全計測の
+	 * 最大の約6.5倍(2026-10-01 ユーザー確認済み. v0.7 Step8 で暫定から確定にした).
+	 *
+	 * 短くしすぎると、回線が一時的に遅いだけで `http_error` になり、その run では
+	 * テーマが照合されない. `http_error` は「連続 unverifiable」のアラートの数にも入る
+	 * (`WPCV_Generation_Differ::is_unverifiable_streak_member()`). 長くしても、取得が
+	 * 遅いときにその run が少し長くなるだけ. ただし取得中もワーカーは target の lease を
+	 * 持っているので、`WPCV_Target_Run_Repository::DEFAULT_LEASE_SECONDS`(120秒)より
+	 * 十分短くしておく必要がある.
 	 */
 	const DEFAULT_DOWNLOAD_TIMEOUT = 30;
 

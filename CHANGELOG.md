@@ -26,7 +26,8 @@ All notable changes to this project will be documented in this file.
   download 100 MB, 20,000 entries, 50 MB per file, 500 MB in total,
   compression ratio 100 — each adjustable with a
   `wpcv_theme_zip_max_*` filter. Download timeout 30 seconds
-  (`wpcv_theme_zip_download_timeout`; not yet measured on shared hosting).
+  (`wpcv_theme_zip_download_timeout`); measured at most about 2 seconds per
+  theme on shared hosting (Xserver) and 4.6 seconds locally.
 - **Manifest cache** (new database table `wpcv_manifest_cache`, schema
   version 7). Theme manifests are reused until the theme's version
   changes, and the WordPress core manifest is cached too (except an
