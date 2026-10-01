@@ -167,7 +167,7 @@ class MigratorTest extends TestCase {
 
 		$sqls = $method->invoke( null );
 
-		$this->assertCount( 6, $sqls, 'table_definitions() must return 6 CREATE TABLE statements from v0.6 onward' );
+		$this->assertCount( 7, $sqls, 'table_definitions() must return 7 CREATE TABLE statements from v0.7 onward' );
 
 		$sql_file_states = $sqls[4];
 
@@ -378,7 +378,7 @@ class MigratorTest extends TestCase {
 	}
 
 	/**
-	 * 6テーブルすべてについて、抽出した列名にインデックス・制約のキーワードが
+	 * 全テーブルについて、抽出した列名にインデックス・制約のキーワードが
 	 * 紛れ込んでいないことを確認する(今後 `table_definitions()` に新しい種類の
 	 * インデックス行を追加した場合の回帰防止).
 	 *
@@ -456,7 +456,7 @@ class MigratorTest extends TestCase {
 
 		$sqls = $method->invoke( null );
 
-		$this->assertCount( 6, $sqls, 'table_definitions() must return 6 CREATE TABLE statements from v0.6 onward' );
+		$this->assertCount( 7, $sqls, 'table_definitions() must return 7 CREATE TABLE statements from v0.7 onward' );
 
 		$sql_update_events = $sqls[5];
 
@@ -513,6 +513,54 @@ class MigratorTest extends TestCase {
 			),
 			$parse->invoke( null, $sqls[5] )
 		);
+	}
+
+	/**
+	 * `table_definitions()` が7番目の要素として `wpcv_manifest_cache`(v0.7プラン
+	 * §3.1・U3で新設)の CREATE TABLE 文を返し、列・一意キー・NOT NULL を
+	 * プランのとおりに持つことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_table_definitions_include_manifest_cache_table() {
+		$GLOBALS['wpdb'] = new WPCV_Test_Fake_WPDB();
+
+		$definitions = new ReflectionMethod( WPCV_Migrator::class, 'table_definitions' );
+		$definitions->setAccessible( true );
+		$parse = new ReflectionMethod( WPCV_Migrator::class, 'parse_column_names' );
+		$parse->setAccessible( true );
+
+		$sqls = $definitions->invoke( null );
+		$sql  = $sqls[6];
+
+		$this->assertStringContainsString( 'CREATE TABLE wp_wpcv_manifest_cache (', $sql );
+
+		$this->assertSame(
+			array(
+				'id',
+				'source',
+				'slug',
+				'version',
+				'files',
+				'file_count',
+				'archive_bytes',
+				'fetched_at',
+			),
+			$parse->invoke( null, $sql )
+		);
+
+		// 一意キー(§3.1)。dbDelta は `UNIQUE KEY 名前 (列, ...)` の形を解釈する
+		// (WordPress 7.1.2 の wp-admin/includes/upgrade.php の dbDelta() で確認).
+		$this->assertStringContainsString( 'UNIQUE KEY idx_source_slug_version (source, slug, version)', $sql );
+
+		// 列の長さは索引の上限(utf8mb4 で767バイト)に収まるように決めた値.
+		// WPCV_Manifest_Cache_Repository の MAX_*_LENGTH と揃っている必要がある.
+		$this->assertMatchesRegularExpression( '/source\s+varchar\(16\)\s+NOT NULL/', $sql );
+		$this->assertMatchesRegularExpression( '/slug\s+varchar\(100\)\s+NOT NULL/', $sql );
+		$this->assertMatchesRegularExpression( '/version\s+varchar\(64\)\s+NOT NULL/', $sql );
+		$this->assertMatchesRegularExpression( '/files\s+longtext\s+NOT NULL/', $sql );
+		$this->assertMatchesRegularExpression( '/fetched_at\s+datetime\s+NOT NULL/', $sql );
+		$this->assertLessThanOrEqual( 767, ( 16 + 100 + 64 ) * 4 );
 	}
 
 	/**
@@ -643,6 +691,7 @@ class MigratorTest extends TestCase {
 			$wpdb->base_prefix . 'wpcv_suppressions',
 			$wpdb->base_prefix . 'wpcv_file_states',
 			$wpdb->base_prefix . 'wpcv_update_events',
+			$wpdb->base_prefix . 'wpcv_manifest_cache',
 		);
 		$sqls = $table_definitions_method->invoke( null );
 

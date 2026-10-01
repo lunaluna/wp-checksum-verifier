@@ -616,6 +616,8 @@ class WPCV_Test_Fake_WPDB {
 
 		if ( 1 === preg_match( '/^INSERT INTO\s+(\S+)\s*\(([^)]+)\)\s*VALUES\s*(.+?)\s*ON DUPLICATE KEY UPDATE/is', $query, $matches ) ) {
 			$this->apply_bulk_upsert( $matches[1], $matches[2], $matches[3] );
+		} elseif ( 1 === preg_match( '/^INSERT IGNORE INTO\s+(\S+)\s*\(([^)]+)\)\s*VALUES\s*\((.+)\)\s*$/is', $query, $matches ) ) {
+			return $this->apply_insert_ignore( $matches[1], $matches[2], $matches[3] );
 		} elseif ( 1 === preg_match( '/^UPDATE\s+(\S+)\s+SET\s+(.+?)\s+WHERE\s+(.+)$/is', $query, $matches ) ) {
 			$this->apply_bulk_update( $matches[1], $matches[2], $matches[3] );
 		}
@@ -826,6 +828,69 @@ class WPCV_Test_Fake_WPDB {
 				$this->rows[ $table ][ $id ] = $row;
 			}
 		}
+	}
+
+	/**
+	 * テーブルごとの一意キーの列(`apply_insert_ignore()` が重複を判定するのに使う.
+	 * 本番のスキーマの UNIQUE KEY と同じ列を書く. `WPCV_Migrator::table_definitions()` 参照).
+	 *
+	 * @var array<string, string[]>
+	 */
+	public $unique_keys_by_table = array(
+		'wp_wpcv_manifest_cache' => array( 'source', 'slug', 'version' ),
+	);
+
+	/**
+	 * `INSERT IGNORE INTO {table} (cols) VALUES (...)`(1行)を解釈し、`$this->rows` へ
+	 * 反映する(`query()` 専用のヘルパー. v0.7 §Step1: `WPCV_Manifest_Cache_Repository::save()`
+	 * 用). `$unique_keys_by_table` の列がすべて一致する行が既にあれば何もせず 0 を返す
+	 * (本番の `INSERT IGNORE` が重複キーの行を捨て、影響行数 0 を返すのと同じ).
+	 *
+	 * @param string $table       テーブル名.
+	 * @param string $columns_str カラム名のカンマ区切り文字列(括弧の中身).
+	 * @param string $values_str  `VALUES` の括弧の中身(1タプル分).
+	 * @return int 追加した行数(0 または 1).
+	 */
+	private function apply_insert_ignore( $table, $columns_str, $values_str ) {
+		$columns  = array_map( 'trim', explode( ',', $columns_str ) );
+		$literals = $this->split_sql_value_literals( $values_str );
+		$row      = array();
+
+		foreach ( $columns as $index => $column ) {
+			$row[ $column ] = $this->parse_sql_value_literal( $literals[ $index ] );
+		}
+
+		$unique_columns = $this->unique_keys_by_table[ $table ] ?? array();
+
+		foreach ( $this->rows[ $table ] ?? array() as $existing_row ) {
+			if ( array() === $unique_columns ) {
+				break;
+			}
+
+			$same = true;
+
+			foreach ( $unique_columns as $column ) {
+				if ( ( $existing_row[ $column ] ?? null ) !== $row[ $column ] ) {
+					$same = false;
+					break;
+				}
+			}
+
+			if ( $same ) {
+				return 0;
+			}
+		}
+
+		if ( ! isset( $this->next_id[ $table ] ) ) {
+			$this->next_id[ $table ] = 1;
+		}
+
+		$id                          = $this->next_id[ $table ]++;
+		$row['id']                   = $id;
+		$this->rows[ $table ][ $id ] = $row;
+		$this->insert_id             = $id;
+
+		return 1;
 	}
 
 	/**

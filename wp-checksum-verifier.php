@@ -44,8 +44,11 @@ if ( ! defined( 'ABSPATH' ) ) {
  *
  * 更新イベント連動(v0.6プラン§2.1・D1)用に `wpcv_update_events` テーブルを
  * 新設したため、v0.6 §Step1で6へ更新した(`WPCV_Migrator::table_definitions()` 参照).
+ *
+ * テーマ照合(v0.7プラン§3.1・U3)のマニフェストキャッシュ用に
+ * `wpcv_manifest_cache` テーブルを新設したため、v0.7 §Step1で7へ更新した.
  */
-define( 'WPCV_DB_VERSION', 6 );
+define( 'WPCV_DB_VERSION', 7 );
 
 /**
  * Public API contract のバージョン. 後方互換を維持する契約(§10).
@@ -233,6 +236,13 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-file-state-repos
  * 依存はまだ無いため読み込み順の制約は無いが、他のRepository群と同じ場所にまとめる.
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-update-event-repository.php';
+
+/**
+ * マニフェストキャッシュ(`wpcv_manifest_cache`)の永続化層(v0.7 §Step1). テーマの
+ * マニフェストのソース(v0.7 Step2)とコアのマニフェスト(Step4)から使う. 他クラスからの
+ * 依存はまだ無いため読み込み順の制約は無いが、他のRepository群と同じ場所にまとめる.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-manifest-cache-repository.php';
 
 /**
  * D5・D6の突き合わせ(v0.6 §Step3・§Step4)。`WPCV_Diff_Dispatcher`・

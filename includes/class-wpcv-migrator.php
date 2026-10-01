@@ -147,9 +147,10 @@ class WPCV_Migrator {
 	}
 
 	/**
-	 * 6 テーブル(runs / target_runs / findings / suppressions / file_states /
-	 * update_events)を dbDelta で作成・更新する. file_states は v0.5(rev.3 §3.3)、
-	 * update_events は v0.6(§2.1)で追加.
+	 * 7 テーブル(runs / target_runs / findings / suppressions / file_states /
+	 * update_events / manifest_cache)を dbDelta で作成・更新する. file_states は
+	 * v0.5(rev.3 §3.3)、update_events は v0.6(§2.1)、manifest_cache は
+	 * v0.7(§3.1)で追加.
 	 *
 	 * @return void
 	 */
@@ -202,6 +203,7 @@ class WPCV_Migrator {
 			$wpdb->base_prefix . 'wpcv_suppressions',
 			$wpdb->base_prefix . 'wpcv_file_states',
 			$wpdb->base_prefix . 'wpcv_update_events',
+			$wpdb->base_prefix . 'wpcv_manifest_cache',
 		);
 
 		$by_table = array();
@@ -265,7 +267,7 @@ class WPCV_Migrator {
 	}
 
 	/**
-	 * 6 テーブル分の CREATE TABLE 文を組み立てて返す(`create_or_update_tables()` から分離).
+	 * 7 テーブル分の CREATE TABLE 文を組み立てて返す(`create_or_update_tables()` から分離).
 	 *
 	 * `global $wpdb` にしか依存しない純粋な文字列組み立てのため、単体テストから
 	 * `ReflectionMethod` 経由で呼び出し、`WPCV_DB_VERSION` を上げた際に必要な
@@ -286,6 +288,8 @@ class WPCV_Migrator {
 		$suppressions_table  = $wpdb->base_prefix . 'wpcv_suppressions';
 		$file_states_table   = $wpdb->base_prefix . 'wpcv_file_states';
 		$update_events_table = $wpdb->base_prefix . 'wpcv_update_events';
+
+		$manifest_cache_table = $wpdb->base_prefix . 'wpcv_manifest_cache';
 
 		// §5.2: run 全体の集計値. status = partial は「1 つ以上の target が
 		// unverifiable / failed だが run 自体は完走した」を意味する。
@@ -531,7 +535,30 @@ class WPCV_Migrator {
 	KEY idx_event_at (event_at)
 ) {$charset_collate};";
 
-		return array( $sql_runs, $sql_target_runs, $sql_findings, $sql_suppressions, $sql_file_states, $sql_update_events );
+		// v0.7 §3.1(U3): 取得したマニフェスト(テーマの zip から作ったファイルごとの
+		// ハッシュ. v0.7 Step4 以降はコアのマニフェストも)のキャッシュ. zip は展開
+		// しないため(D2)、ファイルの置き場所は持たずテーブルだけで完結させる.
+		// `files` は `{ path: { sha256, md5 } }` の JSON(D3). 期限は持たず、run の
+		// 終端で「今回の run に現れなかった (slug, version)」の行を消す(D4).
+		// 列の長さは UNIQUE KEY (source, slug, version) が utf8mb4 で
+		// (16 + 100 + 64) × 4 = 720 バイトになり、COMPACT 行形式の索引の上限
+		// (767バイト)に収まるように決めた. この長さを超える slug/version は
+		// 切り詰めると別のキーと衝突するため、保存しない(`WPCV_Manifest_Cache_Repository::save()` 参照).
+		// archive_bytes は運用の確認用(取得した zip のサイズ. コアは 0).
+		$sql_manifest_cache = "CREATE TABLE {$manifest_cache_table} (
+	id bigint unsigned NOT NULL auto_increment,
+	source varchar(16) NOT NULL,
+	slug varchar(100) NOT NULL,
+	version varchar(64) NOT NULL,
+	files longtext NOT NULL,
+	file_count int unsigned NOT NULL default 0,
+	archive_bytes bigint unsigned NOT NULL default 0,
+	fetched_at datetime NOT NULL,
+	PRIMARY KEY (id),
+	UNIQUE KEY idx_source_slug_version (source, slug, version)
+) {$charset_collate};";
+
+		return array( $sql_runs, $sql_target_runs, $sql_findings, $sql_suppressions, $sql_file_states, $sql_update_events, $sql_manifest_cache );
 	}
 
 	/**

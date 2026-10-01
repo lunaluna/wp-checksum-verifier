@@ -33,6 +33,9 @@ $wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->base_prefix . 'wpcv_file_states' 
 // v0.6(プラン§2.1・D1)で追加した更新イベントの記録テーブル.
 // phpcs:ignore WordPress.DB.DirectDatabaseQuery.SchemaChange,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- uninstall cleanup.
 $wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->base_prefix . 'wpcv_update_events' );
+// v0.7(プラン§3.1・U3)で追加したマニフェストキャッシュのテーブル.
+// phpcs:ignore WordPress.DB.DirectDatabaseQuery.SchemaChange,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- uninstall cleanup.
+$wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->base_prefix . 'wpcv_manifest_cache' );
 
 // DBバージョン(WPCV_Migrator::DB_VERSION_OPTION)・設定画面の値(alert_to等.
 // WPCV_Settings::OPTION_NAME)・REST APIトークンのハッシュ(read/write.

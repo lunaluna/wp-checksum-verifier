@@ -60,12 +60,13 @@ class UninstallTest extends TestCase {
 	}
 
 	/**
-	 * 5テーブルすべてに `DROP TABLE IF EXISTS` が発行されることを確認する
-	 * (既存の削除処理. 回帰確認).
+	 * 7テーブルすべてに `DROP TABLE IF EXISTS` が発行されることを確認する
+	 * (既存の削除処理の回帰確認. v0.6 の `wpcv_update_events` と v0.7 §Step1 の
+	 * `wpcv_manifest_cache` もここで確かめる).
 	 *
 	 * @return void
 	 */
-	public function test_drops_all_five_installation_level_tables() {
+	public function test_drops_all_installation_level_tables() {
 		$wpdb = $this->run_uninstall();
 
 		$expected_tables = array(
@@ -74,6 +75,8 @@ class UninstallTest extends TestCase {
 			'wp_wpcv_runs',
 			'wp_wpcv_suppressions',
 			'wp_wpcv_file_states',
+			'wp_wpcv_update_events',
+			'wp_wpcv_manifest_cache',
 		);
 
 		foreach ( $expected_tables as $table ) {
