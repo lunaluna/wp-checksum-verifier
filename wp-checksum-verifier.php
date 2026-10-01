@@ -153,6 +153,7 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-path-norm
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/interface-wpcv-manifest-source.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-core.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-wporg-plugin.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-zip-manifest-reader.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-wporg-theme.php';
 
 /**

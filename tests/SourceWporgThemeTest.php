@@ -10,6 +10,7 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-error-code.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-file-hasher.php';
 require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-source.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-manifest-cache-repository.php';
+require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-zip-manifest-reader.php';
 require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-source-wporg-theme.php';
 require_once __DIR__ . '/doubles.php';
 
