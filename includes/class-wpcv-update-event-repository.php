@@ -130,6 +130,27 @@ class WPCV_Update_Event_Repository {
 	}
 
 	/**
+	 * 指定した target に、指定時刻以降の更新イベントが1件でもあるかを返す(v0.8 §Step1. §3.3-3).
+	 *
+	 * Chunk の途中で同じ version の入れ直しが入ったかを見るのに使う. `event_at` は
+	 * 秒単位なので、`>=` で比べる(同じ秒に記録された直前のイベントも「あり」にして
+	 * 取り直す側へ倒す. 余分に1回取り直すだけで、見逃すより安全).
+	 *
+	 * @param string $target_id 本体の target_id(`plugin:foo`・`theme:bar`・`core`).
+	 * @param string $since     `Y-m-d H:i:s` 形式の UTC 日時.
+	 * @return bool
+	 */
+	public function exists_since( $target_id, $since ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_update_events';
+		$sql   = "SELECT id FROM {$table} WHERE target_id = %s AND event_at >= %s LIMIT 1";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; values are bound via prepare() here.
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (string) $target_id, (string) $since ), ARRAY_A );
+
+		return is_array( $rows ) && ! empty( $rows );
+	}
+
+	/**
 	 * `$after` より後(・`$before` 以下、指定があれば)の更新イベントを一覧表示用に返す
 	 * (v0.6 §Step7. 実行履歴詳細の「Update events since the previous run」節から
 	 * 呼ぶ。`find_matching()`と異なりtarget_id・versionでは絞り込まず、`event_at`

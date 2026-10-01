@@ -213,6 +213,12 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-alert-com
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-update-lock-detector.php';
 
 /**
+ * プラグイン・テーマ・コアの「今のディスク上の version」を読む(v0.8 §Step1. D13.
+ * run の途中の更新に追従するため、キャッシュを通さずファイルから直接読む).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-current-version-reader.php';
+
+/**
  * DB 永続化層(§4.2. v0.4.0 §Step1でrun/target_run/findingの3責務に分割)と、
  * 1回分の run のライフサイクルを統括する Coordinator.
  */

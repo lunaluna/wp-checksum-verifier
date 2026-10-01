@@ -33,6 +33,7 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-migrator.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-chunk-result-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-file-state-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-planner.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-current-version-reader.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-starter.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-coordinator.php';
@@ -761,6 +762,9 @@ class ThemeTargetDispatchTest extends TestCase {
 		};
 
 		( new WPCV_Update_Event_Repository( $made['wpdb'], $later_now ) )->insert( $target_id, $version, 'theme_update' );
+
+		// 記録は基準の run より後(12:00:01)なので、次の chunk の開始(12:00:02)はそれより後にする.
+		$GLOBALS['_wpcv_test_dispatcher_now'] = '2026-09-08 12:00:02';
 	}
 
 	/**
