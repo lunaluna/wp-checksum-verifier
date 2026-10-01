@@ -23,7 +23,49 @@ permissions:
   contents: write
 
 jobs:
+  verify-pot-version:
+    # languages/*.pot と *-ja.po の Project-Id-Version は手動更新の現在バージョン表記
+    # (v0.8 §Step9. R4). "Project-Id-Version: <製品名> <version>\n" という書式
+    # (ラベルと version の間に製品名、末尾に \n" が付く)は、verify_version の抽出
+    # ロジック(下の version_files)では正しく切り出せないため、専用ステップで
+    # チェックする。作り直し忘れでバージョンがずれたままリリースするのを防ぐ
+    # (forced-auto-update-controller の verify-pot-version と同じ形).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release version
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          if [ -z "$TAG" ]; then
+            echo "::error::タグを解決できませんでした(workflow_dispatch では tag 入力が必須です)"
+            exit 1
+          fi
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify .pot / .po Project-Id-Version matches the release version
+        run: |
+          VERSION="${{ steps.resolve.outputs.version }}"
+          STATUS=0
+          for FILE in languages/wp-checksum-verifier.pot languages/wp-checksum-verifier-ja.po; do
+            FILE_VERSION=$(grep -E '^"Project-Id-Version:' "$FILE" \
+              | head -n1 | sed -E 's/.*[[:space:]]([0-9][0-9.]*)\\n"$/\1/')
+            echo "$FILE Project-Id-Version: $FILE_VERSION"
+            echo "Release version: $VERSION"
+            if [ "$FILE_VERSION" != "$VERSION" ]; then
+              echo "::error::$FILE の Project-Id-Version ($FILE_VERSION) がリリースバージョン ($VERSION) と一致しません"
+              STATUS=1
+            fi
+          done
+          exit $STATUS
+
   release:
+    needs: [ verify-pot-version ]
     uses: lunaluna/l2d-wp-github-update-lib/.github/workflows/plugin-release.yml@1.2.0
     with:
       slug: wp-checksum-verifier
@@ -32,6 +74,7 @@ jobs:
       version_files: |
         wp-checksum-verifier.php:^[[:space:]]*\*[[:space:]]*Version:
         readme.txt:^Stable tag:
+        readme-ja.txt:^Stable tag:
         composer.json:"version":
       notes_source: CHANGELOG.md
       php_version: '8.2'

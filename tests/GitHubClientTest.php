@@ -312,7 +312,8 @@ class GitHubClientTest extends TestCase {
 
 		$this->assertSame( 'application/vnd.github+json', $headers['Accept'] );
 		$this->assertSame( '2022-11-28', $headers['X-GitHub-Api-Version'] );
-		$this->assertStringStartsWith( 'wp-checksum-verifier/', $headers['User-Agent'] );
+		// バージョンはメインファイルのヘッダーから読む(`dev` のままなら読めていない).
+		$this->assertMatchesRegularExpression( '#^wp-checksum-verifier/\\d+\\.\\d+\\.\\d+#', $headers['User-Agent'] );
 		$this->assertArrayNotHasKey( 'Authorization', $headers );
 		$this->assertSame( WPCV_GitHub_Client::DEFAULT_API_TIMEOUT, $this->calls[0][1]['timeout'] );
 		$this->assertFalse( WPCV_GitHub_Client::has_token() );

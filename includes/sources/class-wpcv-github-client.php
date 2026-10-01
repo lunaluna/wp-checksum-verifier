@@ -380,6 +380,26 @@ class WPCV_GitHub_Client {
 	}
 
 	/**
+	 * プラグインのバージョン(User-Agent に入れる)を、メインファイルのヘッダーから読む.
+	 *
+	 * バージョンの定数は無い(定数にすると、リリースのたびに更新する場所が増える)ので、
+	 * ヘッダーを1回だけ読んで覚える. 読めなければ `dev`.
+	 *
+	 * @return string
+	 */
+	private static function plugin_version() {
+		static $version = null;
+
+		if ( null === $version ) {
+			$file    = dirname( __DIR__, 2 ) . '/wp-checksum-verifier.php';
+			$data    = is_readable( $file ) ? get_file_data( $file, array( 'Version' => 'Version' ), 'plugin' ) : array();
+			$version = isset( $data['Version'] ) && '' !== $data['Version'] ? (string) $data['Version'] : 'dev';
+		}
+
+		return $version;
+	}
+
+	/**
 	 * GitHub API へのリクエスト引数(ヘッダーとタイムアウト).
 	 *
 	 * @param string $repo `owner/repo`(トークンの解決に使う).
@@ -395,7 +415,7 @@ class WPCV_GitHub_Client {
 
 		$headers = array(
 			'Accept'               => 'application/vnd.github+json',
-			'User-Agent'           => 'wp-checksum-verifier/' . ( defined( 'WPCV_VERSION' ) ? WPCV_VERSION : 'dev' ),
+			'User-Agent'           => 'wp-checksum-verifier/' . self::plugin_version(),
 			'X-GitHub-Api-Version' => $api_version,
 		);
 
