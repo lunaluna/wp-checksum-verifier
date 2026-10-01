@@ -10,9 +10,11 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-error-code.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-file-hasher.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-path-normalizer.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-static-target-resolver.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-budget.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-unknown-file-scanner.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-update-lock-detector.php';
 require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-source.php';
 require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-source-core.php';
 require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-source-wporg-plugin.php';
@@ -40,6 +42,9 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-alert-composer.ph
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-alert-sender.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-diff-dispatcher.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-failure-alerter.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-update-event-repository.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-update-event-recorder.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-update-event-matcher.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
 
 use PHPUnit\Framework\TestCase;
@@ -135,5 +140,39 @@ class PluginTest extends TestCase {
 	public function test_run_failure_alerter_returns_same_instance_on_repeated_calls() {
 		$this->assertInstanceOf( WPCV_Run_Failure_Alerter::class, WPCV_Plugin::run_failure_alerter() );
 		$this->assertSame( WPCV_Plugin::run_failure_alerter(), WPCV_Plugin::run_failure_alerter() );
+	}
+
+	/**
+	 * `update_event_repository()`(v0.6 §Step1)が `WPCV_Update_Event_Repository` の
+	 * インスタンスを返し、複数回呼び出しても同一インスタンスが返ることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_update_event_repository_returns_same_instance_on_repeated_calls() {
+		$this->assertInstanceOf( WPCV_Update_Event_Repository::class, WPCV_Plugin::update_event_repository() );
+		$this->assertSame( WPCV_Plugin::update_event_repository(), WPCV_Plugin::update_event_repository() );
+	}
+
+	/**
+	 * `update_event_recorder()`(v0.6 §Step2)が `WPCV_Update_Event_Recorder` の
+	 * インスタンスを返し、複数回呼び出しても同一インスタンスが返ることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_update_event_recorder_returns_same_instance_on_repeated_calls() {
+		$this->assertInstanceOf( WPCV_Update_Event_Recorder::class, WPCV_Plugin::update_event_recorder() );
+		$this->assertSame( WPCV_Plugin::update_event_recorder(), WPCV_Plugin::update_event_recorder() );
+	}
+
+	/**
+	 * `update_event_matcher()`(v0.6 §Step3。§Step4で`WPCV_Chunk_Dispatcher`とも
+	 * 共有するようにした)が `WPCV_Update_Event_Matcher` のインスタンスを返し、
+	 * 複数回呼び出しても同一インスタンスが返ることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_update_event_matcher_returns_same_instance_on_repeated_calls() {
+		$this->assertInstanceOf( WPCV_Update_Event_Matcher::class, WPCV_Plugin::update_event_matcher() );
+		$this->assertSame( WPCV_Plugin::update_event_matcher(), WPCV_Plugin::update_event_matcher() );
 	}
 }

@@ -9,6 +9,7 @@ require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-path-normalizer.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-budget.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-unknown-file-scanner.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-file-hasher.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-stat-bench.php';
 require_once dirname( __DIR__ ) . '/includes/cli/class-wpcv-cli-bench-stat-command.php';
 
@@ -149,6 +150,61 @@ class CliBenchStatCommandTest extends TestCase {
 	}
 
 	/**
+	 * `--hash` を指定しない場合、content-hash行が出力されないことを確認する
+	 * (v0.6 §Step8. 既定ではハッシュ計算を行わない).
+	 *
+	 * @return void
+	 */
+	public function test_invoke_omits_content_hash_lines_without_hash_flag() {
+		mkdir( ABSPATH . 'wp-admin', 0777, true );
+		file_put_contents( ABSPATH . 'wp-admin/a.php', 'x' );
+
+		$command = new WPCV_CLI_Bench_Stat_Command();
+		$command->__invoke( array(), array( 'dir' => ABSPATH . 'wp-admin' ) );
+
+		$lines = $GLOBALS['_wpcv_test_wp_cli_calls']['line'];
+
+		$this->assertSame( array(), array_values( array_filter( $lines, static function ( $line ) {
+			return false !== strpos( $line, 'content-hash' );
+		} ) ) );
+	}
+
+	/**
+	 * `--hash` を指定すると、iterationごとにcontent-hash(cold/warm)の行が
+	 * 出力されることを確認する(v0.6 §Step8. 層2の実測).
+	 *
+	 * @return void
+	 */
+	public function test_invoke_reports_content_hash_lines_with_hash_flag() {
+		mkdir( ABSPATH . 'wp-admin', 0777, true );
+		file_put_contents( ABSPATH . 'wp-admin/a.php', 'x' );
+
+		$command = new WPCV_CLI_Bench_Stat_Command();
+		$command->__invoke( array(), array( 'dir' => ABSPATH . 'wp-admin', 'hash' => true ) );
+
+		$this->assertArrayNotHasKey( 'error', $GLOBALS['_wpcv_test_wp_cli_calls'] );
+
+		$lines = $GLOBALS['_wpcv_test_wp_cli_calls']['line'];
+
+		$this->assertNotEmpty(
+			array_filter(
+				$lines,
+				static function ( $line ) {
+					return 0 === strpos( $line, 'content-hash sha256 (cold)' );
+				}
+			)
+		);
+		$this->assertNotEmpty(
+			array_filter(
+				$lines,
+				static function ( $line ) {
+					return 0 === strpos( $line, 'content-hash sha256 (warm)' );
+				}
+			)
+		);
+	}
+
+	/**
 	 * `report()` が entries/seconds/bytes を含む行を整形して出力することを確認する
 	 * (`__invoke()` から分離した静的メソッドの単体テスト).
 	 *
@@ -215,5 +271,58 @@ class CliBenchStatCommandTest extends TestCase {
 		$this->assertStringContainsString( 'lstat-only (warm): entries=10', $lines[6] );
 		$this->assertStringContainsString( 'triple-call (cold): entries=10', $lines[7] );
 		$this->assertStringContainsString( 'triple-call (warm): entries=10', $lines[8] );
+	}
+
+	/**
+	 * `report()` が `content_hash_cold`/`content_hash_warm` を含む run に対して
+	 * それぞれの行を出力することを確認する(v0.6 §Step8).
+	 *
+	 * @return void
+	 */
+	public function test_report_includes_content_hash_lines_when_present() {
+		$stats = array(
+			'entries'         => 5,
+			'seconds'         => 0.3,
+			'bytes'           => 500,
+			'entries_per_sec' => 16.7,
+			'bytes_per_sec'   => 1666.7,
+		);
+
+		WPCV_CLI_Bench_Stat_Command::report(
+			array(
+				'runs'             => array(
+					array(
+						'iteration'         => 1,
+						'lstat_cold'        => $stats,
+						'lstat_warm'        => $stats,
+						'content_hash_cold' => $stats,
+						'content_hash_warm' => $stats,
+					),
+				),
+				'lstat_only_cold'  => $stats,
+				'lstat_only_warm'  => $stats,
+				'triple_call_cold' => $stats,
+				'triple_call_warm' => $stats,
+			)
+		);
+
+		$lines = $GLOBALS['_wpcv_test_wp_cli_calls']['line'];
+
+		$this->assertNotEmpty(
+			array_filter(
+				$lines,
+				static function ( $line ) {
+					return 0 === strpos( $line, 'content-hash sha256 (cold): entries=5' );
+				}
+			)
+		);
+		$this->assertNotEmpty(
+			array_filter(
+				$lines,
+				static function ( $line ) {
+					return 0 === strpos( $line, 'content-hash sha256 (warm): entries=5' );
+				}
+			)
+		);
 	}
 }

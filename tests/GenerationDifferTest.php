@@ -510,6 +510,27 @@ class GenerationDifferTest extends TestCase {
 		$this->assertFalse( WPCV_Generation_Differ::should_send_alert( 0, 0 ) );
 	}
 
+	/**
+	 * 記録なしのversion変更(v0.6プラン §3.1・D5・U3)が1件以上あれば送ることを
+	 * 確認する.
+	 *
+	 * @return void
+	 */
+	public function test_should_send_alert_true_when_unrecorded_version_change_count_positive() {
+		$this->assertTrue( WPCV_Generation_Differ::should_send_alert( 0, 0, false, 1 ) );
+	}
+
+	/**
+	 * 記録なしのversion変更が0件なら、他の入力も0/falseなら送らないことを確認する
+	 * (第4引数の既定値が0であることも合わせて確認).
+	 *
+	 * @return void
+	 */
+	public function test_should_send_alert_false_when_unrecorded_version_change_count_is_zero() {
+		$this->assertFalse( WPCV_Generation_Differ::should_send_alert( 0, 0, false, 0 ) );
+		$this->assertFalse( WPCV_Generation_Differ::should_send_alert( 0, 0, false ) );
+	}
+
 	// ------------------------------------------------------------------
 	// v0.5後半 §Step15b: is_unverifiable_streak_member()(§2.1の全セル)
 	// ------------------------------------------------------------------

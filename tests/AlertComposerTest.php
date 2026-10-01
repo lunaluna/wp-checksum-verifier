@@ -274,22 +274,71 @@ class AlertComposerTest extends TestCase {
 	public function test_optional_sections_are_rendered() {
 		$result = WPCV_Alert_Composer::compose(
 			array(
-				'baseline_rebuilt'       => array(
+				'baseline_rebuilt'           => array(
 					array( 'target_id' => 'plugin:baz', 'from_version' => '1.2.0', 'to_version' => '1.3.0' ),
 				),
-				'unverifiable_streaks'   => array(
+				'unrecorded_version_changes' => array(
+					array( 'target_id' => 'plugin:foo', 'from_version' => '1.0.0', 'to_version' => '1.1.0' ),
+				),
+				'unverifiable_streaks'       => array(
 					array( 'target_id' => 'plugin:qux', 'error_code' => WPCV_Error_Code::HTTP_ERROR ),
 				),
-				'unverifiable_threshold' => 3,
-				'removed_targets'        => 2,
-				'details_url'            => 'https://example.com/wp-admin/admin.php?page=wpcv-findings',
+				'unverifiable_threshold'     => 3,
+				'removed_targets'            => 2,
+				'details_url'                => 'https://example.com/wp-admin/admin.php?page=wpcv-findings',
 			)
 		);
 
+		$this->assertSame( array( '  plugin:foo 1.0.0 -> 1.1.0' ), $this->section_lines( $result['body'], 'Version changed without a WordPress update:' ) );
 		$this->assertSame( array( '  plugin:baz 1.2.0 -> 1.3.0' ), $this->section_lines( $result['body'], 'Not verified today (baseline rebuilt after a version change):' ) );
 		$this->assertSame( array( '  plugin:qux  http_error' ), $this->section_lines( $result['body'], 'Unverifiable 3 times in a row:' ) );
 		$this->assertStringContainsString( "\nRemoved targets: 2\n", $result['body'] );
 		$this->assertStringEndsWith( "\nDetails: https://example.com/wp-admin/admin.php?page=wpcv-findings\n", $result['body'] );
+
+		// 節の並び順(v0.6プラン §4): unrecorded_version_changesはbaseline_rebuiltより前.
+		$this->assertLessThan(
+			strpos( $result['body'], 'Not verified today (baseline rebuilt after a version change):' ),
+			strpos( $result['body'], 'Version changed without a WordPress update:' )
+		);
+	}
+
+	/**
+	 * 件名: `new`/`resolved`がどちらも0で、記録なしのversion変更だけがある場合は
+	 * 専用の文言になることを確認する(v0.6プラン §4「件名」).
+	 *
+	 * @return void
+	 */
+	public function test_subject_uses_unrecorded_version_change_wording_when_no_findings() {
+		$result = WPCV_Alert_Composer::compose(
+			array(
+				'site_name'                  => 'Example Site',
+				'unrecorded_version_changes' => array(
+					array( 'target_id' => 'plugin:foo', 'from_version' => '1.0.0', 'to_version' => '1.1.0' ),
+				),
+			)
+		);
+
+		$this->assertSame( '[WPCV] Example Site: 1 version change(s) without a WordPress update', $result['subject'] );
+	}
+
+	/**
+	 * 件名: findingがある場合は、記録なしのversion変更があっても通常の
+	 * 「N new findings, N resolved」のままであることを確認する(通常の状況を優先).
+	 *
+	 * @return void
+	 */
+	public function test_subject_uses_normal_wording_when_findings_present_alongside_unrecorded_version_change() {
+		$result = WPCV_Alert_Composer::compose(
+			array(
+				'site_name'                  => 'Example Site',
+				'counts'                     => array( 'new' => 2, 'resolved' => 0, 'continuing' => 0 ),
+				'unrecorded_version_changes' => array(
+					array( 'target_id' => 'plugin:foo', 'from_version' => '1.0.0', 'to_version' => '1.1.0' ),
+				),
+			)
+		);
+
+		$this->assertSame( '[WPCV] Example Site: 2 new findings, 0 resolved', $result['subject'] );
 	}
 
 	/**

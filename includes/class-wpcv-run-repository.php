@@ -1224,6 +1224,23 @@ class WPCV_Run_Repository {
 	}
 
 	/**
+	 * 指定した run の直前(id が1つ小さい方向で最も近い)の run を1件返す(v0.6 §Step7:
+	 * `WPCV_Page_Run_History` の実行履歴詳細画面が「Update events since the
+	 * previous run」節の期間の起点(直前runの`started_at`)を求めるために使う。
+	 * statusは問わない(表示専用であり、突き合わせ判定〔D5・D6〕には使わないため.
+	 * `WPCV_Update_Event_Matcher`のクラスdocblock参照:突き合わせは各targetの
+	 * 「基準target_run」が属するrunを使う、別の窓).
+	 *
+	 * @param int $run_id 基準にする run の id.
+	 * @return array|null 見つからなければ(最初の run の場合等)`null`.
+	 */
+	public function find_previous_run( $run_id ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+
+		return $this->first_row( $this->wpdb->prepare( "SELECT * FROM {$table} WHERE id < %d ORDER BY id DESC LIMIT 1", (int) $run_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name only.
+	}
+
+	/**
 	 * 全run行を、新しい(id最大の)ものから順にpagination付きで返す(v0.4.0 §Step9:
 	 * `WPCV_Page_Run_History` の実行履歴一覧画面から使う).
 	 *

@@ -213,11 +213,27 @@ class WPCV_Runner_Async {
 	 * ブロックし続けない設計にするため(§6.2「WP-Cron自動実行はdue runの作成と
 	 * dispatcher起動を行う」。`WPCV_Run_Coordinator` のクラス docblock も参照).
 	 *
+	 * v0.6 §Step6(D10): `mark_queued_planning()` より前に `.maintenance`/
+	 * updater lock を確かめる。`mark_queued_planning()` は `queued` のときだけ
+	 * `planning` へ遷移できる条件付きUPDATEのため(このメソッド自身のdocblock
+	 * 「対象行が既に`queued`ではない場合...no-opで戻る」参照)、一度`planning`へ
+	 * 進めてから延期すると、再度この hook が発火しても
+	 * `mark_queued_planning()` が常に false を返し、run が `planning` のまま
+	 * 二度と進まなくなる(実装中に気づいた罠)。そのため延期判定は run の状態を
+	 * 一切変更する前に行い、延期する場合は `queued` のまま
+	 * `schedule_retry()` で同じ hook を再度予約するだけに留める.
+	 *
 	 * @param int    $run_id      `enqueue_via_action_scheduler()` が enqueue した run の id.
 	 * @param string $run_trigger `enqueue_run()` に渡されたもの.
 	 * @return void
 	 */
 	public static function run_async_action( $run_id, $run_trigger ) {
+		if ( WPCV_Plugin::update_lock_detector()->is_deferred() ) {
+			self::schedule_retry( (int) $run_id, (string) $run_trigger, WPCV_Chunk_Dispatcher::DEFER_SECONDS );
+
+			return;
+		}
+
 		if ( ! WPCV_Plugin::run_repository()->mark_queued_planning( (int) $run_id ) ) {
 			return;
 		}
@@ -227,6 +243,44 @@ class WPCV_Runner_Async {
 		WPCV_Run_Starter::plan_and_save( WPCV_Plugin::run_repository(), new WPCV_Run_Planner( WPCV_Plugin::suppression_repository(), WPCV_Settings::get_stat_detection_enabled() ), WPCV_Plugin::target_run_repository(), (int) $run_id, $context );
 
 		WPCV_Plugin::chunk_dispatcher()->dispatch( (int) $run_id, $context );
+	}
+
+	/**
+	 * `self::HOOK` を `$delay_seconds` 後に同じ引数で再予約する(v0.6 §Step6.
+	 * D10で延期するときに使う).
+	 *
+	 * `run_async_action()` はAction Schedulerのワーカーからのみ呼ばれるため、
+	 * ここに到達した時点でAction Scheduler自体は必ず利用可能(enqueue時点で
+	 * 確認済み。クラス docblock 参照)。それでも `schedule_via_action_scheduler()`
+	 * (`WPCV_Chunk_Dispatcher`)と同じ理由で可用性を再確認し、予約に失敗したら
+	 * 例外を投げる(呼び出し元はAction Schedulerのフック実行中であり、AS自身が
+	 * 例外を捕捉してこのactionをfailed記録するだけで安全に吸収される).
+	 *
+	 * @param int    $run_id        再予約する run の id.
+	 * @param string $run_trigger   再予約する run_trigger.
+	 * @param int    $delay_seconds 遅延(秒).
+	 * @return void
+	 *
+	 * @throws RuntimeException 予約に失敗した場合.
+	 */
+	private static function schedule_retry( $run_id, $run_trigger, $delay_seconds ) {
+		if ( ! function_exists( 'as_schedule_single_action' ) || ! class_exists( 'ActionScheduler' ) || ! ActionScheduler::is_initialized() ) {
+			return;
+		}
+
+		$action_id = as_schedule_single_action( time() + (int) $delay_seconds, self::HOOK, array( (int) $run_id, (string) $run_trigger ), self::GROUP );
+
+		if ( (int) $action_id <= 0 ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf(
+						'WPCV_Runner_Async::schedule_retry() は run #%d の延期再試行予約(as_schedule_single_action)に失敗しました(戻り値: %d).',
+						(int) $run_id,
+						(int) $action_id
+					)
+				)
+			);
+		}
 	}
 }
 

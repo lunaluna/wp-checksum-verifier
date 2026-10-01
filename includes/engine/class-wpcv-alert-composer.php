@@ -76,6 +76,10 @@ class WPCV_Alert_Composer {
 	 *     @type array  $resolved_items         解消した finding(`target_id`/`path`/`status`).
 	 *     @type array  $baseline_rebuilt       version 変更で基準を作り直した target
 	 *                                          (`target_id`/`from_version`/`to_version`. U3).
+	 *     @type array  $unrecorded_version_changes WordPressの更新機構を通った記録が
+	 *                                          見つからなかった version 変更(チェックサム
+	 *                                          target。`target_id`/`from_version`/
+	 *                                          `to_version`. v0.6プラン §3.1・U3).
 	 *     @type array  $unverifiable_streaks   連続 unverifiable の閾値に達した target
 	 *                                          (`target_id`/`error_code`. Step15で使う).
 	 *     @type int    $unverifiable_threshold 連続 unverifiable の閾値(見出しの回数).
@@ -88,19 +92,20 @@ class WPCV_Alert_Composer {
 	public static function compose( array $input ) {
 		$input = array_merge(
 			array(
-				'site_name'              => '',
-				'run'                    => array(),
-				'target_runs'            => array(),
-				'counts'                 => array(),
-				'top_items'              => array(),
-				'by_target'              => array(),
-				'resolved_items'         => array(),
-				'baseline_rebuilt'       => array(),
-				'unverifiable_streaks'   => array(),
-				'unverifiable_threshold' => 0,
-				'removed_targets'        => 0,
-				'details_url'            => '',
-				'max_items'              => null,
+				'site_name'                  => '',
+				'run'                        => array(),
+				'target_runs'                => array(),
+				'counts'                     => array(),
+				'top_items'                  => array(),
+				'by_target'                  => array(),
+				'resolved_items'             => array(),
+				'baseline_rebuilt'           => array(),
+				'unrecorded_version_changes' => array(),
+				'unverifiable_streaks'       => array(),
+				'unverifiable_threshold'     => 0,
+				'removed_targets'            => 0,
+				'details_url'                => '',
+				'max_items'                  => null,
 			),
 			$input
 		);
@@ -116,7 +121,7 @@ class WPCV_Alert_Composer {
 		);
 
 		return array(
-			'subject' => self::build_subject( (string) $input['site_name'], (int) $counts['new'], (int) $counts['resolved'] ),
+			'subject' => self::build_subject( (string) $input['site_name'], (int) $counts['new'], (int) $counts['resolved'], count( (array) $input['unrecorded_version_changes'] ) ),
 			'body'    => self::build_body( $input, $counts, $max_items ),
 		);
 	}
@@ -124,12 +129,29 @@ class WPCV_Alert_Composer {
 	/**
 	 * 件名を組み立てる(§6: ヘッダーインジェクション対策として改行と制御文字を除く).
 	 *
-	 * @param string $site_name      サイト名.
-	 * @param int    $new_count      新規件数.
-	 * @param int    $resolved_count 解消件数.
+	 * `$new_count`・`$resolved_count`がどちらも0で、記録なしのversion変更
+	 * (`$unrecorded_version_change_count`)だけで送信するケース(v0.6プラン §4「件名」.
+	 * Step3で分岐を決めた)は、`N new findings, N resolved`のままだと`0 new
+	 * findings, 0 resolved`になり情報が無いため、専用の文言にする.
+	 *
+	 * @param string $site_name                       サイト名.
+	 * @param int    $new_count                       新規件数.
+	 * @param int    $resolved_count                  解消件数.
+	 * @param int    $unrecorded_version_change_count 記録なしのversion変更の件数(v0.6 §3.1).
 	 * @return string
 	 */
-	private static function build_subject( $site_name, $new_count, $resolved_count ) {
+	private static function build_subject( $site_name, $new_count, $resolved_count, $unrecorded_version_change_count = 0 ) {
+		if ( 0 === $new_count && 0 === $resolved_count && $unrecorded_version_change_count > 0 ) {
+			$subject = sprintf(
+				/* translators: 1: site name, 2: number of version changes without a recorded WordPress update. */
+				__( '[WPCV] %1$s: %2$s version change(s) without a WordPress update', 'wp-checksum-verifier' ),
+				self::clean_site_name( $site_name ),
+				number_format( $unrecorded_version_change_count )
+			);
+
+			return self::strip_control_chars( $subject );
+		}
+
 		$subject = sprintf(
 			/* translators: 1: site name, 2: number of new findings, 3: number of resolved findings. */
 			__( '[WPCV] %1$s: %2$s new findings, %3$s resolved', 'wp-checksum-verifier' ),
@@ -227,6 +249,20 @@ class WPCV_Alert_Composer {
 					self::clean( $item['target_id'] ?? '' ),
 					self::clean_path( $item['path'] ?? '' ),
 					self::clean( $item['status'] ?? '' )
+				);
+			}
+		}
+
+		if ( ! empty( $input['unrecorded_version_changes'] ) ) {
+			$lines[] = '';
+			$lines[] = __( 'Version changed without a WordPress update:', 'wp-checksum-verifier' );
+
+			foreach ( (array) $input['unrecorded_version_changes'] as $item ) {
+				$lines[] = sprintf(
+					'  %1$s %2$s -> %3$s',
+					self::clean( $item['target_id'] ?? '' ),
+					self::clean( $item['from_version'] ?? '' ),
+					self::clean( $item['to_version'] ?? '' )
 				);
 			}
 		}

@@ -19,6 +19,11 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.ph
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-file-state-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-migrator.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-update-event-repository.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-update-event-matcher.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-alert-sender.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-diff-dispatcher.php';
 require_once __DIR__ . '/doubles.php';
@@ -69,12 +74,15 @@ class DiffDispatcherTest extends TestCase {
 			return self::NOW;
 		};
 
-		$wpdb                   = new WPCV_Test_Fake_WPDB();
-		$run_repository         = new WPCV_Run_Repository( $wpdb, $now );
-		$target_run_repository  = new WPCV_Target_Run_Repository( $wpdb, $now );
-		$finding_repository     = new WPCV_Finding_Repository( $wpdb );
-		$file_state_repository  = new WPCV_File_State_Repository( $wpdb, $now );
-		$alert_sender           = new WPCV_Alert_Sender( $run_repository, $target_run_repository, $finding_repository, $now );
+		$wpdb                    = new WPCV_Test_Fake_WPDB();
+		$run_repository          = new WPCV_Run_Repository( $wpdb, $now );
+		$target_run_repository   = new WPCV_Target_Run_Repository( $wpdb, $now );
+		$finding_repository      = new WPCV_Finding_Repository( $wpdb );
+		$file_state_repository   = new WPCV_File_State_Repository( $wpdb, $now );
+		$alert_sender            = new WPCV_Alert_Sender( $run_repository, $target_run_repository, $finding_repository, $now );
+		$update_event_repository = new WPCV_Update_Event_Repository( $wpdb, $now );
+		$update_event_matcher    = new WPCV_Update_Event_Matcher( $update_event_repository, $run_repository );
+		$suppression_repository  = new WPCV_Suppression_Repository( $wpdb, $now );
 
 		$owner_sequence = 0;
 		$dispatcher     = new WPCV_Diff_Dispatcher(
@@ -83,6 +91,8 @@ class DiffDispatcherTest extends TestCase {
 			$finding_repository,
 			$file_state_repository,
 			$alert_sender,
+			$update_event_matcher,
+			$suppression_repository,
 			static function () use ( &$owner_sequence ) {
 				++$owner_sequence;
 				return 'owner-' . $owner_sequence;
@@ -90,13 +100,16 @@ class DiffDispatcherTest extends TestCase {
 		);
 
 		return array(
-			'wpdb'                   => $wpdb,
-			'run_repository'         => $run_repository,
-			'target_run_repository'  => $target_run_repository,
-			'finding_repository'     => $finding_repository,
-			'file_state_repository'  => $file_state_repository,
-			'alert_sender'           => $alert_sender,
-			'dispatcher'             => $dispatcher,
+			'wpdb'                     => $wpdb,
+			'run_repository'           => $run_repository,
+			'target_run_repository'    => $target_run_repository,
+			'finding_repository'       => $finding_repository,
+			'file_state_repository'    => $file_state_repository,
+			'alert_sender'             => $alert_sender,
+			'update_event_repository'  => $update_event_repository,
+			'update_event_matcher'     => $update_event_matcher,
+			'suppression_repository'   => $suppression_repository,
+			'dispatcher'               => $dispatcher,
 		);
 	}
 
@@ -305,6 +318,263 @@ class DiffDispatcherTest extends TestCase {
 		$this->assertSame( WPCV_Generation_Differ::DIFF_STATE_NEW, $env['wpdb']->rows['wp_wpcv_findings'][ $finding_id ]['diff_state'] );
 		$this->assertSame( $run_id, $env['wpdb']->rows['wp_wpcv_findings'][ $baseline_finding_id ]['ended_in_run_id'] );
 		$this->assertSame( WPCV_Generation_Differ::END_REASON_VERSION_CHANGED, $env['wpdb']->rows['wp_wpcv_findings'][ $baseline_finding_id ]['end_reason'] );
+	}
+
+	/**
+	 * `wpcv_update_events`に1行記録する。`event_at`は基準run開始(`self::NOW`)より
+	 * 厳密に後(D5の`>`比較を満たす値)にする ―― `make_environment()`の
+	 * `update_event_repository`は`self::NOW`固定の`$now`を使うため、そのまま
+	 * `insert()`すると基準runと同時刻になり`find_matching()`にマッチしない
+	 * (D5「event_atが基準target_runのrun開始より後」は同時刻を含まない).
+	 *
+	 * @param WPCV_Test_Fake_WPDB $wpdb    テストダブル.
+	 * @param string              $target_id 対象のtarget_id.
+	 * @param string              $version   記録するversion.
+	 * @param string              $source    `plugin_update`等.
+	 * @return void
+	 */
+	private function insert_update_event( WPCV_Test_Fake_WPDB $wpdb, $target_id, $version, $source ) {
+		$later_now = static function () {
+			return '2026-09-08 12:00:01';
+		};
+
+		( new WPCV_Update_Event_Repository( $wpdb, $later_now ) )->insert( $target_id, $version, $source );
+	}
+
+	/**
+	 * `version_changed`時のD5突き合わせ(v0.6プラン §3.1・D5)用に、基準run・
+	 * 今回runとtarget_runを1組作る(`test_dispatch_diff_version_changed_mode`と
+	 * 同じ構成。基準runのstarted_atは固定の`self::NOW`).
+	 *
+	 * @param array $env `make_environment()`の戻り値.
+	 * @return array{run_id: int, target_run_id: int, baseline_run_id: int}
+	 */
+	private function make_version_changed_scenario( array $env ) {
+		$baseline_run_id = $this->make_run_ready_for_diff( $env['run_repository'] );
+		$this->insert_target_run( $env['wpdb'], $baseline_run_id, array( 'target_id' => 'plugin:foo', 'version' => '1.0' ) );
+
+		$run_id        = $this->make_run_ready_for_diff( $env['run_repository'] );
+		$target_run_id = $this->insert_target_run( $env['wpdb'], $run_id, array( 'target_id' => 'plugin:foo', 'version' => '2.0' ) );
+
+		return array(
+			'run_id'          => $run_id,
+			'target_run_id'   => $target_run_id,
+			'baseline_run_id' => $baseline_run_id,
+		);
+	}
+
+	/**
+	 * D5: 更新イベントの記録がある場合は`error_code`を書かないことを確認する
+	 * (§3.1の表「記録あり」の行。「黙って終える」=今と同じ挙動).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_diff_version_changed_mode_does_not_flag_when_update_event_recorded() {
+		$env      = $this->make_environment();
+		$scenario = $this->make_version_changed_scenario( $env );
+
+		$GLOBALS['_wpcv_test_options']['wpcv_update_events_since'] = '2020-01-01 00:00:00';
+		$this->insert_update_event( $env['wpdb'], 'plugin:foo', '2.0', 'plugin_update' );
+
+		$env['dispatcher']->dispatch_diff( $scenario['run_id'] );
+
+		$this->assertNull( $env['wpdb']->rows['wp_wpcv_target_runs'][ $scenario['target_run_id'] ]['error_code'] );
+	}
+
+	/**
+	 * D5: 記録が無く・期間内(基準run開始が`wpcv_update_events_since`以降)・
+	 * 設定ON(既定)のとき、`error_code = version_changed_unrecorded`を書くことを
+	 * 確認する(§3.1の表「記録なし・期間外いいえ・設定ON」の行。通知対象になる).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_diff_version_changed_mode_flags_unrecorded_when_no_matching_event() {
+		$env      = $this->make_environment();
+		$scenario = $this->make_version_changed_scenario( $env );
+
+		$GLOBALS['_wpcv_test_options']['wpcv_update_events_since'] = '2020-01-01 00:00:00';
+
+		$env['dispatcher']->dispatch_diff( $scenario['run_id'] );
+
+		$this->assertSame(
+			WPCV_Error_Code::VERSION_CHANGED_UNRECORDED,
+			$env['wpdb']->rows['wp_wpcv_target_runs'][ $scenario['target_run_id'] ]['error_code']
+		);
+	}
+
+	/**
+	 * D5: 記録された更新イベントのversionが今回のversionと一致しない場合は
+	 * 「記録なし」と同じ扱いになることを確認する(D5「versionが今回のversionと
+	 * 一致し」の条件).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_diff_version_changed_mode_flags_unrecorded_when_event_version_mismatches() {
+		$env      = $this->make_environment();
+		$scenario = $this->make_version_changed_scenario( $env );
+
+		$GLOBALS['_wpcv_test_options']['wpcv_update_events_since'] = '2020-01-01 00:00:00';
+		// 記録されているversionは今回(2.0)と異なる.
+		$this->insert_update_event( $env['wpdb'], 'plugin:foo', '1.9', 'plugin_update' );
+
+		$env['dispatcher']->dispatch_diff( $scenario['run_id'] );
+
+		$this->assertSame(
+			WPCV_Error_Code::VERSION_CHANGED_UNRECORDED,
+			$env['wpdb']->rows['wp_wpcv_target_runs'][ $scenario['target_run_id'] ]['error_code']
+		);
+	}
+
+	/**
+	 * D6: 記録が無く、基準runの開始が`wpcv_update_events_since`より前(期間外)の
+	 * ときは`error_code`を書かないことを確認する(§3.1の表「記録なし・期間外
+	 * はい」の行。「記録なしを理由に通知しない」).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_diff_version_changed_mode_does_not_flag_when_baseline_before_since() {
+		$env      = $this->make_environment();
+		$scenario = $this->make_version_changed_scenario( $env );
+
+		// 基準run開始(self::NOW = 2026-09-08 12:00:00)より後 = 期間外.
+		$GLOBALS['_wpcv_test_options']['wpcv_update_events_since'] = '2026-09-09 00:00:00';
+
+		$env['dispatcher']->dispatch_diff( $scenario['run_id'] );
+
+		$this->assertNull( $env['wpdb']->rows['wp_wpcv_target_runs'][ $scenario['target_run_id'] ]['error_code'] );
+	}
+
+	/**
+	 * D6: `wpcv_update_events_since`が未設定(通常は起こらないが安全側の確認)の
+	 * ときは判定できないため`error_code`を書かないことを確認する
+	 * (`WPCV_Migrator::get_update_events_since()`のdocblock参照).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_diff_version_changed_mode_does_not_flag_when_since_option_unset() {
+		$env      = $this->make_environment();
+		$scenario = $this->make_version_changed_scenario( $env );
+
+		// wpcv_update_events_sinceを設定しない(未設定のまま).
+		$env['dispatcher']->dispatch_diff( $scenario['run_id'] );
+
+		$this->assertNull( $env['wpdb']->rows['wp_wpcv_target_runs'][ $scenario['target_run_id'] ]['error_code'] );
+	}
+
+	/**
+	 * U3: 設定`alert_unrecorded_version_change`がOFFのときは、記録が無くても
+	 * `error_code`を書かないことを確認する(§3.1の表「記録なし・期間外いいえ・
+	 * 設定OFF」の行).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_diff_version_changed_mode_does_not_flag_when_setting_disabled() {
+		$env      = $this->make_environment();
+		$scenario = $this->make_version_changed_scenario( $env );
+
+		$GLOBALS['_wpcv_test_options']['wpcv_update_events_since'] = '2020-01-01 00:00:00';
+		$GLOBALS['_wpcv_test_options']['wpcv_settings']            = array( 'alert_unrecorded_version_change' => false );
+
+		$env['dispatcher']->dispatch_diff( $scenario['run_id'] );
+
+		$this->assertNull( $env['wpdb']->rows['wp_wpcv_target_runs'][ $scenario['target_run_id'] ]['error_code'] );
+	}
+
+	/**
+	 * D9(v0.6プラン §3.3): `version_changed`と判定されたtargetの`allowlist_hash`
+	 * 承認のうち、versionが今回と異なるものが失効することを確認する
+	 * (`make_version_changed_scenario()`はdimension=core・slug=wordpressの
+	 * target_runを作るため、同じdimension/slugでルールを登録する).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_diff_version_changed_mode_expires_allowlist_hash_with_different_version() {
+		$env      = $this->make_environment();
+		$scenario = $this->make_version_changed_scenario( $env );
+
+		$rule_id = $env['suppression_repository']->insert(
+			array(
+				'type'           => WPCV_Suppression_Type::ALLOWLIST_HASH,
+				'dimension'      => 'core',
+				'slug'           => 'wordpress',
+				'pattern'        => 'wp-admin/index.php',
+				'expected_hash'  => str_repeat( 'a', 64 ),
+				'hash_algorithm' => 'sha256',
+				'version'        => '1.0',
+				'reason'         => 'approved 1.0',
+				'created_by'     => 1,
+			)
+		);
+
+		$env['dispatcher']->dispatch_diff( $scenario['run_id'] );
+
+		$rule = $env['suppression_repository']->find_by_id( $rule_id );
+		$this->assertNotNull( $rule['expired_at'] );
+		$this->assertSame( WPCV_Suppression_Repository::EXPIRED_REASON_VERSION_CHANGED, $rule['expired_reason'] );
+	}
+
+	/**
+	 * D9: `allowlist_hash`承認のversionが今回と同じなら失効させないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_diff_version_changed_mode_does_not_expire_allowlist_hash_with_matching_version() {
+		$env      = $this->make_environment();
+		$scenario = $this->make_version_changed_scenario( $env );
+
+		$rule_id = $env['suppression_repository']->insert(
+			array(
+				'type'           => WPCV_Suppression_Type::ALLOWLIST_HASH,
+				'dimension'      => 'core',
+				'slug'           => 'wordpress',
+				'pattern'        => 'wp-admin/index.php',
+				'expected_hash'  => str_repeat( 'a', 64 ),
+				'hash_algorithm' => 'sha256',
+				'version'        => '2.0',
+				'reason'         => 'approved 2.0',
+				'created_by'     => 1,
+			)
+		);
+
+		$env['dispatcher']->dispatch_diff( $scenario['run_id'] );
+
+		$this->assertNull( $env['suppression_repository']->find_by_id( $rule_id )['expired_at'] );
+	}
+
+	/**
+	 * D9: `exclude_path`/`exclude_target`ルールは`version_changed`でも失効しない
+	 * ことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_diff_version_changed_mode_does_not_expire_exclude_rules() {
+		$env      = $this->make_environment();
+		$scenario = $this->make_version_changed_scenario( $env );
+
+		$exclude_path_id = $env['suppression_repository']->insert(
+			array(
+				'type'       => WPCV_Suppression_Type::EXCLUDE_PATH,
+				'dimension'  => 'core',
+				'slug'       => 'wordpress',
+				'pattern'    => 'readme.html',
+				'reason'     => 'noisy',
+				'created_by' => 1,
+			)
+		);
+		$exclude_target_id = $env['suppression_repository']->insert(
+			array(
+				'type'       => WPCV_Suppression_Type::EXCLUDE_TARGET,
+				'dimension'  => 'core',
+				'slug'       => 'wordpress',
+				'reason'     => 'skip',
+				'created_by' => 1,
+			)
+		);
+
+		$env['dispatcher']->dispatch_diff( $scenario['run_id'] );
+
+		$this->assertNull( $env['suppression_repository']->find_by_id( $exclude_path_id )['expired_at'] );
+		$this->assertNull( $env['suppression_repository']->find_by_id( $exclude_target_id )['expired_at'] );
 	}
 
 	/**
@@ -568,5 +838,55 @@ class DiffDispatcherTest extends TestCase {
 		$env['dispatcher']->dispatch_diff( $run_id ); // 全target完了→掃除+確定.
 
 		$this->assertArrayNotHasKey( 1, $env['wpdb']->rows['wp_wpcv_file_states'] ?? array( 1 => true ), '列挙されなかったstat targetの行は削除される' );
+	}
+
+	/**
+	 * `core:_config`(v0.6 §Step9。`:_stat`接尾辞を持たない合成target)が今回
+	 * 列挙されているのに、`is_stat_id()`だけで「列挙されなかったtarget」と
+	 * 誤判定されてベースラインを削除されないことを確認する(v0.6 §Step12の
+	 * 実地検証〔test-armfu.local〕で発見した不具合の回帰テスト。
+	 * `WPCV_Target_Resolver::uses_file_state_storage()`参照).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_diff_keeps_file_states_for_core_config_target() {
+		$env    = $this->make_environment();
+		$run_id = $this->make_run_ready_for_diff( $env['run_repository'] );
+
+		$this->insert_target_run(
+			$env['wpdb'],
+			$run_id,
+			array(
+				'target_id' => 'core:_config',
+				'dimension' => 'core',
+				'slug'      => '_config',
+				'status'    => 'success',
+			)
+		);
+
+		$env['wpdb']->insert(
+			'wp_wpcv_file_states',
+			array(
+				'state_key'         => WPCV_File_State_Repository::compute_state_key( 'core:_config', 'wp-config.php' ),
+				'target_id'         => 'core:_config',
+				'dimension'         => 'core',
+				'slug'              => '_config',
+				'path'              => 'wp-config.php',
+				'file_size'         => 1,
+				'ctime'             => 1,
+				'mtime'             => 1,
+				'content_hash'      => null,
+				'hash_algorithm'    => null,
+				'baseline_version'  => null,
+				'first_seen_run_id' => 1,
+				'last_seen_run_id'  => 1,
+				'updated_at'        => self::NOW,
+			)
+		);
+
+		$env['dispatcher']->dispatch_diff( $run_id ); // core:_configをeventモードで確定.
+		$env['dispatcher']->dispatch_diff( $run_id ); // 全target完了→掃除+確定.
+
+		$this->assertArrayHasKey( 1, $env['wpdb']->rows['wp_wpcv_file_states'] ?? array(), '今回列挙されたcore:_configの行は削除されない' );
 	}
 }

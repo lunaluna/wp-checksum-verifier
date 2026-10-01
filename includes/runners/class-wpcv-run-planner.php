@@ -58,6 +58,12 @@ if ( ! defined( 'ABSPATH' ) ) {
  * `plan()` の戻り値件数はそのぶん増える.
  * v0.5 §Step8 で、設定で stat 差分検知を無効にしていれば列挙しないようにした
  * (`$stat_detection_enabled`).
+ * v0.6 §Step9 で、本体 target を持たない合成 target を2つ(`core:_config`・
+ * `dropin:_stat`)、`core:_scan` の直後に常に列挙するようにした(プラン§5.3
+ * L1・L8)。`$stat_detection_enabled` とは無関係の別の仕組みのため、その設定を
+ * 見ずに常に列挙する。実在するファイルの絞り込みはここでは行わない(クラス
+ * docblock「ファイルシステムアクセスを一切行わない」不変条件のまま。
+ * `WPCV_Chunk_Dispatcher` が dispatch 時点で絞り込む).
  */
 class WPCV_Run_Planner {
 
@@ -162,6 +168,32 @@ class WPCV_Run_Planner {
 				WPCV_Target_Resolver::build_id( WPCV_Target_Resolver::DIMENSION_CORE, '_scan' ),
 				WPCV_Target_Resolver::DIMENSION_CORE,
 				'_scan',
+				null,
+				null
+			)
+		);
+
+		// v0.6 §Step9(§5.3 L1・L8): 本体targetを持たない合成targetを2つ、本体の
+		// 照合とは無関係に常に列挙する。ファイルシステムアクセスはここでは行わない
+		// (クラスdocblock「HTTP・ファイルシステムアクセスを一切行わない」という
+		// 不変条件どおり. 実在するファイルの絞り込みは`WPCV_Chunk_Dispatcher`が
+		// dispatch時点で`WPCV_Static_Target_Resolver`を使って行う)。`stat_detection_enabled`
+		// (既存stat targetの列挙可否)とは無関係の別の仕組みのため、その設定を見ずに
+		// 常に列挙する.
+		$target_runs[] = $this->maybe_apply_exclude_target(
+			self::queued_target_run(
+				WPCV_Target_Resolver::build_id( WPCV_Target_Resolver::DIMENSION_CORE, '_config' ),
+				WPCV_Target_Resolver::DIMENSION_CORE,
+				'_config',
+				null,
+				null
+			)
+		);
+		$target_runs[] = $this->maybe_apply_exclude_target(
+			self::queued_target_run(
+				WPCV_Target_Resolver::build_id( WPCV_Target_Resolver::DIMENSION_DROPIN, '_stat' ),
+				WPCV_Target_Resolver::DIMENSION_DROPIN,
+				'_stat',
 				null,
 				null
 			)

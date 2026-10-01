@@ -28,8 +28,9 @@ class RunPlannerTest extends TestCase {
 
 	/**
 	 * コアのみの `$context` から、`queued` 状態のコア(manifest比較)と
-	 * `core:_scan`(未知ファイル走査の合成target。Step4)の2件だけが列挙される
-	 * ことを確認する.
+	 * `core:_scan`(未知ファイル走査の合成target。Step4)・`core:_config`・
+	 * `dropin:_stat`(本体を持たない合成target。v0.6 §Step9. §5.3 L1・L8)の
+	 * 4件が列挙されることを確認する.
 	 *
 	 * @return void
 	 */
@@ -37,7 +38,7 @@ class RunPlannerTest extends TestCase {
 		$planner     = new WPCV_Run_Planner( new WPCV_Suppression_Repository( new WPCV_Test_Fake_WPDB() ) );
 		$target_runs = $planner->plan( array( 'version' => '6.8' ) );
 
-		$this->assertCount( 2, $target_runs );
+		$this->assertCount( 4, $target_runs );
 		$this->assertSame( 'core', $target_runs[0]['target_id'] );
 		$this->assertSame( 'core', $target_runs[0]['dimension'] );
 		$this->assertSame( 'wordpress', $target_runs[0]['slug'] );
@@ -53,6 +54,20 @@ class RunPlannerTest extends TestCase {
 		$this->assertNull( $target_runs[1]['version'] );
 		$this->assertNull( $target_runs[1]['source'] );
 		$this->assertSame( 'queued', $target_runs[1]['status'] );
+
+		$this->assertSame( 'core:_config', $target_runs[2]['target_id'] );
+		$this->assertSame( 'core', $target_runs[2]['dimension'] );
+		$this->assertSame( '_config', $target_runs[2]['slug'] );
+		$this->assertNull( $target_runs[2]['version'] );
+		$this->assertNull( $target_runs[2]['source'] );
+		$this->assertSame( 'queued', $target_runs[2]['status'] );
+
+		$this->assertSame( 'dropin:_stat', $target_runs[3]['target_id'] );
+		$this->assertSame( 'dropin', $target_runs[3]['dimension'] );
+		$this->assertSame( '_stat', $target_runs[3]['slug'] );
+		$this->assertNull( $target_runs[3]['version'] );
+		$this->assertNull( $target_runs[3]['source'] );
+		$this->assertSame( 'queued', $target_runs[3]['status'] );
 	}
 
 	/**
@@ -73,8 +88,9 @@ class RunPlannerTest extends TestCase {
 			)
 		);
 
-		// core + core:_scan + plugin:akismet + plugin:akismet:_stat(v0.5 §Step6)の4件.
-		$this->assertCount( 4, $target_runs );
+		// core + core:_scan + core:_config + dropin:_stat(v0.6 §Step9) +
+		// plugin:akismet + plugin:akismet:_stat(v0.5 §Step6)の6件.
+		$this->assertCount( 6, $target_runs );
 
 		$plugin_row = null;
 		foreach ( $target_runs as $row ) {
@@ -168,8 +184,9 @@ class RunPlannerTest extends TestCase {
 			)
 		);
 
-		// core + core:_scan のみ(hello.php 分の target_run は増えない)ことを確認する.
-		$this->assertCount( 2, $target_runs );
+		// core + core:_scan + core:_config + dropin:_stat(v0.6 §Step9)のみ
+		// (hello.php 分の target_run は増えない)ことを確認する.
+		$this->assertCount( 4, $target_runs );
 	}
 
 	/**
@@ -188,8 +205,9 @@ class RunPlannerTest extends TestCase {
 			)
 		);
 
-		// core + core:_scan + loader + loader:_stat(v0.5 §Step6) + muplugin:_scan の5件.
-		$this->assertCount( 5, $target_runs );
+		// core + core:_scan + core:_config + dropin:_stat(v0.6 §Step9) +
+		// loader + loader:_stat(v0.5 §Step6) + muplugin:_scan の7件.
+		$this->assertCount( 7, $target_runs );
 
 		$target_ids = array_column( $target_runs, 'target_id' );
 		$this->assertContains( 'muplugin:loader.php', $target_ids );
@@ -214,7 +232,8 @@ class RunPlannerTest extends TestCase {
 		$planner     = new WPCV_Run_Planner( new WPCV_Suppression_Repository( new WPCV_Test_Fake_WPDB() ) );
 		$target_runs = $planner->plan( array( 'version' => '6.8' ) );
 
-		$this->assertCount( 2, $target_runs );
+		// core + core:_scan + core:_config + dropin:_stat(v0.6 §Step9)の4件.
+		$this->assertCount( 4, $target_runs );
 	}
 
 	/**
@@ -270,8 +289,9 @@ class RunPlannerTest extends TestCase {
 
 		$target_run_ids = $repository->save_target_runs( 1, $target_runs );
 
-		// core + core:_scan + plugin:akismet + plugin:akismet:_stat の4件.
-		$this->assertCount( 4, $target_run_ids );
+		// core + core:_scan + core:_config + dropin:_stat(v0.6 §Step9) +
+		// plugin:akismet + plugin:akismet:_stat の6件.
+		$this->assertCount( 6, $target_run_ids );
 		foreach ( $wpdb->rows['wp_wpcv_target_runs'] as $row ) {
 			$this->assertSame( 'queued', $row['status'] );
 			$this->assertSame( 'missing', $row['manifest_status'] );
@@ -399,7 +419,10 @@ class RunPlannerTest extends TestCase {
 
 	/**
 	 * Stat 差分検知を無効にして組み立てた planner は、stat target を列挙しないことを
-	 * 確認する(v0.5 §Step8).
+	 * 確認する(v0.5 §Step8)。`dropin:_stat`は`_stat`接尾辞を持つため
+	 * `WPCV_Target_Resolver::is_stat_id()`には一致するが、`$stat_detection_enabled`
+	 * とは無関係の別の仕組み(v0.6 §Step9)であり無効化の対象外のため、この
+	 * targetだけは例外として許可する.
 	 *
 	 * @return void
 	 */
@@ -416,10 +439,14 @@ class RunPlannerTest extends TestCase {
 		);
 
 		foreach ( array_column( $target_runs, 'target_id' ) as $target_id ) {
+			if ( 'dropin:_stat' === $target_id ) {
+				continue;
+			}
 			$this->assertFalse( WPCV_Target_Resolver::is_stat_id( $target_id ), "unexpected stat target: {$target_id}" );
 		}
 
-		// core + core:_scan + plugin + loader + muplugin:_scan の5件.
-		$this->assertCount( 5, $target_runs );
+		// core + core:_scan + core:_config + dropin:_stat(v0.6 §Step9) +
+		// plugin + loader + muplugin:_scan の7件.
+		$this->assertCount( 7, $target_runs );
 	}
 }

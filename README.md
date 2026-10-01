@@ -5,15 +5,16 @@ tampering by comparing installed files against official checksum manifests
 (wp.org core/plugin checksums) and reports unknown files not present in any
 manifest.
 
-> **Status**: v0.5.1. The verification engine, all planned execution model
+> **Status**: v0.6.0. The verification engine, all planned execution model
 > entry points (WP-CLI, WP-Cron, admin "Run now" button, REST API),
 > file-level chunked execution with resume, the suppression engine
 > (`exclude_target`/`exclude_path`/`allowlist_hash` plus strict mode),
-> stat-based change detection for plugins without official checksums,
-> diff-based email alerts (see Alerts below), and the
-> Findings/Suppressions/Run History admin screens are implemented.
-> Official theme verification and GitHub-hosted plugin/theme verification
-> are not implemented yet. See `CHANGELOG.md` for details.
+> stat-based change detection for plugins without official checksums
+> (with optional content-hash comparison), configuration-file and drop-in
+> monitoring, update-event tracking, diff-based email alerts (see Alerts
+> below), and the Findings/Suppressions/Run History admin screens are
+> implemented. Official theme verification and GitHub-hosted plugin/theme
+> verification are not implemented yet. See `CHANGELOG.md` for details.
 
 ## Verification targets
 
@@ -27,6 +28,12 @@ manifest.
   manifest are reported as findings, for every target above.
 - **Plugins without official checksums** (custom or premium plugins, and
   MU-plugin loaders): tracked by stat-based change detection (see below).
+- **Configuration files and drop-ins** (`wp-config.php`, `.htaccess`,
+  `.user.ini`, and any WordPress-recognized drop-in that is actually present,
+  e.g. `object-cache.php`): tracked the same way, but always with
+  content-hash comparison (see "Content-hash comparison" below) — these
+  targets exist unconditionally, independent of the "Stat-based change
+  detection" setting.
 - Not yet implemented: official theme verification, and checksum
   verification for unofficial plugins/themes hosted on GitHub Releases.
 
@@ -54,9 +61,14 @@ whether a change is malicious.
   baseline). A size change with an unchanged mtime is flagged as possible
   timestamp forgery and raised to `high` severity.
 - **Plugin updates**: when a plugin's version differs from the version its
-  baseline was built with, the baseline is discarded and rebuilt without
+  baseline was built with, the plugin first checks whether that version
+  change has a matching recorded WordPress update event (see "Update
+  events" below). If it does, the baseline is discarded and rebuilt without
   reporting changes, and the target is marked `baseline_rebuilt` so the
-  unchecked run stays visible in Run History.
+  unchecked run stays visible in Run History. If it does not (no matching
+  update event, or the tracking window doesn't reach far enough back), the
+  old baseline is compared as usual instead of being discarded, and the
+  target is marked `version_changed_unrecorded` — see Alerts below.
 - **Mass changes without a version bump**: when a batch of up to 500 files
   has at least 20 changed files and at least 50% of the files compared,
   they are rolled up into a single `stat_changed` finding for the plugin
@@ -68,7 +80,66 @@ whether a change is malicious.
   compares against the old baseline.
 - **Known limitations**: a same-size edit that also restores the original
   mtime is still caught by ctime, but it is reported as an ordinary
-  `stat_changed` rather than as forgery.
+  `stat_changed` rather than as forgery — unless content-hash comparison
+  (below) is active for that target, in which case it is reported as
+  `modified` directly.
+
+### Content-hash comparison
+
+Size/ctime/mtime tracking cannot tell a same-size, same-mtime rewrite from
+no change at all. Content-hash comparison closes that gap by additionally
+computing a sha256 hash of each file's contents and comparing it with the
+hash recorded on the previous run:
+
+- **Always on** for the configuration-file and drop-in targets
+  (`core:_config`: `wp-config.php` — found the same way WordPress itself
+  looks for it, one directory above `ABSPATH` if it isn't there directly and
+  `wp-settings.php` isn't in that parent directory either, and reported as
+  `wp-config.php` in both cases so the server's absolute path never appears
+  in findings or alert emails — `.htaccess`, and
+  `.user.ini`; `dropin:_stat`: whichever drop-ins WordPress
+  recognizes (`advanced-cache.php`, `db.php`, `db-error.php`, `install.php`,
+  `maintenance.php`, `object-cache.php`, `php-error.php`,
+  `fatal-error-handler.php`, plus `sunrise.php`/`blog-deleted.php`/
+  `blog-inactive.php`/`blog-suspended.php` on multisite) that actually exist
+  in `wp-content/`). These two targets have no "body" plugin and no version
+  of their own, so they are unaffected by the "Stat-based change detection"
+  setting and by update-event tracking — any content, size, or mtime
+  difference is reported on the very next run. The first run only builds a
+  baseline, and adding or removing a drop-in is reported as `added`/`missing`
+  like any other stat target.
+- **Opt-in** for the other stat-based targets (custom/premium plugins and
+  MU-plugin loaders): off by default (reading every file's contents on every
+  run adds I/O cost), turned on per-site with "Content-hash comparison for
+  custom plugins" in Settings.
+- When the content hash differs from the previous run, the finding is
+  `modified` (with `hash_algorithm`/`expected_hash`/`actual_hash`, the same
+  shape as a checksum-target finding) instead of `stat_changed`, regardless
+  of whether size/ctime/mtime also changed. When the content hash matches, a
+  metadata-only change (e.g. `chmod`) is still reported as `stat_changed` as
+  before.
+- A file larger than 10 MB is not hashed and falls back to stat-only
+  tracking for that file (`wpcv_content_hash_max_bytes` filter); per chunk,
+  hashing stops after 200 MiB and resumes on the next cycle
+  (`wpcv_content_hash_chunk_max_bytes` filter). Both defaults come from
+  measured hashing throughput (see `CHANGELOG.md`), not a fixed rule of
+  thumb — re-measure with `wp wpcv bench-stat --hash` on your own server if
+  you change them.
+
+### Update events
+
+Whenever WordPress core or a plugin is updated — through the admin
+screens, WP-CLI (`wp plugin update`/`wp core update`), or an automatic
+update — the plugin records the target, the version read from disk right
+after the update, the source (manual/bulk/install/automatic/core update),
+and who triggered it (`0` for cron/CLI). This log is what "Plugin updates"
+above and the checksum-target alert below use to tell a legitimate
+WordPress-driven update apart from a version change that happened some
+other way. `wp --skip-plugins plugin update` does not fire the hooks this
+relies on, so updates made that way are not recorded. Recorded events are
+kept for 90 days (unmeasured default; change it with the
+`wpcv_update_events_retention_days` filter), pruned whenever a run
+terminates.
 
 ## Running a verification
 
@@ -128,6 +199,15 @@ conflate them:
   hours). If a run has not reached a terminal state by then, it and any of
   its still-non-terminal targets are marked `aborted`, so a stuck run can
   never block the next scheduled run indefinitely.
+- **Update in progress** — while WordPress core or a plugin is actively
+  being updated (a fresh `.maintenance` file, or `core_updater.lock`/
+  `auto_updater.lock` held by `WP_Upgrader`), the next chunk is deferred
+  (rechecked every 30 seconds) instead of claiming a target and possibly
+  reading files mid-write. Targets are not marked `skipped` for this — the
+  run simply waits, up to the run deadline above. A single plugin update
+  (which holds neither lock) is not detected; if it changes a target's
+  version mid-run, the existing cursor-mismatch retry (above) still catches
+  it.
 
 ### REST API
 
@@ -307,6 +387,19 @@ rebuilt a stat baseline after a version change, or only closed
 email by itself — it is folded into the next email that does go out
 ("Not verified today" section).
 
+A checksum target's version change is treated differently when it has no
+matching entry in the update-event log (see "Update events" above): the
+old baseline is *not* discarded, findings are compared as usual, and — if
+"Alert on version changes that did not go through the WordPress updater"
+is checked in Settings (on by default) — the email gets a "Version changed
+without a WordPress update:" section listing `target: from -> to`. This
+can surface an unauthorized change to the version string just as easily as
+a legitimate git/FTP/Composer deployment; turn the setting off on sites
+that deploy that way, since every such deployment would otherwise alert.
+If this is the only thing worth reporting (no ordinary new/resolved
+findings), the subject line reads `N version change(s) without a WordPress
+update` instead of `0 new findings, 0 resolved`.
+
 A `new` finding is re-sent at most once every 7 days for the same
 identity, so a file that keeps flipping between resolved and re-appearing
 does not spam every run. If sending the email fails, the finding is not
@@ -403,19 +496,29 @@ menu on multisite):
   with its target, reason, creator, creation time, and (for `allowlist_hash`
   rules) the approved version and hash prefix. Active rules can be revoked
   (also requiring a reason), which is recorded and shown alongside the rule
-  rather than deleting it.
+  rather than deleting it. An `allowlist_hash` rule is also expired
+  automatically (shown as "version changed") the next time its target's
+  version changes to anything other than the version it was approved
+  for — approving a hash no longer keeps working forever if you later
+  revert to an older version. `exclude_path`/`exclude_target` rules are
+  unaffected.
 - **Run History** — every run, newest first, with **Diff** (`+new / −resolved
   / =continuing`, or the raw `diff_status` while the diff pipeline is still
   working through a run) and **Alert** (`sent`/`not_needed`/`no_recipient`/
   `failed`) columns. The detail view per run shows each target's status,
   `error_code` (translated to a human-readable reason for
-  `unverifiable`/`retry`/`aborted`/`skipped` targets), file counts, attempt
+  `unverifiable`/`retry`/`aborted`/`skipped` targets, including
+  `version_changed_unrecorded` — see Alerts above), file counts, attempt
   count, and a **Diff mode** column (see Alerts above); the run-level detail
   also shows the diff/alert state, the alert error and any failed alert
   channels when present (admin-only — never exposed over REST), and a link
-  to that run's findings. A **Findings ended in this run** section lists
-  every finding this run resolved, excluded, or otherwise closed out
-  (ordered resolved-first, paginated for runs with a large baseline).
+  to that run's findings. An **Update events since the previous run**
+  section lists what this plugin recorded (see "Update events" above)
+  between the previous run and this one (omitted for the very first run,
+  which has no previous run to compare against). A **Findings ended in this
+  run** section lists every finding this run resolved, excluded, or
+  otherwise closed out (ordered resolved-first, paginated for runs with a
+  large baseline).
 
 ## Settings
 
@@ -431,9 +534,13 @@ installed on the server). Below that, you can configure: the daily run time
 (UTC, shared by WP-Cron and the REST endpoint's due check), the REST
 endpoint's per-request time budget, strict mode (reports readme.txt/readme.md
 changes as findings instead of suppressing them as a low-risk "soft change";
-off by default), stat-based change detection (on by default), alert
-recipients and the "Send test alert" button (see Alerts above), and REST
-token issuance.
+off by default), stat-based change detection (on by default), content-hash
+comparison for custom plugins and MU-plugin loaders (off by default; see
+"Content-hash comparison" above — configuration files and drop-ins are
+always content-hashed regardless of this setting), whether to alert on
+version changes that did not go through the WordPress updater (on by
+default; see Alerts above), alert recipients and the "Send test alert"
+button (see Alerts above), and REST token issuance.
 
 ## Distribution
 

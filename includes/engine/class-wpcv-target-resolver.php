@@ -32,6 +32,12 @@ class WPCV_Target_Resolver {
 	const DIMENSION_MUPLUGIN = 'muplugin';
 
 	/**
+	 * ドロップイン(v0.6 §Step9. §5.3 L1・L3)。`dropin:_stat` 1つの合成target
+	 * 専用で、本体targetはこのdimensionには存在しない.
+	 */
+	const DIMENSION_DROPIN = 'dropin';
+
+	/**
 	 * 妥当な dimension 値の一覧.
 	 *
 	 * @var string[]
@@ -41,6 +47,7 @@ class WPCV_Target_Resolver {
 		self::DIMENSION_PLUGIN,
 		self::DIMENSION_THEME,
 		self::DIMENSION_MUPLUGIN,
+		self::DIMENSION_DROPIN,
 	);
 
 	/**
@@ -113,6 +120,43 @@ class WPCV_Target_Resolver {
 		$suffix_length = strlen( self::STAT_SUFFIX );
 
 		return strlen( $target_id ) > $suffix_length && self::STAT_SUFFIX === substr( $target_id, -$suffix_length );
+	}
+
+	/**
+	 * `wpcv_file_states`(stat差分検知の層1/層2ベースライン)を使うtargetかどうかを
+	 * 判定する(v0.6 §Step12是正).
+	 *
+	 * 通常の本体target(`is_stat_id()`が真の `{dimension}:{slug}:_stat`)に加えて、
+	 * `core:_config`/`dropin:_stat`(v0.6 §Step9。本体targetを持たない合成target)も
+	 * `wpcv_file_states`を使う。この2つは`:_stat`接尾辞の規則に従わない
+	 * (`core:_config`はslugが`_config`で終わる)ため、`is_stat_id()`だけでは
+	 * 判定できない.
+	 *
+	 * `WPCV_Diff_Dispatcher::cleanup_after_all_targets_processed()`(今回列挙された
+	 * targetの一覧を`is_stat_id()`だけで組み立て、それ以外の`wpcv_file_states`行を
+	 * 削除する処理)がv0.6 §Step9で`core:_config`を考慮し忘れていたため、
+	 * `core:_config`が実際には毎run列挙されているのに「列挙されなかったtarget」
+	 * として扱われ、ベースラインが毎runで削除される不具合があった
+	 * (v0.6 §Step12の実地検証〔test-armfu.local〕で発見。`dropin:_stat`は
+	 * `:_stat`接尾辞を持つため偶然この不具合を免れていた).
+	 * 判定ロジック自体は`WPCV_Target_Resolver`(target_id/dimension/slugの
+	 * 意味を扱う本クラス)に置くのが自然なため、ここに実装する.
+	 *
+	 * @param string $target_id target_id.
+	 * @param string $dimension dimension.
+	 * @param string $slug      slug.
+	 * @return bool
+	 */
+	public static function uses_file_state_storage( $target_id, $dimension, $slug ) {
+		if ( self::is_stat_id( $target_id ) ) {
+			return true;
+		}
+
+		if ( self::DIMENSION_CORE === $dimension && '_config' === $slug ) {
+			return true;
+		}
+
+		return self::DIMENSION_DROPIN === $dimension;
 	}
 
 	/**

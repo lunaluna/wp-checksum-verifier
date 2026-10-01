@@ -230,6 +230,41 @@ class AlertSenderTest extends TestCase {
 	}
 
 	/**
+	 * `error_code = version_changed_unrecorded`(v0.6プラン §3.1・D5)だけの run でも
+	 * アラートを送ること(`should_send_alert()`への入力として効くこと)を確認する.
+	 *
+	 * @return void
+	 */
+	public function test_sends_when_only_unrecorded_version_change() {
+		$wpdb                                = new WPCV_Test_Fake_WPDB();
+		$wpdb->rows['wp_wpcv_runs'][1]         = $this->make_run_row( 1 );
+		$wpdb->rows['wp_wpcv_target_runs'][1]   = $this->make_target_run_row(
+			1,
+			array(
+				'target_id'  => 'plugin:foo',
+				'error_code' => WPCV_Error_Code::VERSION_CHANGED_UNRECORDED,
+				'version'    => '2.0',
+			)
+		);
+		$env = $this->make_sender_environment( $wpdb );
+
+		WPCV_Settings::update_alert_to( 'ops@example.com' );
+
+		$result = $env['sender']->send_for_run( 1, self::OWNER );
+
+		$this->assertSame( array( 'action' => 'sent' ), $result );
+		$this->assertSame( 'sent', $wpdb->rows['wp_wpcv_runs'][1]['alert_status'] );
+		$this->assertCount( 1, $GLOBALS['_wpcv_test_wp_mail_calls'] );
+
+		// 件名: findingが0件のときは専用の文言になる(`WPCV_Alert_Composer::build_subject()`参照).
+		$this->assertStringContainsString( '1 version change', $GLOBALS['_wpcv_test_wp_mail_calls'][0]['subject'] );
+		// 本文: 節見出しと`target from -> to`が載る(基準target_runは用意していないため from は空文字列).
+		$this->assertStringContainsString( 'Version changed without a WordPress update:', $GLOBALS['_wpcv_test_wp_mail_calls'][0]['message'] );
+		$this->assertStringContainsString( 'plugin:foo', $GLOBALS['_wpcv_test_wp_mail_calls'][0]['message'] );
+		$this->assertStringContainsString( '-> 2.0', $GLOBALS['_wpcv_test_wp_mail_calls'][0]['message'] );
+	}
+
+	/**
 	 * 宛先未設定のときは`no_recipient`を記録し、メール・追加チャネルのどちらも
 	 * 実行しないことを確認する(U1・§4.3「no_recipientのときは実行しない」).
 	 *

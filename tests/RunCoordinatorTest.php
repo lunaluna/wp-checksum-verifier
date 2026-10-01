@@ -10,6 +10,7 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-error-code.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-file-hasher.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-path-normalizer.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-static-target-resolver.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-budget.php';
@@ -34,6 +35,8 @@ require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-planner.php'
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-starter.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-coordinator.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-update-event-repository.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-update-event-matcher.php';
 require_once __DIR__ . '/doubles.php';
 
 use PHPUnit\Framework\TestCase;
@@ -153,7 +156,8 @@ class RunCoordinatorTest extends TestCase {
 
 		$this->assertSame( 1, $result['run_id'] );
 		$this->assertSame( 'success', $result['summary']['status'] );
-		$this->assertSame( 2, $result['summary']['targets_total'] );
+		// core + core:_scan + core:_config + dropin:_stat(v0.6 §Step9)の4件.
+		$this->assertSame( 4, $result['summary']['targets_total'] );
 
 		$run_row = $made['wpdb']->rows['wp_wpcv_runs'][1];
 		$this->assertSame( 'success', $run_row['status'] );
@@ -192,8 +196,9 @@ class RunCoordinatorTest extends TestCase {
 			)
 		);
 
-		// core + core:_scan + plugin:akismet の3件.
-		$this->assertSame( 3, $result['summary']['targets_total'] );
+		// core + core:_scan + core:_config + dropin:_stat(v0.6 §Step9) +
+		// plugin:akismet の5件.
+		$this->assertSame( 5, $result['summary']['targets_total'] );
 		$this->assertSame( 'success', $result['summary']['status'] );
 
 		$plugin_row = null;
@@ -228,8 +233,9 @@ class RunCoordinatorTest extends TestCase {
 			)
 		);
 
-		// core + core:_scan のみ(hello.php 分の target_run は増えない).
-		$this->assertSame( 2, $result['summary']['targets_total'] );
+		// core + core:_scan + core:_config + dropin:_stat(v0.6 §Step9)のみ
+		// (hello.php 分の target_run は増えない).
+		$this->assertSame( 4, $result['summary']['targets_total'] );
 	}
 
 	/**
@@ -271,9 +277,10 @@ class RunCoordinatorTest extends TestCase {
 			)
 		);
 
-		// core + core:_scan + loader + loader:_stat(v0.5 §Step6) + muplugin:_scan の5件.
+		// core + core:_scan + core:_config + dropin:_stat(v0.6 §Step9) +
+		// loader + loader:_stat(v0.5 §Step6) + muplugin:_scan の7件.
 		// loader は照合元が無い(unknown_source)ため、stat target は走査され success になる.
-		$this->assertSame( 5, $result['summary']['targets_total'] );
+		$this->assertSame( 7, $result['summary']['targets_total'] );
 
 		$target_ids = array_column( $made['wpdb']->rows['wp_wpcv_target_runs'], 'target_id' );
 		$this->assertContains( 'muplugin:loader.php', $target_ids );
@@ -422,6 +429,58 @@ class RunCoordinatorTest extends TestCase {
 		);
 
 		$this->assertSame( 6, $fake_dispatcher->call_count(), 'diff_finalizedでは止まらず、diff_alertedに到達するまでの6回すべてが呼ばれ、そこで止まる' );
+	}
+
+	/**
+	 * `deferred`(v0.6 §Step6. D10)が返っている間はループを止めず、`sleeper`を
+	 * `WPCV_Chunk_Dispatcher::DEFER_SECONDS`で呼んでから`dispatch()`を呼び直す
+	 * ことを確認する(sleepを挟まないと空回りするため。クラスdocblock参照).
+	 *
+	 * @return void
+	 */
+	public function test_run_loop_sleeps_and_retries_when_deferred() {
+		$wpdb                  = new WPCV_Test_Fake_WPDB();
+		$now                   = static function () {
+			return '2026-09-30 12:00:00';
+		};
+		$run_repository        = new WPCV_Run_Repository( $wpdb, $now );
+		$target_run_repository = new WPCV_Target_Run_Repository( $wpdb, $now );
+
+		$run_id = $run_repository->reserve_run()['run_id'];
+
+		$fake_dispatcher = new WPCV_Test_Fake_Dispatcher_Action_Queue(
+			array(
+				array( 'action' => 'deferred' ),
+				array( 'action' => 'deferred' ),
+				array( 'action' => 'processed' ),
+			)
+		);
+
+		$sleep_calls = array();
+		$coordinator = new WPCV_Run_Coordinator(
+			new WPCV_Run_Planner( new WPCV_Suppression_Repository( $wpdb, $now ) ),
+			$run_repository,
+			$target_run_repository,
+			$fake_dispatcher,
+			static function ( $seconds ) use ( &$sleep_calls ) {
+				$sleep_calls[] = $seconds;
+			}
+		);
+
+		$coordinator->run(
+			$run_id,
+			array(
+				'version'       => '6.8',
+				'plugins'       => array(),
+				'plugin_dir'    => '/tmp/wpcv-test-plugins',
+				'mu_plugin_dir' => null,
+				'mu_plugins'    => array(),
+			)
+		);
+
+		$this->assertSame( array( WPCV_Chunk_Dispatcher::DEFER_SECONDS, WPCV_Chunk_Dispatcher::DEFER_SECONDS ), $sleep_calls );
+		// deferred×2 + processed + (キュー消化後の既定値)run_finalizedの4回.
+		$this->assertSame( 4, $fake_dispatcher->call_count() );
 	}
 }
 

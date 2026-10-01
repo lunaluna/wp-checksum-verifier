@@ -38,6 +38,15 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 各計測の対象ファイル一覧は毎回 `WPCV_Unknown_File_Scanner::scan()` で
  * 取り直す(cold測定の前提を壊さないため。ファイル一覧を使い回すと
  * ディレクトリエントリ自体のstatキャッシュが温まったままになる).
+ *
+ * `$include_content_hash`(v0.6 §Step8. rev.3 §3.5「層2」の実測)が真のとき、
+ * 上記1・2とは別に3つ目の計測として `WPCV_File_Hasher::hash()`(sha256)を
+ * 全ファイルに対して行う所要時間を測る。1・2は既存(layer 1)の判定コストの
+ * 実測であるのに対し、こちらは「設定ファイル・ドロップイン(常時)/既存stat
+ * target(オプトイン)に内容ハッシュを追加すると共有ホスティングで成立するか」
+ * を判断する一次データになる(プラン§5.2「層2の実測」)。既定では計測しない
+ * (大きいディレクトリではハッシュ計算自体が数百MB〜数GBの読み取りを伴い
+ * 重いため.CLIの`--hash`フラグで明示的に有効化する).
  */
 class WPCV_Stat_Bench {
 
@@ -71,16 +80,21 @@ class WPCV_Stat_Bench {
 	/**
 	 * 指定ディレクトリに対して計測を行う.
 	 *
-	 * @param string $dir        計測対象ディレクトリの絶対パス(ABSPATH配下).
-	 * @param int    $iterations `lstat`経路の計測回数(cold/warmの組を何セット
-	 *                           繰り返すか). 1未満は1に切り上げる.
+	 * @param string $dir                   計測対象ディレクトリの絶対パス(ABSPATH配下).
+	 * @param int    $iterations            `lstat`経路の計測回数(cold/warmの組を何セット
+	 *                                      繰り返すか). 1未満は1に切り上げる.
+	 * @param bool   $include_content_hash  真なら各iterationで内容ハッシュ(sha256)の
+	 *                                      cold/warmも測る(v0.6 §Step8. クラスdocblock参照.
+	 *                                      既定は偽 ―— 対象が大きいと時間がかかるため).
 	 * @return array{
-	 *     runs: array<int, array{iteration:int, lstat_cold:array, lstat_warm:array}>,
+	 *     runs: array<int, array{iteration:int, lstat_cold:array, lstat_warm:array, content_hash_cold?:array, content_hash_warm?:array}>,
+	 *     lstat_only_cold: array,
+	 *     lstat_only_warm: array,
 	 *     triple_call_cold: array,
 	 *     triple_call_warm: array,
 	 * }
 	 */
-	public function measure( $dir, $iterations = 3 ) {
+	public function measure( $dir, $iterations = 3, $include_content_hash = false ) {
 		$iterations = max( 1, (int) $iterations );
 		$runs       = array();
 
@@ -89,11 +103,19 @@ class WPCV_Stat_Bench {
 			$cold = $this->measure_lstat_scan( $dir );
 			$warm = $this->measure_lstat_scan( $dir );
 
-			$runs[] = array(
+			$run = array(
 				'iteration'  => $iteration,
 				'lstat_cold' => $cold,
 				'lstat_warm' => $warm,
 			);
+
+			if ( $include_content_hash ) {
+				clearstatcache();
+				$run['content_hash_cold'] = $this->measure_content_hash( $dir );
+				$run['content_hash_warm'] = $this->measure_content_hash( $dir );
+			}
+
+			$runs[] = $run;
 		}
 
 		clearstatcache();
@@ -200,6 +222,41 @@ class WPCV_Stat_Bench {
 
 			if ( false !== $size ) {
 				$bytes += $size;
+			}
+
+			++$entries;
+		}
+
+		$elapsed = call_user_func( $this->now ) - $start;
+
+		return $this->build_stats( $entries, $elapsed, $bytes );
+	}
+
+	/**
+	 * `WPCV_File_Hasher::hash()`(sha256)で、対象ディレクトリ配下の全ファイルの
+	 * 内容ハッシュを計測する(v0.6 §Step8. クラスdocblock参照).
+	 *
+	 * `collect_stat` 付きで走査する ―— `measure_lstat_only()`/`measure_triple_call()`
+	 * と異なり、ここでは統計取得コストを切り離す必要が無く(測りたいのは
+	 * ハッシュ計算そのものの所要時間)、`item['size']` をそのまま使えば
+	 * ファイルサイズ取得のための追加のsyscallを増やさずに済む.
+	 *
+	 * @param string $dir 対象ディレクトリの絶対パス.
+	 * @return array{entries:int, seconds:float, bytes:int, entries_per_sec:float, bytes_per_sec:float}
+	 */
+	private function measure_content_hash( $dir ) {
+		$result = $this->scanner->scan( $dir, array(), array( 'collect_stat' => true ) );
+
+		$start   = call_user_func( $this->now );
+		$entries = 0;
+		$bytes   = 0;
+
+		foreach ( $result['items'] as $item ) {
+			$absolute_path = rtrim( ABSPATH, '/' ) . '/' . $item['path'];
+			$hash          = WPCV_File_Hasher::hash( $absolute_path, WPCV_File_Hasher::ALGO_SHA256 );
+
+			if ( null !== $hash ) {
+				$bytes += (int) ( $item['size'] ?? 0 );
 			}
 
 			++$entries;

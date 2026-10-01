@@ -843,7 +843,7 @@ class WPCV_Target_Run_Repository {
 	 *
 	 * @param string $target_id      対象の target_id.
 	 * @param int    $before_run_id  この run より前の target_run だけを対象にする.
-	 * @return array{id: int, version: string|null}|null 見つからなければ `null`.
+	 * @return array{id: int, version: string|null, run_id: int}|null 見つからなければ `null`.
 	 */
 	public function find_baseline_target_run( $target_id, $before_run_id ) {
 		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
@@ -862,7 +862,47 @@ class WPCV_Target_Run_Repository {
 		return array(
 			'id'      => (int) $rows[0]['id'],
 			'version' => $rows[0]['version'],
+			// v0.6 §Step3: D5の突き合わせ(基準target_runのrun開始時刻が必要)のため追加.
+			'run_id'  => (int) $rows[0]['run_id'],
 		);
+	}
+
+	/**
+	 * `diff_mode = version_changed` になった target_run に、WordPressの更新機構を
+	 * 通った記録が見つからなかったことを示す `error_code` を書く(v0.6プラン
+	 * §3.1・D5. Step3で`WPCV_Diff_Dispatcher`から呼ばれる).
+	 *
+	 * `update_diff_mode()`とは別メソッドにした ―― `diff_mode`の確定(276-287行目
+	 * 付近の共通処理)と、更新イベントの突き合わせ(D5の判定。基準runの取得や
+	 * `wpcv_update_events`への問い合わせを伴う)はタイミングが異なり、後者は
+	 * `VERSION_CHANGED`と判定された場合にのみ行われるため.
+	 *
+	 * @param int $target_run_id 対象の target_run の id.
+	 * @return void
+	 *
+	 * @throws RuntimeException `$wpdb->update()` がSQLエラーで `false` を返した場合.
+	 */
+	public function mark_version_changed_unrecorded( $target_run_id ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
+
+		$updated = $this->wpdb->update(
+			$table,
+			array( 'error_code' => WPCV_Error_Code::VERSION_CHANGED_UNRECORDED ),
+			array( 'id' => (int) $target_run_id ),
+			array( '%s' ),
+			array( '%d' )
+		);
+
+		if ( false === $updated ) {
+			throw new RuntimeException(
+				esc_html(
+					sprintf(
+						'WPCV_Target_Run_Repository::mark_version_changed_unrecorded() の update に失敗しました: %s',
+						(string) $this->wpdb->last_error
+					)
+				)
+			);
+		}
 	}
 
 	/**

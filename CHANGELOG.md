@@ -2,6 +2,68 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] - 2026-10-01
+
+### Added
+
+- The plugin now records an **update event** (target, version, source,
+  who triggered it) whenever WordPress core or a plugin is updated through
+  the admin screens, WP-CLI, or an automatic update. `wp --skip-plugins
+  plugin update` does not fire the hooks this relies on and is not
+  recorded. Events are kept for 90 days (`wpcv_update_events_retention_days`
+  filter), pruned whenever a run terminates.
+- New setting **"Alert on version changes that did not go through the
+  WordPress updater"** (on by default). When a checksum target's version
+  changes with no matching update event, the old baseline is compared as
+  usual instead of being discarded, and the alert email gets a new
+  "Version changed without a WordPress update:" section. Turn this off on
+  sites that deploy via git/FTP/Composer, where every deployment would
+  otherwise trigger it.
+- Run History detail now shows an **"Update events since the previous
+  run"** section listing recorded update events between the previous and
+  current run.
+- Verification runs are now **deferred** (rechecked every 30 seconds,
+  never marked `skipped`) while `.maintenance` is present or an update
+  lock (`core_updater.lock`/`auto_updater.lock`) is held, instead of
+  claiming a target and possibly reading files mid-update.
+- New `core:_config` and `dropin:_stat` targets track `wp-config.php`,
+  `.htaccess`, `.user.ini`, and any present WordPress-recognized drop-in
+  (`object-cache.php`, `advanced-cache.php`, etc.) the same way stat-based
+  change detection does, but unconditionally — independent of the
+  "Stat-based change detection" setting — and always with content-hash
+  comparison (see below).
+- **Content-hash comparison.** In addition to size/ctime/mtime, a sha256
+  hash of each file's contents can now be compared against the previous
+  run, catching a same-size, same-mtime rewrite that stat tracking alone
+  cannot. Always on for the new configuration-file/drop-in targets above;
+  opt-in for other stat-based targets (custom/premium plugins, MU-plugin
+  loaders) via the new **"Content-hash comparison for custom plugins"**
+  setting (off by default). A content change is reported as `modified`
+  (with `hash_algorithm`/`expected_hash`/`actual_hash`, like a
+  checksum-target finding) instead of `stat_changed`. A file over 10 MB is
+  not hashed and falls back to stat-only tracking (`wpcv_content_hash_max_bytes`
+  filter), and hashing within a single chunk stops after 200 MiB and
+  resumes on the next cycle (`wpcv_content_hash_chunk_max_bytes` filter) —
+  both measured against ~78–131 MB/s observed hashing throughput (see
+  `wp wpcv bench-stat --hash` below).
+- `wp wpcv bench-stat --hash` flag that additionally measures content-hash
+  (sha256) throughput on a directory, used to size the content-hash byte
+  limits above.
+
+### Changed
+
+- Stat-based change detection (for plugins without official checksums)
+  now distinguishes a version change backed by a recorded update event
+  (baseline silently rebuilt, as before) from one that isn't (compared
+  against the old baseline instead, and marked
+  `version_changed_unrecorded`).
+- A hash-allowlist suppression (`allowlist_hash`) is now automatically
+  expired when its target's version changes to anything other than the
+  version it was approved for (shown as "version changed" in
+  Suppressions). Previously, an old approved hash could keep suppressing
+  findings indefinitely after reverting to an earlier version.
+  `exclude_path`/`exclude_target` rules are unaffected.
+
 ## [0.5.1] - 2026-09-29
 
 Patch release: fixes an uninstall bug found while reviewing the v0.6

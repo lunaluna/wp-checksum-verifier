@@ -192,4 +192,17 @@ class PageRunHistoryTest extends TestCase {
 
 		$this->assertSame( '— / — / —', WPCV_Page_Run_History::format_diff_counts( array() ) );
 	}
+
+	/**
+	 * `format_update_event_created_by()` が `user_id=0`(cron・WP-CLI由来の自動更新)を
+	 * 「User #0」ではなく人間向けの文言にすることを確認する(v0.6 §Step7)。
+	 * 非0の場合は`WPCV_Page_Suppressions::format_created_by()`(`get_userdata()`
+	 * に依存)に委譲するが、この関数は`tests/wp-stubs.php`にスタブが無いため
+	 * このファイルの既定方針どおり単体テストの対象にしない(クラスdocblock参照).
+	 *
+	 * @return void
+	 */
+	public function test_format_update_event_created_by_labels_zero_as_automatic() {
+		$this->assertSame( 'Automatic (cron/WP-CLI)', WPCV_Page_Run_History::format_update_event_created_by( 0 ) );
+	}
 }

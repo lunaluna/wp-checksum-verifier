@@ -10,6 +10,7 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-error-code.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-file-hasher.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-path-normalizer.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-static-target-resolver.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-budget.php';
@@ -19,6 +20,7 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-verifier.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-cursor.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-verifier.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-update-lock-detector.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-finding-key.php';
@@ -29,6 +31,9 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.p
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-chunk-result-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-file-state-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-migrator.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-update-event-repository.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-update-event-matcher.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-planner.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-generation-differ.php';
@@ -116,16 +121,20 @@ class ChunkDispatcherTest extends TestCase {
 			return '2026-09-11 12:00:00';
 		};
 
-		$run_repository        = new WPCV_Run_Repository( $wpdb, $now );
-		$target_run_repository = new WPCV_Target_Run_Repository( $wpdb, $now );
-		$finding_repository    = new WPCV_Finding_Repository( $wpdb );
+		$run_repository          = new WPCV_Run_Repository( $wpdb, $now );
+		$target_run_repository   = new WPCV_Target_Run_Repository( $wpdb, $now );
+		$finding_repository      = new WPCV_Finding_Repository( $wpdb );
+		$update_event_repository = new WPCV_Update_Event_Repository( $wpdb, $now );
 
 		return array(
-			'run_repository'        => $run_repository,
-			'target_run_repository' => $target_run_repository,
-			'finding_repository'    => $finding_repository,
-			'file_state_repository' => new WPCV_File_State_Repository( $wpdb, $now ),
-			'alert_sender'          => new WPCV_Alert_Sender( $run_repository, $target_run_repository, $finding_repository, $now ),
+			'run_repository'          => $run_repository,
+			'target_run_repository'   => $target_run_repository,
+			'finding_repository'      => $finding_repository,
+			'file_state_repository'   => new WPCV_File_State_Repository( $wpdb, $now ),
+			'alert_sender'            => new WPCV_Alert_Sender( $run_repository, $target_run_repository, $finding_repository, $now ),
+			'update_event_repository' => $update_event_repository,
+			'update_event_matcher'    => new WPCV_Update_Event_Matcher( $update_event_repository, $run_repository ),
+			'suppression_repository'  => new WPCV_Suppression_Repository( $wpdb, $now ),
 		);
 	}
 
@@ -140,6 +149,8 @@ class ChunkDispatcherTest extends TestCase {
 	 *     @type WPCV_Unknown_File_Scanner $scanner
 	 *     @type WPCV_Diff_Dispatcher      $diff_dispatcher (v0.5後半 §Step12. 省略時は
 	 *                                                       `null`〔既存の後方互換動作〕).
+	 *     @type WPCV_Update_Lock_Detector $update_lock_detector (v0.6 §Step6. 省略時は
+	 *                                                       `null`〔延期しない既存の後方互換動作〕).
 	 * }
 	 * @param array         $continuation_calls `$continuation_scheduler` の呼び出しを
 	 *                                          記録する配列(参照渡し).
@@ -181,7 +192,9 @@ class ChunkDispatcherTest extends TestCase {
 				return strtotime( '2026-09-11 12:00:00' );
 			},
 			null,
-			$overrides['diff_dispatcher'] ?? null
+			$overrides['diff_dispatcher'] ?? null,
+			$overrides['update_event_matcher'] ?? null,
+			$overrides['update_lock_detector'] ?? null
 		);
 	}
 
@@ -313,7 +326,9 @@ class ChunkDispatcherTest extends TestCase {
 			$repositories['target_run_repository'],
 			$repositories['finding_repository'],
 			$repositories['file_state_repository'],
-			$repositories['alert_sender']
+			$repositories['alert_sender'],
+			$repositories['update_event_matcher'],
+			$repositories['suppression_repository']
 		);
 
 		$continuation_calls = array();
@@ -361,7 +376,9 @@ class ChunkDispatcherTest extends TestCase {
 			$repositories['target_run_repository'],
 			$repositories['finding_repository'],
 			$repositories['file_state_repository'],
-			$repositories['alert_sender']
+			$repositories['alert_sender'],
+			$repositories['update_event_matcher'],
+			$repositories['suppression_repository']
 		);
 
 		$continuation_calls = array();
@@ -405,7 +422,9 @@ class ChunkDispatcherTest extends TestCase {
 			$repositories['target_run_repository'],
 			$repositories['finding_repository'],
 			$repositories['file_state_repository'],
-			$repositories['alert_sender']
+			$repositories['alert_sender'],
+			$repositories['update_event_matcher'],
+			$repositories['suppression_repository']
 		);
 
 		$continuation_calls = array();
@@ -448,7 +467,9 @@ class ChunkDispatcherTest extends TestCase {
 			$repositories['target_run_repository'],
 			$repositories['finding_repository'],
 			$repositories['file_state_repository'],
-			$repositories['alert_sender']
+			$repositories['alert_sender'],
+			$repositories['update_event_matcher'],
+			$repositories['suppression_repository']
 		);
 
 		$continuation_calls = array();
@@ -734,7 +755,9 @@ class ChunkDispatcherTest extends TestCase {
 			$repositories['target_run_repository'],
 			$repositories['finding_repository'],
 			$repositories['file_state_repository'],
-			$repositories['alert_sender']
+			$repositories['alert_sender'],
+			$repositories['update_event_matcher'],
+			$repositories['suppression_repository']
 		);
 
 		$continuation_calls = array();
@@ -778,6 +801,78 @@ class ChunkDispatcherTest extends TestCase {
 		$this->assertCount( 1, $continuation_calls );
 		$this->assertSame( $run_id, $continuation_calls[0]['run_id'] );
 		$this->assertSame( WPCV_Target_Run_Repository::DEFAULT_LEASE_SECONDS, $continuation_calls[0]['delay_seconds'] );
+	}
+
+	/**
+	 * `.maintenance`/updater lockが有効(`WPCV_Update_Lock_Detector::is_deferred()`が
+	 * true)なら、claim可能なtargetがあってもclaimせず`deferred`を返し、
+	 * `DEFER_SECONDS`後の継続をenqueueすることを確認する(v0.6 §Step6. D10.
+	 * targetをSKIPPEDにしないことも確認する).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_defers_before_claiming_when_update_lock_active() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
+		$run_id       = $reservation['run_id'];
+
+		$target_run_ids = $repositories['target_run_repository']->save_target_runs(
+			$run_id,
+			array( wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::QUEUED ) ) )
+		);
+
+		$update_lock_detector = new WPCV_Test_Fake_Update_Lock_Detector( true );
+
+		$continuation_calls = array();
+		$dispatcher          = $this->make_dispatcher(
+			$repositories,
+			$wpdb,
+			array( 'update_lock_detector' => $update_lock_detector ),
+			$continuation_calls
+		);
+
+		$result = $dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$this->assertSame( 'deferred', $result['action'] );
+		$this->assertSame( WPCV_Target_Status::QUEUED, $wpdb->rows['wp_wpcv_target_runs'][ $target_run_ids['core'] ]['status'], 'claimされず、targetの状態は変化しない' );
+		$this->assertSame( WPCV_Run_Status::RUNNING, $wpdb->rows['wp_wpcv_runs'][ $run_id ]['status'] );
+		$this->assertCount( 1, $continuation_calls );
+		$this->assertSame( $run_id, $continuation_calls[0]['run_id'] );
+		$this->assertSame( WPCV_Chunk_Dispatcher::DEFER_SECONDS, $continuation_calls[0]['delay_seconds'] );
+	}
+
+	/**
+	 * `WPCV_Update_Lock_Detector::is_deferred()`がfalseなら、注入されていても
+	 * 通常どおりclaim・処理が進むことを確認する(v0.6 §Step6. D10).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_claims_normally_when_update_lock_not_active() {
+		$wpdb         = new WPCV_Test_Fake_WPDB();
+		$repositories = $this->make_repositories( $wpdb );
+		$reservation  = $this->reserve_and_start_running( $repositories['run_repository'] );
+		$run_id       = $reservation['run_id'];
+
+		$repositories['target_run_repository']->save_target_runs(
+			$run_id,
+			array( wpcv_test_make_target_run( array( 'status' => WPCV_Target_Status::QUEUED ) ) )
+		);
+
+		$update_lock_detector = new WPCV_Test_Fake_Update_Lock_Detector( false );
+
+		$continuation_calls = array();
+		$dispatcher          = $this->make_dispatcher(
+			$repositories,
+			$wpdb,
+			array( 'update_lock_detector' => $update_lock_detector ),
+			$continuation_calls
+		);
+
+		$result = $dispatcher->dispatch( $run_id, array( 'version' => '6.8' ) );
+
+		$this->assertNotSame( 'deferred', $result['action'] );
+		$this->assertSame( 'processed', $result['action'] );
 	}
 
 	/**

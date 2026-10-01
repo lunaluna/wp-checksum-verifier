@@ -3,7 +3,7 @@
  * Plugin Name:       WP Checksum Verifier
  * Plugin URI:        https://github.com/lunaluna/wp-checksum-verifier
  * Description:       WordPress コア・プラグイン・テーマ・MU プラグインの checksum を日次で検証し、改ざんを検出するプラグイン.
- * Version:           0.5.1
+ * Version:           0.6.0
  * Requires at least: 6.8
  * Tested up to:      7.1
  * Requires PHP:      7.4
@@ -41,8 +41,11 @@ if ( ! defined( 'ABSPATH' ) ) {
  * `(target_run_id, finding_key)`しか無いためPRIMARY(id)スキャンになり、
  * テーブル全体の件数に比例してコストが増える性能上の懸念が見つかったため、
  * `(target_run_id, id)`の複合indexを追加してv0.5後半 §Step12で5へ更新した.
+ *
+ * 更新イベント連動(v0.6プラン§2.1・D1)用に `wpcv_update_events` テーブルを
+ * 新設したため、v0.6 §Step1で6へ更新した(`WPCV_Migrator::table_definitions()` 参照).
  */
-define( 'WPCV_DB_VERSION', 5 );
+define( 'WPCV_DB_VERSION', 6 );
 
 /**
  * Public API contract のバージョン. 後方互換を維持する契約(§10).
@@ -112,6 +115,7 @@ add_action(
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-error-code.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-target-resolver.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-static-target-resolver.php';
 
 /**
  * Run/target の状態定数と遷移検証(v0.4.0 §Step1). Repository群より前に
@@ -197,6 +201,12 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-generatio
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-alert-composer.php';
 
 /**
+ * `.maintenance`/updater lock の有無を判定する(v0.6 §3.4・D10. DBに触れない
+ * 純粋ロジック).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-update-lock-detector.php';
+
+/**
  * DB 永続化層(§4.2. v0.4.0 §Step1でrun/target_run/findingの3責務に分割)と、
  * 1回分の run のライフサイクルを統括する Coordinator.
  */
@@ -216,6 +226,21 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-suppression-repo
  * 他のRepository群と同じ場所にまとめる.
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-file-state-repository.php';
+
+/**
+ * 更新イベント(`wpcv_update_events`)の永続化層(v0.6 §Step1). フック側からの
+ * 記録・差分処理側での突き合わせは v0.6 Step2・3 で実装する. 他クラスからの
+ * 依存はまだ無いため読み込み順の制約は無いが、他のRepository群と同じ場所にまとめる.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-update-event-repository.php';
+
+/**
+ * D5・D6の突き合わせ(v0.6 §Step3・§Step4)。`WPCV_Diff_Dispatcher`・
+ * `WPCV_Chunk_Dispatcher`の両方がコンストラクタで型宣言するため、それより
+ * 前に読み込む必要がある。`WPCV_Update_Event_Repository`・`WPCV_Run_Repository`
+ * (いずれも上でrequire済み)に依存する.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-update-event-matcher.php';
 
 /**
  * Chunk結果(cursor更新とfindings保存)をtransactionで確定する調整役(v0.4.0 §Step3).
@@ -262,6 +287,16 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-alert-se
  * 遅延解決の形のため問題ない(`WPCV_Chunk_Dispatcher::HOOK` の登録と同じ理由).
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-run-failure-alerter.php';
+
+/**
+ * 更新イベントの記録(v0.6 §Step2)。`upgrader_process_complete`フックの
+ * ハンドラをファイル末尾で登録するため、`WPCV_Update_Event_Repository`
+ * (v0.6 §Step1. 記録先)・`WPCV_Run_Planner`(slug解決)より後に読み込む必要が
+ * ある。`WPCV_Plugin`本体はまだ読み込まれていないが、フック登録は
+ * `array( 'WPCV_Plugin', ... )` という遅延解決の形のため問題ない
+ * (`WPCV_Run_Failure_Alerter` の登録と同じ理由).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-update-event-recorder.php';
 
 /**
  * Run開始時の「列挙(plan)→保存」を失敗時の後始末込みで行う共通処理

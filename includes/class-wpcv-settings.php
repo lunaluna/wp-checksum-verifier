@@ -98,13 +98,53 @@ class WPCV_Settings {
 	const DEFAULT_STAT_DETECTION = true;
 
 	/**
+	 * 「更新イベントの無い version 変化を知らせる」(v0.6プラン §2.3・U3)の既定値.
+	 *
+	 * 2026-09-29 ユーザー確認済み(プラン§8 Q1)の推奨案: 既定 true(git / FTP /
+	 * composer でデプロイするサイトは設定でOFFにする)。checksumが公式配布物と
+	 * 一致していても通知するのは、脆弱な古い version へのダウングレードが公式の
+	 * チェックサムと一致してしまう穴(rev.3 §3.7)をふさぐため.
+	 *
+	 * @var bool
+	 */
+	const DEFAULT_ALERT_UNRECORDED_VERSION_CHANGE = true;
+
+	/**
+	 * `content_hash_mode`(v0.6 §Step11・§5.3 L6・U4)の値: 既存の stat target
+	 * (独自プラグイン・mu-plugin loader)の内容ハッシュを計算しない(既定).
+	 *
+	 * @var string
+	 */
+	const CONTENT_HASH_MODE_OFF = 'off';
+
+	/**
+	 * `content_hash_mode` の値: 既存の stat target にも内容ハッシュ(層2)を
+	 * 計算する(オプトイン. U4で「既存のstat targetはオプトイン」と決定済み).
+	 *
+	 * @var string
+	 */
+	const CONTENT_HASH_MODE_STAT_TARGETS = 'stat_targets';
+
+	/**
+	 * `content_hash_mode` の既定値.
+	 *
+	 * 既存の stat target は対象ファイル数・サイズが `core:_config`/`dropin:_stat`
+	 * (v0.6 §Step10。常時有効)より大きくなり得るため、既定は無効にし、共有
+	 * ホスティングでの負荷を気にする運用者が明示的に有効化する形にする
+	 * (2026-09-29 ユーザー確認済み. プラン§8 Q2・U4).
+	 *
+	 * @var string
+	 */
+	const DEFAULT_CONTENT_HASH_MODE = self::CONTENT_HASH_MODE_OFF;
+
+	/**
 	 * 既定値.
 	 *
 	 * `alert_to`(v0.5後半 §Step14)の既定は空の配列. 空のときはアラートを送らず、
 	 * 管理画面に「宛先未設定」の警告を出す(プラン U1. admin_email へのフォールバックは
 	 * しない. WPMAR と同じ扱い).
 	 *
-	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool,stat_detection:bool,alert_to:string[]}
+	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool,stat_detection:bool,alert_to:string[],alert_unrecorded_version_change:bool,content_hash_mode:string}
 	 */
 	public static function defaults() {
 		return array(
@@ -114,13 +154,15 @@ class WPCV_Settings {
 			'strict_mode'                       => self::DEFAULT_STRICT_MODE,
 			'stat_detection'                    => self::DEFAULT_STAT_DETECTION,
 			'alert_to'                          => array(),
+			'alert_unrecorded_version_change'   => self::DEFAULT_ALERT_UNRECORDED_VERSION_CHANGE,
+			'content_hash_mode'                 => self::DEFAULT_CONTENT_HASH_MODE,
 		);
 	}
 
 	/**
 	 * 保存済みの設定値を既定値とマージして返す.
 	 *
-	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool,stat_detection:bool,alert_to:string[]}
+	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool,stat_detection:bool,alert_to:string[],alert_unrecorded_version_change:bool,content_hash_mode:string}
 	 */
 	public static function get_all() {
 		$stored = self::read_option();
@@ -239,6 +281,50 @@ class WPCV_Settings {
 	}
 
 	/**
+	 * 既存の stat target(独自プラグイン・mu-plugin loader)の内容ハッシュ(層2.
+	 * v0.6 §Step11)が有効かどうかを返す.
+	 *
+	 * @return bool
+	 */
+	public static function get_content_hash_stat_targets_enabled() {
+		return self::CONTENT_HASH_MODE_STAT_TARGETS === self::get_content_hash_mode();
+	}
+
+	/**
+	 * `content_hash_mode` の生値を返す.
+	 *
+	 * 保存済みの値が不正(手動での書き換え等)に汚染されていても、許可した値
+	 * (`off`/`stat_targets`)以外は既定値として扱う.
+	 *
+	 * @return string
+	 */
+	public static function get_content_hash_mode() {
+		$settings = self::get_all();
+		$mode     = (string) $settings['content_hash_mode'];
+
+		return in_array( $mode, array( self::CONTENT_HASH_MODE_OFF, self::CONTENT_HASH_MODE_STAT_TARGETS ), true )
+			? $mode
+			: self::DEFAULT_CONTENT_HASH_MODE;
+	}
+
+	/**
+	 * `content_hash_mode` を保存する.
+	 *
+	 * @param string $mode `CONTENT_HASH_MODE_OFF`/`CONTENT_HASH_MODE_STAT_TARGETS`.
+	 *                     それ以外の値は既定値(`off`)として保存する.
+	 * @return bool `update_option()`/`update_site_option()` の戻り値.
+	 */
+	public static function update_content_hash_mode( $mode ) {
+		$settings = self::get_all();
+
+		$settings['content_hash_mode'] = in_array( $mode, array( self::CONTENT_HASH_MODE_OFF, self::CONTENT_HASH_MODE_STAT_TARGETS ), true )
+			? $mode
+			: self::DEFAULT_CONTENT_HASH_MODE;
+
+		return self::write_option( $settings );
+	}
+
+	/**
 	 * アラートの宛先(v0.5後半 §Step14)を返す.
 	 *
 	 * 保存時に`parse_email_list()`で検証済みだが、option を直接書き換えられた場合にも
@@ -265,6 +351,32 @@ class WPCV_Settings {
 		$settings = self::get_all();
 
 		$settings['alert_to'] = self::parse_email_list( $raw );
+
+		return self::write_option( $settings );
+	}
+
+	/**
+	 * 「更新イベントの無い version 変化を知らせる」(v0.6プラン §2.3・U3)が
+	 * 有効かどうかを返す.
+	 *
+	 * @return bool
+	 */
+	public static function get_alert_unrecorded_version_change_enabled() {
+		$settings = self::get_all();
+
+		return (bool) $settings['alert_unrecorded_version_change'];
+	}
+
+	/**
+	 * 「更新イベントの無い version 変化を知らせる」の有効・無効を保存する.
+	 *
+	 * @param bool $enabled true で有効化.
+	 * @return bool `update_option()`/`update_site_option()` の戻り値.
+	 */
+	public static function update_alert_unrecorded_version_change_enabled( $enabled ) {
+		$settings = self::get_all();
+
+		$settings['alert_unrecorded_version_change'] = (bool) $enabled;
 
 		return self::write_option( $settings );
 	}

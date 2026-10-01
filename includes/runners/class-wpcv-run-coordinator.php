@@ -74,6 +74,14 @@ class WPCV_Run_Coordinator {
 	private $dispatcher;
 
 	/**
+	 * `deferred`(v0.6 §Step6. D10)のときに待つ callable. 第1引数は待つ秒数.
+	 * 省略時は実際の `sleep()`.
+	 *
+	 * @var callable
+	 */
+	private $sleeper;
+
+	/**
 	 * `dispatch()` の戻り値のうち、ループを終了させる `action` の一覧.
 	 *
 	 * `diff_alerted`/`diff_failed`(v0.5後半 §Step12・§Step14c)は差分処理が終端
@@ -88,6 +96,14 @@ class WPCV_Run_Coordinator {
 	 * 任せになってしまう(プランの「CLI同期は`diff_status`が`done`/`failed`に
 	 * なるまで回す」という契約に反する).
 	 *
+	 * `deferred`(v0.6 §Step6. D10)も含めない ―― `.maintenance`/updater lockが
+	 * 解除されるまで更新を待つべきで、ここで止めるとCLI同期実行・「今すぐ実行」
+	 * (Action Scheduler不在時の同期フォールバック)が更新を待たず不完全な結果を
+	 * 返してしまう。ただし何もせずループし続けると`sleep()`を挟まない限り
+	 * 空回りする(`$this->sleeper`参照)。runのdeadline(6時間)は
+	 * `WPCV_Chunk_Dispatcher::dispatch()`が毎回判定しているため、deadline超過後は
+	 * `aborted`が返り自然にループを抜ける.
+	 *
 	 * @var string[]
 	 */
 	const TERMINAL_ACTIONS = array( 'run_finalized', 'aborted', 'run_not_found', 'run_already_terminal', 'diff_alerted', 'diff_failed' );
@@ -99,17 +115,26 @@ class WPCV_Run_Coordinator {
 	 * @param WPCV_Run_Repository        $run_repository        `wpcv_runs` の永続化層.
 	 * @param WPCV_Target_Run_Repository $target_run_repository `wpcv_target_runs` の永続化層.
 	 * @param WPCV_Chunk_Dispatcher      $dispatcher            chunk分割実行のdispatcher.
+	 * @param callable|null              $sleeper               `deferred`のときに待つ callable
+	 *                                                            (第1引数は秒数). 省略時は実際の
+	 *                                                            `sleep()`(v0.6 §Step6. テストで
+	 *                                                            実際に待たずに済むよう注入可能にした).
 	 */
 	public function __construct(
 		WPCV_Run_Planner $planner,
 		WPCV_Run_Repository $run_repository,
 		WPCV_Target_Run_Repository $target_run_repository,
-		WPCV_Chunk_Dispatcher $dispatcher
+		WPCV_Chunk_Dispatcher $dispatcher,
+		?callable $sleeper = null
 	) {
 		$this->planner               = $planner;
 		$this->run_repository        = $run_repository;
 		$this->target_run_repository = $target_run_repository;
 		$this->dispatcher            = $dispatcher;
+
+		$this->sleeper = $sleeper ?? static function ( $seconds ) {
+			sleep( (int) $seconds );
+		};
 	}
 
 	/**
@@ -141,6 +166,10 @@ class WPCV_Run_Coordinator {
 
 		do {
 			$result = $this->dispatcher->dispatch( $run_id, $context );
+
+			if ( 'deferred' === $result['action'] ) {
+				call_user_func( $this->sleeper, WPCV_Chunk_Dispatcher::DEFER_SECONDS );
+			}
 		} while ( ! in_array( $result['action'], self::TERMINAL_ACTIONS, true ) );
 
 		$summary = WPCV_Verifier::summarize( $this->target_run_repository->find_all_by_run( $run_id ) );

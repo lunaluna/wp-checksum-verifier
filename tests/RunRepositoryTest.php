@@ -684,6 +684,73 @@ class RunRepositoryTest extends TestCase {
 	}
 
 	/**
+	 * `find_previous_run()` が指定run未満で最大のidの行を返すことを確認する
+	 * (v0.6 §Step7. statusは問わない).
+	 *
+	 * @return void
+	 */
+	public function test_find_previous_run_returns_closest_run_below_given_id() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-07 03:00:00',
+				'status'      => 'success',
+				'run_trigger' => 'rest',
+				'runner'      => 'sync',
+			)
+		);
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-08 03:00:00',
+				'status'      => 'failed',
+				'run_trigger' => 'rest',
+				'runner'      => 'sync',
+			)
+		);
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-09 03:00:00',
+				'status'      => 'running',
+				'run_trigger' => 'cron',
+				'runner'      => 'async',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$previous = $repository->find_previous_run( 3 );
+
+		$this->assertSame( 2, $previous['id'] );
+		$this->assertSame( 'failed', $previous['status'] );
+	}
+
+	/**
+	 * `find_previous_run()` が最初のrun(idが最小)に対しては `null` を返すことを
+	 * 確認する(v0.6 §Step7).
+	 *
+	 * @return void
+	 */
+	public function test_find_previous_run_returns_null_for_first_run() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'started_at'  => '2026-09-07 03:00:00',
+				'status'      => 'success',
+				'run_trigger' => 'rest',
+				'runner'      => 'sync',
+			)
+		);
+
+		$repository = $this->make_repository( $wpdb );
+
+		$this->assertNull( $repository->find_previous_run( 1 ) );
+	}
+
+	/**
 	 * `find_most_recent_terminal_run()` が terminal 状態の行が1件も無ければ
 	 * `null` を返すことを確認する(v0.4.0 §Step7).
 	 *

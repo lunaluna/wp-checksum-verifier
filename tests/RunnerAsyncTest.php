@@ -10,6 +10,7 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-error-code.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-file-hasher.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-path-normalizer.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-static-target-resolver.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-budget.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-unknown-file-scanner.php';
@@ -19,6 +20,7 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-cursor.php'
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-chunk-verifier.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-update-lock-detector.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-finding-key.php';
@@ -37,6 +39,8 @@ require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-coordinator.
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-context-builder.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-runner-async.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-update-event-repository.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-update-event-matcher.php';
 require_once __DIR__ . '/doubles.php';
 
 use PHPUnit\Framework\TestCase;
@@ -59,7 +63,7 @@ class RunnerAsyncTest extends TestCase {
 	 */
 	protected function setUp(): void {
 		parent::setUp();
-		unset( $GLOBALS['_wpcv_test_as_enqueue_calls'], $GLOBALS['_wpcv_test_bloginfo'], $GLOBALS['_wpcv_test_plugins'], $GLOBALS['_wpcv_test_mu_plugins'], $GLOBALS['_wpcv_test_as_enqueue_return_zero'], $GLOBALS['_wpcv_test_action_scheduler_initialized'] );
+		unset( $GLOBALS['_wpcv_test_as_enqueue_calls'], $GLOBALS['_wpcv_test_bloginfo'], $GLOBALS['_wpcv_test_plugins'], $GLOBALS['_wpcv_test_mu_plugins'], $GLOBALS['_wpcv_test_as_enqueue_return_zero'], $GLOBALS['_wpcv_test_action_scheduler_initialized'], $GLOBALS['_wpcv_test_as_schedule_single_calls'], $GLOBALS['_wpcv_test_options'] );
 		$this->reset_plugin_cache();
 	}
 
@@ -95,6 +99,7 @@ class RunnerAsyncTest extends TestCase {
 		wpcv_test_inject_chunk_result_repository();
 		wpcv_test_inject_chunk_dispatcher();
 		wpcv_test_inject_suppression_repository();
+		wpcv_test_inject_update_lock_detector();
 	}
 
 	/**
@@ -378,6 +383,72 @@ class RunnerAsyncTest extends TestCase {
 		// 検証が実行されていない(target_runs テーブルが作られていない)ことを確認する.
 		$this->assertArrayNotHasKey( 'wp_wpcv_target_runs', $made['wpdb']->rows );
 		$this->assertSame( 'failed', $made['wpdb']->rows['wp_wpcv_runs'][1]['status'] );
+	}
+
+	/**
+	 * `.maintenance`/updater lockが有効(v0.6 §Step6. D10)なら、
+	 * `mark_queued_planning()` を呼ばず(runは`queued`のまま)、`self::HOOK`を
+	 * `WPCV_Chunk_Dispatcher::DEFER_SECONDS`後に同じ引数で再予約することを確認する.
+	 *
+	 * `mark_queued_planning()`は`queued`のときしか`planning`へ進めない条件付き
+	 * UPDATEのため(実装中に気づいた罠. `run_async_action()`のdocblock参照)、
+	 * 延期判定はrunの状態を一切変更する前に行う必要があり、それをこのテストで
+	 * 確認する.
+	 *
+	 * @return void
+	 */
+	public function test_run_async_action_defers_without_touching_run_status_when_update_lock_active() {
+		$GLOBALS['_wpcv_test_bloginfo']                     = array( 'version' => '6.8' );
+		$GLOBALS['_wpcv_test_action_scheduler_initialized'] = true;
+		$made                                                = wpcv_test_make_fake_environment();
+		$this->inject_fake_environment( $made );
+		wpcv_test_inject_update_lock_detector( new WPCV_Test_Fake_Update_Lock_Detector( true ) );
+
+		$run_id = $made['run_repository']->reserve_run(
+			array(
+				'run_trigger'    => 'cron',
+				'runner'         => 'async',
+				'initial_status' => WPCV_Run_Status::QUEUED,
+			)
+		)['run_id'];
+
+		WPCV_Runner_Async::run_async_action( $run_id, 'cron' );
+
+		$this->assertSame( WPCV_Run_Status::QUEUED, $made['wpdb']->rows['wp_wpcv_runs'][ $run_id ]['status'], 'planningへ進めず、queuedのまま' );
+		$this->assertArrayNotHasKey( 'wp_wpcv_target_runs', $made['wpdb']->rows, 'plan_and_save()は呼ばれない' );
+
+		$this->assertCount( 1, $GLOBALS['_wpcv_test_as_schedule_single_calls'] );
+		list( $timestamp, $hook, $args, $group ) = $GLOBALS['_wpcv_test_as_schedule_single_calls'][0];
+		$this->assertSame( WPCV_Runner_Async::HOOK, $hook );
+		$this->assertSame( array( $run_id, 'cron' ), $args );
+		$this->assertSame( WPCV_Runner_Async::GROUP, $group );
+		$this->assertEqualsWithDelta( time() + WPCV_Chunk_Dispatcher::DEFER_SECONDS, $timestamp, 2 );
+	}
+
+	/**
+	 * `.maintenance`/updater lockが無効なら、注入されていても通常どおり
+	 * `mark_queued_planning()`以降が進むことを確認する(v0.6 §Step6).
+	 *
+	 * @return void
+	 */
+	public function test_run_async_action_proceeds_when_update_lock_not_active() {
+		$GLOBALS['_wpcv_test_bloginfo'] = array( 'version' => '6.8' );
+		$made                           = wpcv_test_make_fake_environment();
+		$this->inject_fake_environment( $made );
+		wpcv_test_inject_update_lock_detector( new WPCV_Test_Fake_Update_Lock_Detector( false ) );
+
+		$run_id = $made['run_repository']->reserve_run(
+			array(
+				'run_trigger'    => 'cron',
+				'runner'         => 'async',
+				'initial_status' => WPCV_Run_Status::QUEUED,
+			)
+		)['run_id'];
+
+		WPCV_Runner_Async::run_async_action( $run_id, 'cron' );
+
+		$this->assertSame( WPCV_Run_Status::RUNNING, $made['wpdb']->rows['wp_wpcv_runs'][ $run_id ]['status'] );
+		$this->assertArrayHasKey( 'wp_wpcv_target_runs', $made['wpdb']->rows );
 	}
 
 	/**

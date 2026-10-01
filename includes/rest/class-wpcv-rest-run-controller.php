@@ -182,7 +182,10 @@ class WPCV_Rest_Run_Controller {
 	 * `diff_alerted`/`diff_failed`はそれ以上呼んでも意味が無いため即座に止まる。`waiting`/`diff_not_claimable`
 	 * (他workerのlease待ち)も同様に即座に止める ―― lease有効期限は実時間の
 	 * 経過でしか切れないため、間を置かずに `dispatch()` を呼び直しても状態は
-	 * 変わらず、時間予算を無為に消費するだけになる(次回のPOSTに委ねる).
+	 * 変わらず、時間予算を無為に消費するだけになる(次回のPOSTに委ねる)。
+	 * `deferred`(v0.6 §Step6. `.maintenance`/updater lock中)も同じ理由で
+	 * 即座に止める ―― `WPCV_Run_Coordinator::run()` と違い、REST は1リクエスト
+	 * あたりの時間予算が短く `sleep()` で待つ余地が無いため(次回のPOSTに委ねる).
 	 *
 	 * @param int   $run_id  対象の run の id.
 	 * @param array $context `WPCV_Context_Builder::build()` と同じ形.

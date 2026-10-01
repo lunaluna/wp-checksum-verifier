@@ -28,8 +28,10 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 2. Run自体のdeadline超過を検知して `aborted` へ倒す
  * 3. Runが`queued`/`planning`(target_runsの列挙・保存が別プロセスでまだ完了
  *    していない)なら、claimを試みず待機する
- * 4. Claim可能な target_run を1件claimし、1chunk分処理する
- * 5. Claim対象が無ければ、全target_runが終端状態かどうかを見て run を確定する
+ * 4. `.maintenance`/updater lockが有効なら、claimを試みず延期する(v0.6 §Step6.
+ *    D10。target はSKIPPEDにせず、単に継続を後ろへずらすだけ)
+ * 5. Claim可能な target_run を1件claimし、1chunk分処理する
+ * 6. Claim対象が無ければ、全target_runが終端状態かどうかを見て run を確定する
  *    (終端でなければ、他workerの処理待ちとして遅延re-checkを予約するだけ)
  *
  * v0.4.0コードレビューCR-01是正: 3.を追加する前は、runが`queued`/`running`の
@@ -123,6 +125,44 @@ class WPCV_Chunk_Dispatcher {
 	 * @var float
 	 */
 	const DEFAULT_STAT_ROLLUP_RATIO = 0.5;
+
+	/**
+	 * 内容ハッシュ(層2)で1ファイルを読む上限バイト数(v0.6 §Step11。§5.3 L6).
+	 *
+	 * これを超えるファイルはハッシュを計算せず層1(stat比較)にフォールバックする。
+	 * 10 MB(10,485,760バイト)。Step8実測(test-armfu.local・エックスサーバー)を
+	 * 踏まえ2026-09-30ユーザー承認済み: (1) 実際に観測したPHP/JS等のソースは
+	 * 最大でも709 KB程度で十分な余裕がある、(2) 60MBのzip・23MBのフォントの
+	 * ような大きな静的バイナリは確実に除外される、(3) 最も遅い実測スループット
+	 * (約78 MB/秒)でも10MBのハッシュは0.13秒程度で無視できるコスト。
+	 * `wpcv_content_hash_max_bytes` フィルターで変えられる(rollup閾値と同じ方針.
+	 * 2026-09-30ユーザー確認済み: 設定画面には出さずフィルターのみで上書き可能にする).
+	 *
+	 * @var int
+	 */
+	const DEFAULT_CONTENT_HASH_MAX_BYTES = 10485760;
+
+	/**
+	 * 内容ハッシュ(層2)を有効にしたchunkで、累積で何バイト読んだら区切るかの
+	 * 既定上限(v0.6 §Step11. `WPCV_Chunk_Budget::max_bytes`).
+	 *
+	 * 1ファイルの上限(`DEFAULT_CONTENT_HASH_MAX_BYTES`)を導入したことで、
+	 * 1ファイルあたりの最悪コストは既に小さく抑えられている
+	 * (Step8実測の最も遅いスループット〔約78 MB/秒〕でも10MBのハッシュは
+	 * 0.13秒程度。`DEFAULT_BUDGET_MAX_FILES`(500)件すべてがこの上限ちょうど
+	 * だったとしても、`DEFAULT_BUDGET_MAX_SECONDS`(20秒)がファイル1件処理
+	 * するごとのチェックで先に止めるため、この`max_bytes`単体は安全性のためではなく
+	 * 「経過時間というやや揺らぎのある指標」ではなく「読んだバイト数という
+	 * 決定的な指標」でchunkを区切れるようにするための予算〔2026-09-30
+	 * ユーザー承認済み〕)。Step8実測の最も遅いスループット(約78 MB/秒)を基準に、
+	 * `DEFAULT_BUDGET_MAX_SECONDS`(20秒)の半分程度(ファイル走査・DB往復等
+	 * 他のオーバーヘッド分の余裕を残す)を内容ハッシュに使える時間の目安とし、
+	 * 10秒 × 78 MB/秒 ≈ 780 MBから、きりの良い200 MiB(209,715,200バイト)を
+	 * 既定値とする。`wpcv_content_hash_chunk_max_bytes` フィルターで変えられる.
+	 *
+	 * @var int
+	 */
+	const DEFAULT_CONTENT_HASH_CHUNK_MAX_BYTES = 209715200;
 
 	/**
 	 * `wpcv_runs` の永続化層.
@@ -232,6 +272,22 @@ class WPCV_Chunk_Dispatcher {
 	private $diff_dispatcher;
 
 	/**
+	 * D5・D6の突き合わせ(v0.6 §Step4. `run_stat_scan()`のD7・D8判定に使う).
+	 * `null`なら既存(v0.5)のままversion変化=常にrebuildになる.
+	 *
+	 * @var WPCV_Update_Event_Matcher|null
+	 */
+	private $update_event_matcher;
+
+	/**
+	 * `.maintenance`/updater lock の判定(v0.6 §Step6. D10).
+	 * `null`なら既存(v0.5まで)のまま延期を一切行わない(既存呼び出し元との後方互換).
+	 *
+	 * @var WPCV_Update_Lock_Detector|null
+	 */
+	private $update_lock_detector;
+
+	/**
 	 * Stat 差分検知を行う本体 target の `error_code`(rev.3 §3.4).
 	 *
 	 * 「照合元の配布物がそもそも無い」ことを示すものに限る。`http_error`/
@@ -245,6 +301,21 @@ class WPCV_Chunk_Dispatcher {
 		WPCV_Error_Code::UNKNOWN_SOURCE,
 		WPCV_Error_Code::VERSION_UNKNOWN,
 	);
+
+	/**
+	 * `.maintenance`/updater lock による延期(D10)の再チェック間隔(秒).
+	 *
+	 * 実測(2026-09-30. test-armfu.local. `wp_maybe_auto_update()` を実際に
+	 * 実行): 小さいプラグイン2件(hello-dolly・akismet)の更新で5秒、コア
+	 * (7.1.1→7.1.2)+中規模プラグイン1件(google-site-kit、約6MB)の更新で21秒。
+	 * この実測値を踏まえ、待ちすぎず・頻繁に再チェックしすぎない値として30秒とした
+	 * (更新が終わっていなければ`schedule_continuation()`により自分自身を再度
+	 * この間隔で起こすだけなので、共有ホスティング等で実測より長くかかる場合でも
+	 * 単に再チェック回数が増えるだけで正しさには影響しない).
+	 *
+	 * @var int
+	 */
+	const DEFER_SECONDS = 30;
 
 	/**
 	 * コンストラクタ.
@@ -267,6 +338,15 @@ class WPCV_Chunk_Dispatcher {
 	 *                                                                (v0.5 §Step6).
 	 * @param WPCV_Diff_Dispatcher|null       $diff_dispatcher       差分処理(v0.5後半 §Step12)の
 	 *                                                               dispatcher.
+	 * @param WPCV_Update_Event_Matcher|null  $update_event_matcher  D5・D6の突き合わせ(v0.6 §Step4.
+	 *                                                                stat targetのD7・D8判定に使う).
+	 *                                                                `null`なら既存(v0.5)のまま
+	 *                                                                version変化=常にrebuildになる
+	 *                                                                (既存呼び出し元との後方互換).
+	 * @param WPCV_Update_Lock_Detector|null  $update_lock_detector `.maintenance`/updater lockの
+	 *                                                                判定(v0.6 §Step6. D10). `null`
+	 *                                                                なら延期を行わない(既存呼び出し元
+	 *                                                                との後方互換).
 	 */
 	public function __construct(
 		WPCV_Run_Repository $run_repository,
@@ -280,7 +360,9 @@ class WPCV_Chunk_Dispatcher {
 		?callable $continuation_scheduler = null,
 		?callable $now = null,
 		?WPCV_File_State_Repository $file_state_repository = null,
-		?WPCV_Diff_Dispatcher $diff_dispatcher = null
+		?WPCV_Diff_Dispatcher $diff_dispatcher = null,
+		?WPCV_Update_Event_Matcher $update_event_matcher = null,
+		?WPCV_Update_Lock_Detector $update_lock_detector = null
 	) {
 		$this->run_repository          = $run_repository;
 		$this->target_run_repository   = $target_run_repository;
@@ -302,6 +384,8 @@ class WPCV_Chunk_Dispatcher {
 
 		$this->file_state_repository = $file_state_repository;
 		$this->diff_dispatcher       = $diff_dispatcher;
+		$this->update_event_matcher  = $update_event_matcher;
+		$this->update_lock_detector  = $update_lock_detector;
 	}
 
 	/**
@@ -312,8 +396,8 @@ class WPCV_Chunk_Dispatcher {
 	 *                        (version/plugins/plugin_dir/mu_plugin_dir/mu_plugins).
 	 * @return array{action: string} 少なくとも `action` キーを持つ結果
 	 *               (`run_not_found`|`run_already_terminal`|`aborted`|
-	 *               `waiting_for_plan`|`run_finalized`|`waiting`|`processed`。
-	 *               テスト・観測用).
+	 *               `waiting_for_plan`|`run_finalized`|`waiting`|`processed`|
+	 *               `deferred`(v0.6 §Step6. D10)。テスト・観測用).
 	 */
 	public function dispatch( $run_id, array $context ) {
 		$run_id = (int) $run_id;
@@ -359,6 +443,16 @@ class WPCV_Chunk_Dispatcher {
 			$this->schedule_continuation( $run_id, 0 );
 
 			return array( 'action' => 'waiting_for_plan' );
+		}
+
+		// v0.6 §Step6(D10): claim対象の有無を見る前に、`.maintenance`/updater
+		// lockの有無を確かめる。更新処理中に別のtargetをclaimして更新途中の
+		// ファイルを読んでしまうことを避けるため(target をSKIPPEDにはせず、
+		// 単に継続を後ろへずらすだけ. クラス docblock 参照).
+		if ( null !== $this->update_lock_detector && $this->update_lock_detector->is_deferred() ) {
+			$this->schedule_continuation( $run_id, self::DEFER_SECONDS );
+
+			return array( 'action' => 'deferred' );
 		}
 
 		$lease_owner = call_user_func( $this->lease_owner_factory );
@@ -547,6 +641,24 @@ class WPCV_Chunk_Dispatcher {
 	private function process_claimed_target( $run_id, array $target_run, array $context ) {
 		$dimension = $target_run['dimension'];
 		$slug      = $target_run['slug'];
+
+		// v0.6 §Step9: 本体targetを持たない合成target(core:_config・dropin:_stat.
+		// プラン§5.3 L1・L2)。`dropin:_stat`は`_stat`接尾辞を持つため、次の
+		// `is_stat_id()`判定より先に判定する必要がある ―― 先にそちらへ流すと
+		// `process_stat_target()`が本体targetを探して必ず見つからず
+		// `TARGET_MISSING`になってしまう(この2つには本体target自体が存在しない
+		// ため。`WPCV_Target_Resolver::body_id_of_stat()`のdocblock参照).
+		// `core:_config`はis_stat_id()には該当しないが、以降のcore次元の分岐
+		// (manifest比較)に誤って混ざらないよう、ここで同じタイミングで判定する.
+		if ( WPCV_Target_Resolver::DIMENSION_CORE === $dimension && '_config' === $slug ) {
+			$this->run_static_stat_scan( $run_id, $target_run, $context );
+			return;
+		}
+
+		if ( WPCV_Target_Resolver::DIMENSION_DROPIN === $dimension ) {
+			$this->run_static_stat_scan( $run_id, $target_run, $context );
+			return;
+		}
 
 		// v0.5 §Step6: stat target は本体と同じ dimension/slug を持つため、
 		// dimension/slug による振り分けより先に target_id の接尾辞で判定する.
@@ -908,27 +1020,96 @@ class WPCV_Chunk_Dispatcher {
 		// v0.5 §Step7(rev.3 §3.7-a): ベースラインが別の version で作られていれば捨てて
 		// 作り直す。run と run の間の通常の更新はこちらで拾う(target_run の version は
 		// plan 時点で既に新しい値のため、chunk 間の version 比較では気付けない).
-		$rebuild = $file_state_repository->has_rows_with_other_baseline_version( $target_id, $scan['version'] );
+		$version_changed = $file_state_repository->has_rows_with_other_baseline_version( $target_id, $scan['version'] );
 
-		// 作り直しは最初の chunk で古い行を全部消すので、2つ目以降の chunk では
-		// 上の判定が偽になる。target_run に残した error_code で「作り直し中」を引き継ぐ.
-		$rebuilding = $rebuild || WPCV_Error_Code::BASELINE_REBUILT === ( $target_run['error_code'] ?? null );
+		// v0.6 §Step4(§3.2・D7・D8): 前の chunk で既に判定済みなら、その結果を
+		// target_run に残した error_code で引き継ぐ(判定は target の最初の chunk で
+		// 1回だけ行う。chunk ごとに判定し直すと、途中で更新イベントが入ったときに
+		// chunk によって扱いが変わってしまうため。§3.2参照).
+		$previous_error_code      = $target_run['error_code'] ?? null;
+		$was_rebuilding           = WPCV_Error_Code::BASELINE_REBUILT === $previous_error_code;
+		$was_comparing_unrecorded = WPCV_Error_Code::VERSION_CHANGED_UNRECORDED === $previous_error_code;
+
+		if ( $was_rebuilding ) {
+			// 継続中: `delete_by_target()` を呼ぶべきかは、今回時点で実際に他の
+			// baseline_version を持つ行が残っているかにそのまま従う(通常は
+			// 最初の chunk で既に消えているため 2つ目以降は `false` になる。
+			// `$rebuilding`〔error_code の維持〕とは意味が異なることに注意.
+			// v0.5時点の`$rebuild = has_rows_with_other_baseline_version(...)`が
+			// 毎chunk再評価されていたのと同じ挙動).
+			$rebuild    = $version_changed;
+			$rebuilding = true;
+			$unrecorded = false;
+		} elseif ( $was_comparing_unrecorded ) {
+			$rebuild    = false;
+			$rebuilding = false;
+			$unrecorded = true;
+		} elseif ( $version_changed ) {
+			// D7: 記録なし・期間内・設定ON のときだけ、作り直さず今のベースラインと
+			// 比べる(§3.2の表「あり・なし・いいえ・ON」の行).それ以外(記録あり・
+			// 期間外・設定OFF)は今と同じ挙動(作り直す)にする.
+			if ( $this->should_compare_stat_without_rebuild( $target_id, $scan['version'], (int) $run_id ) ) {
+				$rebuild    = false;
+				$rebuilding = false;
+				$unrecorded = true;
+			} else {
+				$rebuild    = true;
+				$rebuilding = true;
+				$unrecorded = false;
+			}
+		} elseif ( $this->has_matching_update_event_for_stat( $target_id, $scan['version'], (int) $run_id ) ) {
+			// D8: version変化が無くても、更新イベントの記録があれば黙って作り直す
+			// (§3.2の表「なし・あり」の行。期間・設定は問わない).
+			$rebuild    = true;
+			$rebuilding = true;
+			$unrecorded = false;
+		} else {
+			$rebuild    = false;
+			$rebuilding = false;
+			$unrecorded = false;
+		}
 
 		// rev.3 §3.6: 今回の run より前に書かれた行が1件も無ければ初回とみなす
 		// (今回の run が書いた行は last_seen_run_id が同じなので含まれない).
 		$baseline_mode = $rebuild || ! $file_state_repository->has_baseline_before_run( $target_id, (int) $run_id );
 
+		// v0.6 §Step11(§5.3 L6・U4): 既存のstat targetは`content_hash_mode`が
+		// `stat_targets`のときだけ内容ハッシュ(層2)を有効にする(既定off。
+		// `core:_config`/`dropin:_stat`〔Step10で常時有効〕とは異なる).
+		$content_hash_enabled = WPCV_Settings::get_content_hash_stat_targets_enabled();
+
+		$budget = $this->default_budget();
+
+		if ( $content_hash_enabled ) {
+			/**
+			 * Chunkあたりで内容ハッシュに読む累積バイト数の上限を変える(v0.6 §Step11).
+			 *
+			 * @param int    $max_bytes 既定 `DEFAULT_CONTENT_HASH_CHUNK_MAX_BYTES`.
+			 * @param string $target_id stat target の target_id.
+			 */
+			$budget['max_bytes'] = (int) apply_filters( 'wpcv_content_hash_chunk_max_bytes', self::DEFAULT_CONTENT_HASH_CHUNK_MAX_BYTES, $target_id );
+		}
+
 		$chunk_result = $this->chunk_verifier->verify_stat_chunk(
 			array(
-				'target_id'            => $target_id,
-				'dimension'            => $target_run['dimension'],
-				'slug'                 => $target_run['slug'],
-				'version'              => $scan['version'],
-				'source'               => 'stat',
-				'run_id'               => (int) $run_id,
-				'scan_items'           => $scan['items'],
-				'baseline_mode'        => $baseline_mode,
-				'load_previous_states' => static function ( array $paths ) use ( $file_state_repository, $target_id ) {
+				'target_id'              => $target_id,
+				'dimension'              => $target_run['dimension'],
+				'slug'                   => $target_run['slug'],
+				'version'                => $scan['version'],
+				'source'                 => 'stat',
+				'run_id'                 => (int) $run_id,
+				'scan_items'             => $scan['items'],
+				'baseline_mode'          => $baseline_mode,
+				'content_hash_enabled'   => $content_hash_enabled,
+				/**
+				 * 1ファイルの内容ハッシュ上限バイト数を変える(v0.6 §Step11。§5.3 L6).
+				 * 超えるファイルは層1(stat比較)にフォールバックする.
+				 *
+				 * @param int    $max_bytes 既定 `DEFAULT_CONTENT_HASH_MAX_BYTES`.
+				 * @param string $target_id stat target の target_id.
+				 */
+				'content_hash_max_bytes' => $content_hash_enabled ? (int) apply_filters( 'wpcv_content_hash_max_bytes', self::DEFAULT_CONTENT_HASH_MAX_BYTES, $target_id ) : null,
+				'load_previous_states'   => static function ( array $paths ) use ( $file_state_repository, $target_id ) {
 					$keys = array();
 					foreach ( $paths as $path ) {
 						$keys[] = WPCV_File_State_Repository::compute_state_key( $target_id, $path );
@@ -941,11 +1122,11 @@ class WPCV_Chunk_Dispatcher {
 
 					return $by_path;
 				},
-				'cursor_path'          => $target_run['cursor_path'] ?? null,
-				'previous_fingerprint' => $target_run['manifest_fingerprint'] ?? null,
-				'previous_version'     => $target_run['version'],
-				'budget'               => $this->default_budget(),
-				'rollup'               => array(
+				'cursor_path'            => $target_run['cursor_path'] ?? null,
+				'previous_fingerprint'   => $target_run['manifest_fingerprint'] ?? null,
+				'previous_version'       => $target_run['version'],
+				'budget'                 => $budget,
+				'rollup'                 => array(
 					/**
 					 * Stat 差分検知で変更 finding を1件にまとめる最小件数を変える(v0.5 §Step8).
 					 *
@@ -964,7 +1145,7 @@ class WPCV_Chunk_Dispatcher {
 					 */
 					'ratio'     => (float) apply_filters( 'wpcv_stat_rollup_ratio', self::DEFAULT_STAT_ROLLUP_RATIO, $target_id ),
 				),
-				'target_root_path'     => $scan['root_path'],
+				'target_root_path'       => $scan['root_path'],
 			)
 		);
 
@@ -976,6 +1157,9 @@ class WPCV_Chunk_Dispatcher {
 
 			if ( $rebuilding ) {
 				$chunk_result['error_code'] = WPCV_Error_Code::BASELINE_REBUILT;
+			} elseif ( $unrecorded ) {
+				// D7(v0.6 §Step4): 比較は続けるが、記録が無かったことを残す.
+				$chunk_result['error_code'] = WPCV_Error_Code::VERSION_CHANGED_UNRECORDED;
 			}
 
 			if ( $chunk_result['completed'] && ! $baseline_mode ) {
@@ -984,6 +1168,175 @@ class WPCV_Chunk_Dispatcher {
 		}
 
 		$this->chunk_result_repository->commit_chunk( $run_id, $target_run['id'], $target_id, $chunk_result, $target_run['lease_owner'], $scan['version'] );
+	}
+
+	/**
+	 * 本体targetを持たない合成target(`core:_config`・`dropin:_stat`. v0.6 §Step9.
+	 * プラン§5.3 L1・L8)のstat走査を処理する。
+	 *
+	 * `run_stat_scan()`との違いは、D5〜D8(本体の「更新」を検知してベースラインを
+	 * 作り直すかどうかの判定. §3.2)を一切行わないこと ―― これらのtargetには
+	 * 「本体」も「version」という概念も無く、`WPCV_Update_Event_Repository`にも
+	 * 記録が乗らないため、作り直しの判断材料自体が存在しない。常に
+	 * 「ベースラインが無ければ初回、あれば比較」だけを行う(初回は
+	 * `baseline_mode=true`になりfindingを出さない。これがプラン§5.3 L8の
+	 * 「初回はベースラインのみ」の実体で、既存のstatの仕組みが自然に満たす).
+	 *
+	 * @param int   $run_id     対象の run の id.
+	 * @param array $target_run claim済みのtarget_run行.
+	 * @param array $context    `dispatch()` に渡された `$context`.
+	 * @return void
+	 *
+	 * @throws LogicException `WPCV_File_State_Repository` が注入されていない場合.
+	 */
+	private function run_static_stat_scan( $run_id, array $target_run, array $context ) {
+		if ( null === $this->file_state_repository ) {
+			throw new LogicException( 'WPCV_Chunk_Dispatcher requires a WPCV_File_State_Repository to process stat targets.' );
+		}
+
+		$scan = $this->collect_stat_items( $target_run, $context );
+
+		if ( null === $scan ) {
+			$this->target_run_repository->finalize_immediate(
+				$target_run['id'],
+				array(
+					'status'     => WPCV_Target_Status::UNVERIFIABLE,
+					'error_code' => WPCV_Error_Code::TARGET_MISSING,
+				),
+				$target_run['lease_owner']
+			);
+			return;
+		}
+
+		if ( $scan['truncated'] ) {
+			// core:_scan と同じ理由(process_core_scan() 参照)で、不完全な走査結果は
+			// 使わず retry へ戻す(実際にはファイル数が少数のためtruncatedになることは
+			// 想定していないが、budget自体は他のstat走査と共有しているため念のため確認する).
+			$this->target_run_repository->mark_scan_incomplete( $target_run['id'], $target_run['lease_owner'] );
+			return;
+		}
+
+		$target_id             = (string) $target_run['target_id'];
+		$file_state_repository = $this->file_state_repository;
+
+		// v0.6 §Step9で実地検証中に発見した罠: `run_stat_scan()`と同じく
+		// `has_baseline_before_run()`(`wpcv_file_states`に行があるか)で
+		// baseline_modeを判定すると、この2つのtarget(特に`dropin:_stat`。
+		// ドロップインが1つも無いサイトは珍しくない)は「本体が実在する
+		// stat target」と違い**ファイルが0件の状態が普通に何runも続き得る**。
+		// 0件のままだと`wpcv_file_states`に行が一切書かれないため、その後
+		// 初めてファイルが現れた回もbaseline_modeがtrueのまま(=addedを
+		// 報告せず黙って取り込む)になってしまう(test-armfu.localの実地検証で
+		// 実際に発生: run #109が0件→run #110でファイル追加もfindingが出なかった)。
+		// この2つのtargetにはD5〜D8のような「バージョン変化でベースラインを
+		// 作り直す」概念自体が無く、`wpcv_file_states`の行の有無と「過去に
+		// このtargetが処理されたか」が一致するとは限らないため、ここだけは
+		// `find_baseline_target_run()`(同じtarget_idが過去に`success`で
+		// 終端したrunがあるか. ファイル件数に関わらず判定できる)を使う.
+		$baseline_mode = null === $this->target_run_repository->find_baseline_target_run( $target_id, (int) $run_id );
+
+		$chunk_result = $this->chunk_verifier->verify_stat_chunk(
+			array(
+				'target_id'            => $target_id,
+				'dimension'            => $target_run['dimension'],
+				'slug'                 => $target_run['slug'],
+				'version'              => $scan['version'],
+				'source'               => 'stat',
+				'run_id'               => (int) $run_id,
+				'scan_items'           => $scan['items'],
+				'baseline_mode'        => $baseline_mode,
+				// v0.6 §Step10・§5.3 L4: この2つのtargetは常に内容ハッシュを取る.
+				'content_hash_enabled' => true,
+				'load_previous_states' => static function ( array $paths ) use ( $file_state_repository, $target_id ) {
+					$keys = array();
+					foreach ( $paths as $path ) {
+						$keys[] = WPCV_File_State_Repository::compute_state_key( $target_id, $path );
+					}
+
+					$by_path = array();
+					foreach ( $file_state_repository->find_by_state_keys( $keys ) as $row ) {
+						$by_path[ $row['path'] ] = $row;
+					}
+
+					return $by_path;
+				},
+				'cursor_path'          => $target_run['cursor_path'] ?? null,
+				'previous_fingerprint' => $target_run['manifest_fingerprint'] ?? null,
+				'previous_version'     => $target_run['version'],
+				'budget'               => $this->default_budget(),
+				'rollup'               => array(
+					'min_count' => (int) apply_filters( 'wpcv_stat_rollup_min_count', self::DEFAULT_STAT_ROLLUP_MIN_COUNT, $target_id ),
+					'ratio'     => (float) apply_filters( 'wpcv_stat_rollup_ratio', self::DEFAULT_STAT_ROLLUP_RATIO, $target_id ),
+				),
+				'target_root_path'     => $scan['root_path'],
+			)
+		);
+
+		if ( ! $chunk_result['needs_retry'] && $chunk_result['completed'] && ! $baseline_mode ) {
+			$chunk_result = $this->add_missing_findings( $chunk_result, $target_run, (int) $run_id, $scan['version'] );
+		}
+
+		$this->chunk_result_repository->commit_chunk( $run_id, $target_run['id'], $target_id, $chunk_result, $target_run['lease_owner'], $scan['version'] );
+	}
+
+	/**
+	 * D7(v0.6 §Step4・§3.2): version変化があった stat target について、作り直さず
+	 * 今のベースラインと比べ続けるべきかを判定する。記録あり・期間外
+	 * (`wpcv_update_events_since`より前・未設定を含む)・設定OFFのいずれかなら
+	 * `false`(=今と同じ作り直し)を返す.
+	 *
+	 * `$this->update_event_matcher`が注入されていない場合は常に`false`(既存
+	 * v0.5の挙動のまま. コンストラクタのdocblock参照).
+	 *
+	 * @param string $target_id stat target の target_id(`{dimension}:{slug}:_stat`).
+	 * @param string $version   今回の version(空文字列なら`null`として扱う).
+	 * @param int    $run_id    今回の run の id.
+	 * @return bool
+	 */
+	private function should_compare_stat_without_rebuild( $target_id, $version, $run_id ) {
+		if ( null === $this->update_event_matcher || ! WPCV_Settings::get_alert_unrecorded_version_change_enabled() ) {
+			return false;
+		}
+
+		// 基準runの開始時刻は「stat targetが最後に正常に処理されたrun」から引くが
+		// (stat target自身のtarget_idで検索)、`wpcv_update_events`への記録は
+		// 本体プラグインのtarget_id(接尾辞なし)で行われる(`WPCV_Update_Event_Recorder`
+		// 参照)ため、記録の突き合わせには本体のtarget_idを使う.
+		$baseline_target_run = $this->target_run_repository->find_baseline_target_run( $target_id, $run_id );
+		$body_target_id      = WPCV_Target_Resolver::body_id_of_stat( $target_id );
+
+		if ( $this->update_event_matcher->is_outside_tracked_period( $baseline_target_run ) ) {
+			return false;
+		}
+
+		return ! $this->update_event_matcher->has_matching_event( $body_target_id, '' === $version ? null : $version, $baseline_target_run );
+	}
+
+	/**
+	 * D8(v0.6 §Step4・§3.2): version変化が無かった stat target について、更新
+	 * イベントの記録があるかを判定する(期間・設定は問わない。記録があれば
+	 * 呼び出し元が黙って作り直す).
+	 *
+	 * `$this->update_event_matcher`が注入されていない場合は常に`false`(既存
+	 * v0.5の挙動のまま).
+	 *
+	 * @param string $target_id stat target の target_id.
+	 * @param string $version   今回の version(空文字列なら`null`として扱う).
+	 * @param int    $run_id    今回の run の id.
+	 * @return bool
+	 */
+	private function has_matching_update_event_for_stat( $target_id, $version, $run_id ) {
+		if ( null === $this->update_event_matcher ) {
+			return false;
+		}
+
+		// `should_compare_stat_without_rebuild()`と同じ理由(docblock参照)で、
+		// 基準runはstat target自身のtarget_idで、記録の突き合わせは本体の
+		// target_idで行う.
+		$baseline_target_run = $this->target_run_repository->find_baseline_target_run( $target_id, $run_id );
+		$body_target_id      = WPCV_Target_Resolver::body_id_of_stat( $target_id );
+
+		return $this->update_event_matcher->has_matching_event( $body_target_id, '' === $version ? null : $version, $baseline_target_run );
 	}
 
 	/**
@@ -1096,7 +1449,61 @@ class WPCV_Chunk_Dispatcher {
 			return $scan;
 		}
 
+		// v0.6 §Step9(§5.3 L1・L2): 本体を持たない合成target。複数の絶対パス
+		// (単一ディレクトリの再帰走査ではない)にまたがるため、`stat_file()`を
+		// 1ファイルずつ呼んで`items`を連結する(`root_path`は複数ファイルに
+		// またがり単一の値が無いため空文字列。ロールアップ〔rev.3 §3.7〕は
+		// 対象ファイル数がごく少数のためどのみち発火しない).
+		if ( WPCV_Target_Resolver::DIMENSION_CORE === $target_run['dimension'] && '_config' === $target_run['slug'] ) {
+			return $this->collect_static_stat_items( WPCV_Static_Target_Resolver::config_file_paths() );
+		}
+
+		if ( WPCV_Target_Resolver::DIMENSION_DROPIN === $target_run['dimension'] ) {
+			return $this->collect_static_stat_items( WPCV_Static_Target_Resolver::dropin_paths() );
+		}
+
 		return null;
+	}
+
+	/**
+	 * 複数の絶対パスそれぞれを`stat_file()`で走査し、`items`を連結する
+	 * (`collect_stat_items()`の`core:_config`/`dropin:_stat`分岐専用).
+	 *
+	 * `severity`は常に`high`にする(wp-config.php・.htaccess・ドロップインは
+	 * いずれもリクエストのたびに読まれる/機密情報を含み得るため、拡張子を
+	 * 問わず高severityとして扱う).
+	 *
+	 * 各itemの`path`は`WPCV_Static_Target_Resolver::stored_path_for()`で求めた
+	 * ABSPATH相対のパスに置き換え、実際のファイルの場所は`absolute_path`に
+	 * 持たせる。ABSPATHの1つ上にある`wp-config.php`は`path`が`wp-config.php`に
+	 * なり実体の場所と一致しないため、`WPCV_Chunk_Verifier::verify_stat_chunk()`
+	 * の内容ハッシュは`absolute_path`を読む(v0.6 §Step12. 理由は
+	 * `stored_path_for()`のdocblock参照).
+	 *
+	 * @param string[] $absolute_paths 対象の絶対パス一覧(実在するもののみ想定).
+	 * @return array{items: array, truncated: bool, version: string, root_path: string}
+	 */
+	private function collect_static_stat_items( array $absolute_paths ) {
+		$items = array();
+
+		foreach ( $absolute_paths as $absolute_path ) {
+			$result = $this->scanner->stat_file( $absolute_path, 'high', 'high' );
+
+			foreach ( $result['items'] as $item ) {
+				$item['path']          = WPCV_Static_Target_Resolver::stored_path_for( $absolute_path );
+				$item['absolute_path'] = WPCV_Path_Normalizer::to_forward_slashes( $absolute_path );
+				$items[]               = $item;
+			}
+		}
+
+		return array(
+			'items'     => $items,
+			'truncated' => false,
+			// §5.5: findings.version は NOT NULL のため空文字列にする(muplugin loaderと同じ規約.
+			// これらのtargetに「version」という概念自体が無いため).
+			'version'   => '',
+			'root_path' => '',
+		);
 	}
 
 	/**

@@ -269,7 +269,10 @@ class WPCV_Chunk_Verifier {
 	 *
 	 * 1. 走査結果(`collect_stat => true` で得た size/ctime/mtime 付きの items)を
 	 *    前回のベースラインと比べ、`WPCV_Verifier::make_finding_for_stat_change()` で
-	 *    finding にする(ファイル内容は読まない).
+	 *    finding にする(ファイル内容は読まない)。`$context['content_hash_enabled']`
+	 *    が真の対象(`core:_config`/`dropin:_stat`. v0.6 §Step10)だけは例外で、
+	 *    内容ハッシュ(sha256)も計算し `WPCV_Verifier::make_finding_for_stat_content_change()`
+	 *    で比較する.
 	 * 2. 処理したファイルぶんのベースライン行(`baseline_rows`)も返す。呼び出し元
 	 *    (Step6の dispatcher / `commit_chunk()`)が findings と同じトランザクションで
 	 *    `WPCV_File_State_Repository::upsert_many()` に渡す想定.
@@ -303,7 +306,10 @@ class WPCV_Chunk_Verifier {
 	 *                                               first/last_seen_run_id になる). 必須.
 	 *     @type array         $scan_items           `collect_stat => true` で得た
 	 *                                               `WPCV_Unknown_File_Scanner::scan()` の戻り値. 必須.
-	 *     @type bool          $baseline_mode        真ならベースライン構築のみ(finding なし). 既定 false.
+	 *                                               `core:_config`/`dropin:_stat`のitemは
+	 *                                               内容ハッシュ用に`absolute_path`も持つ
+	 *                                               (v0.6 §Step12).
+	 *     @type bool          $baseline_mode       真ならベースライン構築のみ(finding なし). 既定 false.
 	 *     @type callable|null $load_previous_states `function( string[] $paths ): array`.
 	 *                                               path => `array( 'file_size', 'ctime', 'mtime', ... )`
 	 *                                               (`wpcv_file_states` の行の形)を返す.
@@ -317,6 +323,18 @@ class WPCV_Chunk_Verifier {
 	 *                                               省略時はまとめない.
 	 *     @type string        $target_root_path     まとめた finding の path にする
 	 *                                               target のルート(ABSPATH 相対). 既定は空文字.
+	 *     @type bool          $content_hash_enabled 真なら内容ハッシュ(sha256)を計算し、
+	 *                                               `file_states.content_hash` に保存しつつ
+	 *                                               `WPCV_Verifier::make_finding_for_stat_content_change()`
+	 *                                               で比較する(v0.6 §Step10. §5.3 L4).
+	 *                                               既定 false(従来どおり size/ctime/mtime のみ).
+	 *     @type int|null      $content_hash_max_bytes 1ファイルの内容ハッシュ上限バイト数
+	 *                                               (v0.6 §Step11. §5.3 L6)。`$content_hash_enabled`
+	 *                                               が真でもこれを超えるファイルはハッシュを
+	 *                                               計算せず層1(stat比較)にフォールバックする。
+	 *                                               既定 null(上限なし。`core:_config`/
+	 *                                               `dropin:_stat`〔常に内容ハッシュを取る
+	 *                                               L4対象〕はこの上限を渡さない).
 	 * }
 	 * @return array `verify_manifest_chunk()` と同じ形に `baseline_rows`
 	 *               (`WPCV_File_State_Repository::upsert_many()` にそのまま渡せる行の配列)を
@@ -349,8 +367,10 @@ class WPCV_Chunk_Verifier {
 		$budget = isset( $context['budget'] ) ? (array) $context['budget'] : array();
 		$paths  = WPCV_Chunk_Cursor::paths_after( $sorted_paths, $context['cursor_path'] ?? null );
 
-		$baseline_mode   = ! empty( $context['baseline_mode'] );
-		$previous_states = $baseline_mode ? array() : $this->load_previous_states( $context, $paths, $budget );
+		$baseline_mode          = ! empty( $context['baseline_mode'] );
+		$content_hash_enabled   = ! empty( $context['content_hash_enabled'] );
+		$content_hash_max_bytes = isset( $context['content_hash_max_bytes'] ) ? (int) $context['content_hash_max_bytes'] : null;
+		$previous_states        = $baseline_mode ? array() : $this->load_previous_states( $context, $paths, $budget );
 
 		$target_id = (string) $context['target_id'];
 		$dimension = (string) $context['dimension'];
@@ -365,6 +385,7 @@ class WPCV_Chunk_Verifier {
 		$new_cursor_path      = $context['cursor_path'] ?? null;
 		$completed            = true;
 		$processed            = 0;
+		$bytes_hashed         = 0;
 		$start                = call_user_func( $this->now );
 
 		foreach ( $paths as $path ) {
@@ -379,6 +400,28 @@ class WPCV_Chunk_Verifier {
 			$stat_failed = 0 === $current['size'] && 0 === $current['ctime'] && 0 === $current['mtime'];
 
 			if ( ! $stat_failed ) {
+				// content_hash_enabledの対象(v0.6 §Step10)は、baseline_modeでも計算して
+				// 保存する(§5.3 L4「常に内容ハッシュを取る」)。こうしておくと、初回の
+				// ベースライン構築の直後の回からすでに内容比較が効く。
+				// `content_hash_max_bytes`(v0.6 §Step11. §5.3 L6)を超えるファイルは
+				// ハッシュを計算せず層1にフォールバックする(nullのまま扱われる。
+				// `make_finding_for_stat_content_change()`のフォールバック経路と同じ).
+				$within_content_hash_size_limit = null === $content_hash_max_bytes || $current['size'] <= $content_hash_max_bytes;
+				$current_content_hash           = null;
+
+				if ( $content_hash_enabled && $within_content_hash_size_limit ) {
+					// `absolute_path`は`core:_config`/`dropin:_stat`のitemだけが持つ.
+					// ABSPATHの1つ上にある`wp-config.php`は`path`が`wp-config.php`で
+					// 実体の場所と一致しないため、実際の場所を読む(v0.6 §Step12.
+					// `WPCV_Static_Target_Resolver::stored_path_for()`参照).
+					$absolute_path        = isset( $item['absolute_path'] ) ? (string) $item['absolute_path'] : rtrim( ABSPATH, '/' ) . '/' . $path;
+					$current_content_hash = WPCV_File_Hasher::hash( $absolute_path, WPCV_File_Hasher::ALGO_SHA256 );
+					// `max_bytes`予算(chunk単位の累積)には、ハッシュに成功したかに
+					// 関わらず「読もうとしたバイト数」を積む(読み取り失敗でもI/Oの
+					// コストは既に発生しているため).
+					$bytes_hashed += $current['size'];
+				}
+
 				if ( ! $baseline_mode ) {
 					$previous = isset( $previous_states[ $path ] ) ? array(
 						'size'  => (int) $previous_states[ $path ]['file_size'],
@@ -386,7 +429,13 @@ class WPCV_Chunk_Verifier {
 						'mtime' => (int) $previous_states[ $path ]['mtime'],
 					) : null;
 
-					$finding = WPCV_Verifier::make_finding_for_stat_change( $target_id, $dimension, $slug, $version, $source, $path, (string) $item['severity'], $previous, $current );
+					if ( $content_hash_enabled ) {
+						$previous_content_hash = isset( $previous_states[ $path ]['content_hash'] ) ? $previous_states[ $path ]['content_hash'] : null;
+						$finding               = WPCV_Verifier::make_finding_for_stat_content_change( $target_id, $dimension, $slug, $version, $source, $path, (string) $item['severity'], $previous, $current, $previous_content_hash, $current_content_hash );
+					} else {
+						$finding = WPCV_Verifier::make_finding_for_stat_change( $target_id, $dimension, $slug, $version, $source, $path, (string) $item['severity'], $previous, $current );
+					}
+
 					++$files_compared;
 
 					if ( null === $finding ) {
@@ -405,8 +454,8 @@ class WPCV_Chunk_Verifier {
 					'file_size'         => $current['size'],
 					'ctime'             => $current['ctime'],
 					'mtime'             => $current['mtime'],
-					'content_hash'      => null,
-					'hash_algorithm'    => null,
+					'content_hash'      => $current_content_hash,
+					'hash_algorithm'    => null === $current_content_hash ? null : WPCV_File_Hasher::ALGO_SHA256,
 					'baseline_version'  => '' === $version ? null : $version,
 					'first_seen_run_id' => $run_id,
 					'last_seen_run_id'  => $run_id,
@@ -416,7 +465,7 @@ class WPCV_Chunk_Verifier {
 			$new_cursor_path = $path;
 			++$processed;
 
-			if ( $this->budget_exceeded( $start, $processed, $budget ) ) {
+			if ( $this->budget_exceeded( $start, $processed, $budget, $bytes_hashed ) ) {
 				$completed = false;
 				break;
 			}
@@ -551,15 +600,19 @@ class WPCV_Chunk_Verifier {
 	}
 
 	/**
-	 * 予算(件数・経過時間・メモリ)のいずれかを超えたかを判定する.
+	 * 予算(件数・経過時間・メモリ・累積バイト数)のいずれかを超えたかを判定する.
 	 *
-	 * @param float $start_time 処理開始時刻(`$this->now` の戻り値).
-	 * @param int   $processed  このchunkで既に処理した件数.
-	 * @param array $budget     `max_files`/`max_seconds`/`memory_limit_bytes`/
-	 *                          `memory_threshold_ratio`(いずれも省略可).
+	 * @param float $start_time      処理開始時刻(`$this->now` の戻り値).
+	 * @param int   $processed       このchunkで既に処理した件数.
+	 * @param array $budget          `max_files`/`max_seconds`/`max_bytes`/
+	 *                               `memory_limit_bytes`/`memory_threshold_ratio`
+	 *                               (いずれも省略可).
+	 * @param int   $bytes_processed このchunkで既に読んだ累積バイト数(v0.6 §Step11。
+	 *                               `max_bytes`判定用)。既定0(内容ハッシュを扱わない
+	 *                               呼び出し元はそのままでよい).
 	 * @return bool
 	 */
-	private function budget_exceeded( $start_time, $processed, array $budget ) {
-		return WPCV_Chunk_Budget::exceeded( $start_time, $processed, $budget, $this->now, $this->memory_usage );
+	private function budget_exceeded( $start_time, $processed, array $budget, $bytes_processed = 0 ) {
+		return WPCV_Chunk_Budget::exceeded( $start_time, $processed, $budget, $this->now, $this->memory_usage, $bytes_processed );
 	}
 }

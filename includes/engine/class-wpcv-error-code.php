@@ -57,9 +57,6 @@ class WPCV_Error_Code {
 	/** 検証中に更新が走った(retry 対象). */
 	const VERSION_CHANGED = 'version_changed';
 
-	/** 更新処理中でスキップ. */
-	const LOCKED = 'locked';
-
 	/** 時間予算切れ(resume 対象). */
 	const TIMEOUT = 'timeout';
 
@@ -88,8 +85,7 @@ class WPCV_Error_Code {
 	/**
 	 * `exclude_target` 抑制ルールに一致し、検証自体を行わずスキップした(v0.4.0 §Step8).
 	 *
-	 * `LOCKED`(更新処理中の一時的なスキップ)とは異なり、ユーザーが明示的に
-	 * この target を検証対象外にした恒久的なスキップであることを示す.
+	 * ユーザーが明示的にこの target を検証対象外にした恒久的なスキップであることを示す.
 	 */
 	const EXCLUDED = 'excluded';
 
@@ -113,32 +109,43 @@ class WPCV_Error_Code {
 	const BASELINE_REBUILT = 'baseline_rebuilt';
 
 	/**
+	 * `diff_mode = version_changed` になったが、WordPress の更新機構(`wpcv_update_events`.
+	 * v0.6プラン §2.1)を通った記録が見つからなかった(v0.6プラン §3.1・D5).
+	 *
+	 * `git` / FTP / composer 等の手動デプロイでは、正当な更新でも記録が残らない
+	 * (プラン U3参照。既定では通知するが、手動デプロイのサイトは設定でOFFにできる)。
+	 * `VERSION_CHANGED`(検証中に version が変わった. retry対象)とは意味が異なる
+	 * ―― こちらは差分処理の段階(2つの run の間)で version が変わっていたことを表す.
+	 */
+	const VERSION_CHANGED_UNRECORDED = 'version_changed_unrecorded';
+
+	/**
 	 * 全 error_code とその説明の一覧を返す(管理画面表示・バリデーション用).
 	 *
 	 * @return array<string, string> error_code => 説明.
 	 */
 	public static function all() {
 		return array(
-			self::MANIFEST_NOT_FOUND => __( 'Manifest not found (including not yet published)', 'wp-checksum-verifier' ),
-			self::HTTP_ERROR         => __( 'HTTP error while fetching', 'wp-checksum-verifier' ),
-			self::RATE_LIMITED       => __( 'GitHub rate limit reached', 'wp-checksum-verifier' ),
-			self::ZIPARCHIVE_MISSING => __( 'ZipArchive extension is not available', 'wp-checksum-verifier' ),
-			self::PACKAGE_NOT_FOUND  => __( 'Distribution package not found (e.g. child theme)', 'wp-checksum-verifier' ),
-			self::NO_RELEASE_ASSET   => __( 'GitHub release has no asset', 'wp-checksum-verifier' ),
-			self::ASSET_AMBIGUOUS    => __( 'Could not uniquely determine the asset', 'wp-checksum-verifier' ),
-			self::UNKNOWN_SOURCE     => __( 'Could not identify a verification source', 'wp-checksum-verifier' ),
-			self::VERSION_UNKNOWN    => __( 'Could not determine the local version', 'wp-checksum-verifier' ),
-			self::ARCHIVE_INVALID    => __( 'Archive is corrupt or failed verification', 'wp-checksum-verifier' ),
-			self::ARCHIVE_REJECTED   => __( 'Archive rejected (zip slip / zip bomb check)', 'wp-checksum-verifier' ),
-			self::DISK_FULL          => __( 'Insufficient disk space for extraction', 'wp-checksum-verifier' ),
-			self::VERSION_CHANGED    => __( 'Version changed during verification (will retry)', 'wp-checksum-verifier' ),
-			self::LOCKED             => __( 'Skipped: an update is in progress', 'wp-checksum-verifier' ),
-			self::TIMEOUT            => __( 'Time budget exhausted (will resume)', 'wp-checksum-verifier' ),
-			self::TARGET_MISSING     => __( 'Target no longer found locally', 'wp-checksum-verifier' ),
-			self::LEASE_EXPIRED      => __( 'Worker lease expired too many times', 'wp-checksum-verifier' ),
-			self::EXCLUDED           => __( 'Excluded by an exclude_target suppression rule', 'wp-checksum-verifier' ),
-			self::CHECKSUM_COVERED   => __( 'Skipped: already verified by checksums', 'wp-checksum-verifier' ),
-			self::BASELINE_REBUILT   => __( 'Stat baseline rebuilt after a version change (changes in this run were not compared)', 'wp-checksum-verifier' ),
+			self::MANIFEST_NOT_FOUND         => __( 'Manifest not found (including not yet published)', 'wp-checksum-verifier' ),
+			self::HTTP_ERROR                 => __( 'HTTP error while fetching', 'wp-checksum-verifier' ),
+			self::RATE_LIMITED               => __( 'GitHub rate limit reached', 'wp-checksum-verifier' ),
+			self::ZIPARCHIVE_MISSING         => __( 'ZipArchive extension is not available', 'wp-checksum-verifier' ),
+			self::PACKAGE_NOT_FOUND          => __( 'Distribution package not found (e.g. child theme)', 'wp-checksum-verifier' ),
+			self::NO_RELEASE_ASSET           => __( 'GitHub release has no asset', 'wp-checksum-verifier' ),
+			self::ASSET_AMBIGUOUS            => __( 'Could not uniquely determine the asset', 'wp-checksum-verifier' ),
+			self::UNKNOWN_SOURCE             => __( 'Could not identify a verification source', 'wp-checksum-verifier' ),
+			self::VERSION_UNKNOWN            => __( 'Could not determine the local version', 'wp-checksum-verifier' ),
+			self::ARCHIVE_INVALID            => __( 'Archive is corrupt or failed verification', 'wp-checksum-verifier' ),
+			self::ARCHIVE_REJECTED           => __( 'Archive rejected (zip slip / zip bomb check)', 'wp-checksum-verifier' ),
+			self::DISK_FULL                  => __( 'Insufficient disk space for extraction', 'wp-checksum-verifier' ),
+			self::VERSION_CHANGED            => __( 'Version changed during verification (will retry)', 'wp-checksum-verifier' ),
+			self::TIMEOUT                    => __( 'Time budget exhausted (will resume)', 'wp-checksum-verifier' ),
+			self::TARGET_MISSING             => __( 'Target no longer found locally', 'wp-checksum-verifier' ),
+			self::LEASE_EXPIRED              => __( 'Worker lease expired too many times', 'wp-checksum-verifier' ),
+			self::EXCLUDED                   => __( 'Excluded by an exclude_target suppression rule', 'wp-checksum-verifier' ),
+			self::CHECKSUM_COVERED           => __( 'Skipped: already verified by checksums', 'wp-checksum-verifier' ),
+			self::BASELINE_REBUILT           => __( 'Stat baseline rebuilt after a version change (changes in this run were not compared)', 'wp-checksum-verifier' ),
+			self::VERSION_CHANGED_UNRECORDED => __( 'Version changed without a record of a WordPress update', 'wp-checksum-verifier' ),
 		);
 	}
 

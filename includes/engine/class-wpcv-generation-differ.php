@@ -291,10 +291,15 @@ class WPCV_Generation_Differ {
 	 *                                             閾値に新規に達したか(§2.6.
 	 *                                             Step15 まで実装されないため
 	 *                                             既定 false).
+	 * @param int  $unrecorded_version_change_count 今回のrunで`error_code =
+	 *                                             version_changed_unrecorded`に
+	 *                                             なったtarget_runの件数(v0.6
+	 *                                             プラン §3.1・U3. Step3まで
+	 *                                             実装されないため既定0).
 	 * @return bool
 	 */
-	public static function should_send_alert( $notify_count, $resolved_count, $unverifiable_streak_triggered = false ) {
-		return $notify_count > 0 || $resolved_count > 0 || $unverifiable_streak_triggered;
+	public static function should_send_alert( $notify_count, $resolved_count, $unverifiable_streak_triggered = false, $unrecorded_version_change_count = 0 ) {
+		return $notify_count > 0 || $resolved_count > 0 || $unverifiable_streak_triggered || $unrecorded_version_change_count > 0;
 	}
 
 	/**

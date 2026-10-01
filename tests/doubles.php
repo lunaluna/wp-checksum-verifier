@@ -12,6 +12,34 @@
  */
 
 require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-source.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-update-lock-detector.php';
+
+/**
+ * `is_deferred()` を固定値で返すフェイク(v0.6 §Step6. D10. `.maintenance`/
+ * updater lockの実ファイル・実optionに依存せずdefer分岐を検証するため。
+ * `ChunkDispatcherTest`・`RunnerAsyncTest`の両方から共用する).
+ */
+class WPCV_Test_Fake_Update_Lock_Detector extends WPCV_Update_Lock_Detector {
+
+	/**
+	 * @var bool
+	 */
+	private $deferred;
+
+	/**
+	 * @param bool $deferred `is_deferred()` が返す固定値.
+	 */
+	public function __construct( $deferred ) {
+		$this->deferred = $deferred;
+	}
+
+	/**
+	 * @return bool
+	 */
+	public function is_deferred() {
+		return $this->deferred;
+	}
+}
 
 /**
  * テスト用の固定結果を返す `WPCV_Manifest_Source` 実装.
@@ -953,10 +981,12 @@ class WPCV_Test_Fake_WPDB {
  * (`suppression_repository` も返す。`wpcv_test_inject_suppression_repository()`
  * で `WPCV_Plugin::suppression_repository()` も一緒に差し替えること)。
  *
- * @param WPCV_Manifest_Source|null $core_source            省略時は常に成功する空マニフェストのfake.
- * @param WPCV_Manifest_Source|null $plugin_source          省略時は `manifest_not_found` を返すfake.
- * @param callable|null             $continuation_scheduler 省略時はno-op(`WPCV_Chunk_Dispatcher`
+ * @param WPCV_Manifest_Source|null      $core_source            省略時は常に成功する空マニフェストのfake.
+ * @param WPCV_Manifest_Source|null      $plugin_source          省略時は `manifest_not_found` を返すfake.
+ * @param callable|null                  $continuation_scheduler 省略時はno-op(`WPCV_Chunk_Dispatcher`
  *                                                          のクラス docblock 参照).
+ * @param WPCV_Update_Event_Matcher|null $update_event_matcher   D5・D6の突き合わせ(v0.6 §Step4).
+ *                                                          省略時は`null`(既存v0.5の挙動のまま).
  * @return array{
  *     coordinator: WPCV_Run_Coordinator,
  *     dispatcher: WPCV_Chunk_Dispatcher,
@@ -966,10 +996,12 @@ class WPCV_Test_Fake_WPDB {
  *     chunk_result_repository: WPCV_Chunk_Result_Repository,
  *     suppression_repository: WPCV_Suppression_Repository,
  *     file_state_repository: WPCV_File_State_Repository,
+ *     update_event_repository: WPCV_Update_Event_Repository,
+ *     update_event_matcher: WPCV_Update_Event_Matcher,
  *     wpdb: WPCV_Test_Fake_WPDB,
  * }
  */
-function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = null, $continuation_scheduler = null ) {
+function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = null, $continuation_scheduler = null, ?WPCV_Update_Event_Matcher $update_event_matcher = null ) {
 	$core_source   = $core_source ?? new WPCV_Test_Fake_Manifest_Source(
 		array(
 			'manifest_status' => 'ok',
@@ -995,6 +1027,14 @@ function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = 
 	$suppression_repository  = new WPCV_Suppression_Repository( $wpdb, $now );
 	$file_state_repository   = new WPCV_File_State_Repository( $wpdb, $now );
 	$chunk_result_repository = new WPCV_Chunk_Result_Repository( $wpdb, $target_run_repository, $finding_repository, $suppression_repository, $file_state_repository );
+	$update_event_repository = new WPCV_Update_Event_Repository( $wpdb, $now );
+
+	// v0.6 §Step4: 常に有効な `WPCV_Update_Event_Matcher` を使う(呼び出し元が
+	// 明示的に渡さない場合、この環境の `$wpdb`/`$run_repository` を使ったものを
+	// 自動的に組み立てる). `wpcv_update_events` に何も記録されていなければ
+	// 「記録なし」の判定結果になり、既存(v0.5)のテストの挙動は変わらないため、
+	// 既存呼び出し元に影響しない.
+	$update_event_matcher = $update_event_matcher ?? new WPCV_Update_Event_Matcher( $update_event_repository, $run_repository );
 
 	$dispatcher = new WPCV_Chunk_Dispatcher(
 		$run_repository,
@@ -1013,21 +1053,25 @@ function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = 
 		static function () use ( $now ) {
 			return strtotime( call_user_func( $now ) );
 		},
-		$file_state_repository
+		$file_state_repository,
+		null,
+		$update_event_matcher
 	);
 
 	$coordinator = new WPCV_Run_Coordinator( new WPCV_Run_Planner( $suppression_repository ), $run_repository, $target_run_repository, $dispatcher );
 
 	return array(
-		'coordinator'             => $coordinator,
-		'dispatcher'              => $dispatcher,
-		'run_repository'          => $run_repository,
-		'target_run_repository'   => $target_run_repository,
-		'finding_repository'      => $finding_repository,
-		'chunk_result_repository' => $chunk_result_repository,
-		'suppression_repository'  => $suppression_repository,
-		'file_state_repository'   => $file_state_repository,
-		'wpdb'                    => $wpdb,
+		'coordinator'              => $coordinator,
+		'dispatcher'               => $dispatcher,
+		'run_repository'           => $run_repository,
+		'target_run_repository'    => $target_run_repository,
+		'finding_repository'       => $finding_repository,
+		'chunk_result_repository'  => $chunk_result_repository,
+		'suppression_repository'   => $suppression_repository,
+		'file_state_repository'    => $file_state_repository,
+		'update_event_repository'  => $update_event_repository,
+		'update_event_matcher'     => $update_event_matcher,
+		'wpdb'                     => $wpdb,
 	);
 }
 
@@ -1140,6 +1184,19 @@ function wpcv_test_inject_suppression_repository( $repository = null ) {
 	$property = new ReflectionProperty( WPCV_Plugin::class, 'suppression_repository' );
 	$property->setAccessible( true );
 	$property->setValue( null, $repository );
+}
+
+/**
+ * `WPCV_Plugin::update_lock_detector()` が返すインスタンスを差し替える
+ * (`wpcv_test_inject_run_repository()` と同じ手法. v0.6 §Step6).
+ *
+ * @param WPCV_Update_Lock_Detector|null $detector 差し替え先. 省略時はキャッシュを空に戻す.
+ * @return void
+ */
+function wpcv_test_inject_update_lock_detector( $detector = null ) {
+	$property = new ReflectionProperty( WPCV_Plugin::class, 'update_lock_detector' );
+	$property->setAccessible( true );
+	$property->setValue( null, $detector );
 }
 
 /**

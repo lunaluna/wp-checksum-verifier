@@ -217,6 +217,73 @@ class SettingsTest extends TestCase {
 		$this->assertTrue( WPCV_Settings::get_stat_detection_enabled() );
 	}
 
+	/**
+	 * 「更新イベントの無い version 変化を知らせる」(v0.6プラン §2.3・U3)は
+	 * 未保存なら有効(既定 true)で、保存した値がそのまま返り、他の設定を
+	 * 巻き戻さないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_alert_unrecorded_version_change_defaults_to_enabled_and_persists() {
+		$this->assertTrue( WPCV_Settings::get_alert_unrecorded_version_change_enabled() );
+
+		WPCV_Settings::update_strict_mode( true );
+		WPCV_Settings::update_alert_unrecorded_version_change_enabled( false );
+
+		$this->assertFalse( WPCV_Settings::get_alert_unrecorded_version_change_enabled() );
+		$this->assertTrue( WPCV_Settings::get_strict_mode() );
+
+		WPCV_Settings::update_alert_unrecorded_version_change_enabled( true );
+		$this->assertTrue( WPCV_Settings::get_alert_unrecorded_version_change_enabled() );
+	}
+
+	/**
+	 * 既存の stat target の内容ハッシュ(v0.6 §Step11・U4)は未保存なら無効
+	 * (既定`off`)で、保存した値がそのまま返り、他の設定を巻き戻さないことを
+	 * 確認する.
+	 *
+	 * @return void
+	 */
+	public function test_content_hash_mode_defaults_to_off_and_persists() {
+		$this->assertSame( WPCV_Settings::CONTENT_HASH_MODE_OFF, WPCV_Settings::get_content_hash_mode() );
+		$this->assertFalse( WPCV_Settings::get_content_hash_stat_targets_enabled() );
+
+		WPCV_Settings::update_strict_mode( true );
+		WPCV_Settings::update_content_hash_mode( WPCV_Settings::CONTENT_HASH_MODE_STAT_TARGETS );
+
+		$this->assertSame( WPCV_Settings::CONTENT_HASH_MODE_STAT_TARGETS, WPCV_Settings::get_content_hash_mode() );
+		$this->assertTrue( WPCV_Settings::get_content_hash_stat_targets_enabled() );
+		$this->assertTrue( WPCV_Settings::get_strict_mode() );
+
+		WPCV_Settings::update_content_hash_mode( WPCV_Settings::CONTENT_HASH_MODE_OFF );
+		$this->assertFalse( WPCV_Settings::get_content_hash_stat_targets_enabled() );
+	}
+
+	/**
+	 * 許可した値(`off`/`stat_targets`)以外が保存されていた場合、既定値
+	 * (`off`)として扱うことを確認する(option の手動書き換え等を想定).
+	 *
+	 * @return void
+	 */
+	public function test_content_hash_mode_falls_back_to_off_for_invalid_stored_value() {
+		$GLOBALS['_wpcv_test_options'][ WPCV_Settings::OPTION_NAME ] = array( 'content_hash_mode' => 'bogus' );
+
+		$this->assertSame( WPCV_Settings::CONTENT_HASH_MODE_OFF, WPCV_Settings::get_content_hash_mode() );
+		$this->assertFalse( WPCV_Settings::get_content_hash_stat_targets_enabled() );
+	}
+
+	/**
+	 * `update_content_hash_mode()` に許可されていない値を渡しても、既定値
+	 * (`off`)として保存されることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_update_content_hash_mode_falls_back_to_off_for_invalid_value() {
+		WPCV_Settings::update_content_hash_mode( 'bogus' );
+
+		$this->assertSame( WPCV_Settings::CONTENT_HASH_MODE_OFF, WPCV_Settings::get_content_hash_mode() );
+	}
+
 	// ------------------------------------------------------------------
 	// v0.5後半 §Step14: `parse_email_list()`(WPMAR からの移植)と `alert_to`.
 	// 最初の3件は WPMAR `tests/SettingsTest.php` と同じ入力・同じ期待値にそろえている.

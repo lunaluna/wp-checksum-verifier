@@ -33,6 +33,14 @@ class WPCV_Migrator {
 	const DB_VERSION_OPTION = 'wpcv_db_version';
 
 	/**
+	 * D6の基準時刻を保持する wp_options のキー(v0.6 §2.3。
+	 * `maybe_record_update_events_since()`/`get_update_events_since()` 参照).
+	 *
+	 * @var string
+	 */
+	const UPDATE_EVENTS_SINCE_OPTION = 'wpcv_update_events_since';
+
+	/**
 	 * 保存されている DB バージョンが WPCV_DB_VERSION より古ければスキーマを更新する.
 	 *
 	 * プラグイン有効化時に加え、`plugins_loaded` にもフックする(自動更新で
@@ -74,6 +82,7 @@ class WPCV_Migrator {
 			return false;
 		}
 
+		self::maybe_record_update_events_since();
 		self::write_stored_version( WPCV_DB_VERSION );
 
 		return true;
@@ -138,8 +147,9 @@ class WPCV_Migrator {
 	}
 
 	/**
-	 * 5 テーブル(runs / target_runs / findings / suppressions / file_states)を
-	 * dbDelta で作成・更新する. file_states は v0.5(rev.3 §3.3)で追加.
+	 * 6 テーブル(runs / target_runs / findings / suppressions / file_states /
+	 * update_events)を dbDelta で作成・更新する. file_states は v0.5(rev.3 §3.3)、
+	 * update_events は v0.6(§2.1)で追加.
 	 *
 	 * @return void
 	 */
@@ -191,6 +201,7 @@ class WPCV_Migrator {
 			$wpdb->base_prefix . 'wpcv_findings',
 			$wpdb->base_prefix . 'wpcv_suppressions',
 			$wpdb->base_prefix . 'wpcv_file_states',
+			$wpdb->base_prefix . 'wpcv_update_events',
 		);
 
 		$by_table = array();
@@ -254,7 +265,7 @@ class WPCV_Migrator {
 	}
 
 	/**
-	 * 5 テーブル分の CREATE TABLE 文を組み立てて返す(`create_or_update_tables()` から分離).
+	 * 6 テーブル分の CREATE TABLE 文を組み立てて返す(`create_or_update_tables()` から分離).
 	 *
 	 * `global $wpdb` にしか依存しない純粋な文字列組み立てのため、単体テストから
 	 * `ReflectionMethod` 経由で呼び出し、`WPCV_DB_VERSION` を上げた際に必要な
@@ -269,11 +280,12 @@ class WPCV_Migrator {
 
 		$charset_collate = $wpdb->get_charset_collate();
 
-		$runs_table         = $wpdb->base_prefix . 'wpcv_runs';
-		$target_runs_table  = $wpdb->base_prefix . 'wpcv_target_runs';
-		$findings_table     = $wpdb->base_prefix . 'wpcv_findings';
-		$suppressions_table = $wpdb->base_prefix . 'wpcv_suppressions';
-		$file_states_table  = $wpdb->base_prefix . 'wpcv_file_states';
+		$runs_table          = $wpdb->base_prefix . 'wpcv_runs';
+		$target_runs_table   = $wpdb->base_prefix . 'wpcv_target_runs';
+		$findings_table      = $wpdb->base_prefix . 'wpcv_findings';
+		$suppressions_table  = $wpdb->base_prefix . 'wpcv_suppressions';
+		$file_states_table   = $wpdb->base_prefix . 'wpcv_file_states';
+		$update_events_table = $wpdb->base_prefix . 'wpcv_update_events';
 
 		// §5.2: run 全体の集計値. status = partial は「1 つ以上の target が
 		// unverifiable / failed だが run 自体は完走した」を意味する。
@@ -498,6 +510,79 @@ class WPCV_Migrator {
 	KEY idx_path (path(191))
 ) {$charset_collate};";
 
-		return array( $sql_runs, $sql_target_runs, $sql_findings, $sql_suppressions, $sql_file_states );
+		// v0.6 §2.1: 更新イベントの記録(D1〜D5参照). 追記のみのテーブルで、option
+		// のような単一の値を読み書きする方式にしなかった理由は D1 参照
+		// (同時に2つの更新が走ると片方の記録が失われ、誤った通知につながるため).
+		// `created_by` は `get_current_user_id()`(cron・CLIでは0. §2.1).
+		// version はフックの時点でディスクから読み直した値で、読めなければ NULL
+		// (D3・D4参照. 成否は判定しない).
+		// idx_target_event は D5 の突き合わせ(target_id・version一致 かつ
+		// event_at が基準target_runのrun開始より後)に使う. idx_event_at は
+		// 掃除(`delete_older_than()`. run終端での呼び出しはStep2以降)に使う.
+		$sql_update_events = "CREATE TABLE {$update_events_table} (
+	id bigint unsigned NOT NULL auto_increment,
+	target_id varchar(191) NOT NULL,
+	version varchar(32) NULL,
+	event_at datetime NOT NULL,
+	source varchar(24) NOT NULL,
+	created_by bigint unsigned NULL,
+	PRIMARY KEY (id),
+	KEY idx_target_event (target_id, event_at),
+	KEY idx_event_at (event_at)
+) {$charset_collate};";
+
+		return array( $sql_runs, $sql_target_runs, $sql_findings, $sql_suppressions, $sql_file_states, $sql_update_events );
+	}
+
+	/**
+	 * `wpcv_update_events_since`(D6)を、まだ保存されていなければ現在時刻で保存する.
+	 *
+	 * `v0.5.x` → `v0.6.0` への更新そのものは、更新イベントを記録するフックが
+	 * まだ登録されていない古いコードで走るため、WPCV自身のバージョン変化には
+	 * 更新イベントが残らない(D6参照)。この値を「更新イベント連動の突き合わせを
+	 * 開始した時刻」の基準として保存しておき、基準target_runのrun開始がこれより
+	 * 前なら「記録なし」を理由に通知しない、という運用にする(§3.1参照).
+	 *
+	 * 新規インストール(v0 → v6)でも同じロジックで保存する(D6の趣旨が
+	 * 「WPCVのバージョンアップでフックが間に合わなかった」ことなので新規
+	 * インストールでは本来不要だが、値を保存しておいても無害であり、
+	 * 分岐を増やさないほうが単純なため).
+	 *
+	 * `maybe_upgrade()` からスキーマ確認後にのみ呼ぶ(`$stored >= WPCV_DB_VERSION` の
+	 * 早期returnでは呼ばれない). 既に値がある場合は何もしない(冪等. 将来
+	 * v7以降に上がる際にもこのメソッドは呼ばれ続けるが、副作用は無い).
+	 *
+	 * @return void
+	 */
+	private static function maybe_record_update_events_since() {
+		if ( is_multisite() ) {
+			if ( null === get_site_option( self::UPDATE_EVENTS_SINCE_OPTION, null ) ) {
+				update_site_option( self::UPDATE_EVENTS_SINCE_OPTION, gmdate( 'Y-m-d H:i:s' ) );
+			}
+			return;
+		}
+
+		if ( false === get_option( self::UPDATE_EVENTS_SINCE_OPTION, false ) ) {
+			update_option( self::UPDATE_EVENTS_SINCE_OPTION, gmdate( 'Y-m-d H:i:s' ), true );
+		}
+	}
+
+	/**
+	 * `wpcv_update_events_since`(D6)を読み取る(v0.6 §Step3から呼ばれる想定).
+	 *
+	 * 基準target_runのrun開始時刻がこれより前なら「期間外」とみなし、更新イベント
+	 * の記録なしを理由にした通知(§3.1)を出さない。値が無い(=`maybe_upgrade()`が
+	 * まだ一度もv6のスキーマ確認を終えていない、通常は起こらない状態)場合は
+	 * `null`を返す ―― 呼び出し側は`null`を「期間外」と同じ扱いにする想定
+	 * (安全側: 基準時刻が無いのに「期間内」と誤判定して通知しないため).
+	 *
+	 * @return string|null UTCのMySQL DATETIME文字列、または未設定なら `null`.
+	 */
+	public static function get_update_events_since() {
+		$value = is_multisite()
+			? get_site_option( self::UPDATE_EVENTS_SINCE_OPTION, null )
+			: get_option( self::UPDATE_EVENTS_SINCE_OPTION, null );
+
+		return ( null === $value || false === $value || '' === $value ) ? null : (string) $value;
 	}
 }

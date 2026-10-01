@@ -32,31 +32,48 @@ class WPCV_Chunk_Budget {
 	const DEFAULT_MEMORY_THRESHOLD_RATIO = 0.9;
 
 	/**
-	 * 予算(件数・経過時間・メモリ)のいずれかを超えたかを判定する.
+	 * 予算(件数・経過時間・メモリ・累積バイト数)のいずれかを超えたかを判定する.
 	 *
-	 * @param float         $start_time   処理開始時刻(`$now` と同じ時間源の値. 通常
-	 *                                    `microtime( true )` 相当).
-	 * @param int           $processed    このchunkで既に処理した件数(`max_files`判定
-	 *                                    用)。「処理件数」の概念が無い呼び出し元
-	 *                                    (未知ファイル走査の enumerate 段階等)は
-	 *                                    `0` を渡し、`$budget` に `max_files` を
-	 *                                    含めないこと(誤って打ち切られてしまうため).
-	 * @param array         $budget       `max_files`/`max_seconds`/`memory_limit_bytes`/
-	 *                                    `memory_threshold_ratio`(いずれも省略可。
-	 *                                    指定が無い項目は制限として扱わない).
-	 * @param callable      $now          現在時刻を秒(float. `microtime( true )` 相当)
-	 *                                    で返す callable.
-	 * @param callable|null $memory_usage 現在のメモリ使用量をバイト数(`memory_get_usage( true )`
-	 *                                    相当)で返す callable。省略時は
-	 *                                    `memory_limit_bytes` 判定を行わない.
+	 * `max_bytes`(v0.6 §Step11。層2の内容ハッシュをchunk全体でどれだけ読むかの
+	 * 累積上限)は、既存の`max_seconds`(ファイル1件処理するごとにチェック済み)
+	 * と役割が重なるが、ファイル単位の上限(`content_hash_max_bytes`)と組み合わせても
+	 * 「経過時間というやや揺らぎのある指標」ではなく「読んだバイト数という決定的な
+	 * 指標」でchunkを区切れるようにするための予算(2026-09-30ユーザー承認済み).
+	 *
+	 * @param float         $start_time      処理開始時刻(`$now` と同じ時間源の値. 通常
+	 *                                       `microtime( true )` 相当).
+	 * @param int           $processed       このchunkで既に処理した件数(`max_files`判定
+	 *                                       用)。「処理件数」の概念が無い呼び出し元
+	 *                                       (未知ファイル走査の enumerate 段階等)は
+	 *                                       `0` を渡し、`$budget` に `max_files` を
+	 *                                       含めないこと(誤って打ち切られてしまうため).
+	 * @param array         $budget          `max_files`/`max_seconds`/`max_bytes`/
+	 *                                       `memory_limit_bytes`/`memory_threshold_ratio`
+	 *                                       (いずれも省略可。指定が無い項目は制限として
+	 *                                       扱わない).
+	 * @param callable      $now             現在時刻を秒(float. `microtime( true )` 相当)
+	 *                                       で返す callable.
+	 * @param callable|null $memory_usage    現在のメモリ使用量をバイト数
+	 *                                       (`memory_get_usage( true )` 相当)で返す
+	 *                                       callable。省略時は`memory_limit_bytes`判定を
+	 *                                       行わない.
+	 * @param int           $bytes_processed このchunkで既に読んだ累積バイト数
+	 *                                       (`max_bytes`判定用)。「読んだバイト数」の
+	 *                                       概念が無い呼び出し元は既定の`0`のままでよい
+	 *                                       (`$budget`に`max_bytes`を含めなければ判定
+	 *                                       自体が働かないため).
 	 * @return bool
 	 */
-	public static function exceeded( $start_time, $processed, array $budget, callable $now, ?callable $memory_usage = null ) {
+	public static function exceeded( $start_time, $processed, array $budget, callable $now, ?callable $memory_usage = null, $bytes_processed = 0 ) {
 		if ( isset( $budget['max_files'] ) && $processed >= (int) $budget['max_files'] ) {
 			return true;
 		}
 
 		if ( isset( $budget['max_seconds'] ) && ( call_user_func( $now ) - $start_time ) >= (float) $budget['max_seconds'] ) {
+			return true;
+		}
+
+		if ( isset( $budget['max_bytes'] ) && $bytes_processed >= (int) $budget['max_bytes'] ) {
 			return true;
 		}
 

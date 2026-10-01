@@ -91,6 +91,21 @@ class WPCV_Diff_Dispatcher {
 	private $alert_sender;
 
 	/**
+	 * D5・D6の突き合わせ(v0.6 §Step3・§Step4で`WPCV_Chunk_Dispatcher`と共通化)。
+	 * `DIFF_MODE_VERSION_CHANGED`の分岐で使う.
+	 *
+	 * @var WPCV_Update_Event_Matcher
+	 */
+	private $update_event_matcher;
+
+	/**
+	 * `wpcv_suppressions`の永続化層(v0.6 §Step5. D9「承認の失効」に使う).
+	 *
+	 * @var WPCV_Suppression_Repository
+	 */
+	private $suppression_repository;
+
+	/**
 	 * `claim_diff()`に渡す一意なowner文字列を生成するcallable.
 	 *
 	 * @var callable
@@ -100,12 +115,14 @@ class WPCV_Diff_Dispatcher {
 	/**
 	 * コンストラクタ.
 	 *
-	 * @param WPCV_Run_Repository        $run_repository         `wpcv_runs`の永続化層.
-	 * @param WPCV_Target_Run_Repository $target_run_repository  `wpcv_target_runs`の永続化層.
-	 * @param WPCV_Finding_Repository    $finding_repository      `wpcv_findings`の永続化層.
-	 * @param WPCV_File_State_Repository $file_state_repository   `wpcv_file_states`の永続化層.
-	 * @param WPCV_Alert_Sender          $alert_sender           アラート送信本体(v0.5後半 §Step14c).
-	 * @param callable|null              $lease_owner_factory     省略時は `uniqid( 'wpcv_diff_', true )`.
+	 * @param WPCV_Run_Repository         $run_repository         `wpcv_runs`の永続化層.
+	 * @param WPCV_Target_Run_Repository  $target_run_repository  `wpcv_target_runs`の永続化層.
+	 * @param WPCV_Finding_Repository     $finding_repository     `wpcv_findings`の永続化層.
+	 * @param WPCV_File_State_Repository  $file_state_repository  `wpcv_file_states`の永続化層.
+	 * @param WPCV_Alert_Sender           $alert_sender           アラート送信本体(v0.5後半 §Step14c).
+	 * @param WPCV_Update_Event_Matcher   $update_event_matcher   D5・D6の突き合わせ(v0.6 §Step3・§Step4).
+	 * @param WPCV_Suppression_Repository $suppression_repository `wpcv_suppressions`の永続化層(v0.6 §Step5).
+	 * @param callable|null               $lease_owner_factory    省略時は `uniqid( 'wpcv_diff_', true )`.
 	 */
 	public function __construct(
 		WPCV_Run_Repository $run_repository,
@@ -113,13 +130,17 @@ class WPCV_Diff_Dispatcher {
 		WPCV_Finding_Repository $finding_repository,
 		WPCV_File_State_Repository $file_state_repository,
 		WPCV_Alert_Sender $alert_sender,
+		WPCV_Update_Event_Matcher $update_event_matcher,
+		WPCV_Suppression_Repository $suppression_repository,
 		?callable $lease_owner_factory = null
 	) {
-		$this->run_repository        = $run_repository;
-		$this->target_run_repository = $target_run_repository;
-		$this->finding_repository    = $finding_repository;
-		$this->file_state_repository = $file_state_repository;
-		$this->alert_sender          = $alert_sender;
+		$this->run_repository         = $run_repository;
+		$this->target_run_repository  = $target_run_repository;
+		$this->finding_repository     = $finding_repository;
+		$this->file_state_repository  = $file_state_repository;
+		$this->alert_sender           = $alert_sender;
+		$this->update_event_matcher   = $update_event_matcher;
+		$this->suppression_repository = $suppression_repository;
 
 		$this->lease_owner_factory = $lease_owner_factory ?? static function () {
 			return uniqid( 'wpcv_diff_', true );
@@ -300,6 +321,18 @@ class WPCV_Diff_Dispatcher {
 				// なので、$baselineは必ず非nullである(クラスGenerationDifferの
 				// 分岐参照).
 				$this->finding_repository->end_all_for_target_run( $run_id, (int) $baseline['id'], WPCV_Generation_Differ::END_REASON_VERSION_CHANGED );
+				$this->maybe_flag_unrecorded_version_change( $target_run_id, (string) $target_run['target_id'], $target_run['version'], $baseline );
+				// D9(v0.6 §Step5・§3.3): versionが変わったので、古いversionのまま
+				// 残っているallowlist_hash承認を失効させる(手動デプロイ等、記録が
+				// 無い経路でversionが変わった場合も含め、version_changedと判定された
+				// 時点で経路を問わず失効させてよい.差分処理〔このメソッド〕が
+				// version一致を毎回確認しているため、失効しても照合の挙動自体は
+				// 変わらず一覧の表示だけが正しくなる〔D9〕).
+				$this->suppression_repository->expire_allowlist_hash_rules_with_different_version(
+					(string) $target_run['dimension'],
+					(string) $target_run['slug'],
+					$target_run['version']
+				);
 				return null;
 
 			case WPCV_Generation_Differ::DIFF_MODE_EXCLUDED:
@@ -328,6 +361,45 @@ class WPCV_Diff_Dispatcher {
 				// 事実だけでも明示しておく(安全側のフォールバック).
 				return null;
 		}
+	}
+
+	/**
+	 * `DIFF_MODE_VERSION_CHANGED`になったtarget_runについて、WordPressの更新機構を
+	 * 通った記録(`wpcv_update_events`)があるかを調べ、無ければ
+	 * `error_code = version_changed_unrecorded`を書く(v0.6プラン §3.1・D5・D6・U3.
+	 * §3.1の組み合わせ表そのものの実装).
+	 *
+	 * 判定順序(表の行の順序と対応): (1) 設定`alert_unrecorded_version_change`が
+	 * OFFなら判定不要 (2) 基準target_runが属するrunの開始時刻が引けなければ
+	 * 安全側で何もしない (3) その時刻が`wpcv_update_events_since`(D6)より前
+	 * (または`wpcv_update_events_since`自体が未設定)なら「期間外」として何もしない
+	 * (4) `find_matching()`で記録があれば何もしない (5) ここまで残ったものだけ
+	 * `error_code`を書く.
+	 *
+	 * @param int         $target_run_id 対象のtarget_runのid.
+	 * @param string      $target_id     対象のtarget_id.
+	 * @param string|null $version       今回のversion(`target_runs.version`列の値).
+	 * @param array       $baseline      `find_baseline_target_run()`が返した基準target_run
+	 *                                   (`id`/`version`/`run_id`).
+	 * @return void
+	 */
+	private function maybe_flag_unrecorded_version_change( $target_run_id, $target_id, $version, array $baseline ) {
+		if ( ! WPCV_Settings::get_alert_unrecorded_version_change_enabled() ) {
+			return;
+		}
+
+		if ( $this->update_event_matcher->is_outside_tracked_period( $baseline ) ) {
+			// D6: 期間外(基準runの開始時刻が引けない場合も判定不能=期間外と同じ
+			// 扱いになる.`WPCV_Update_Event_Matcher::is_outside_tracked_period()`
+			// のdocblock参照).
+			return;
+		}
+
+		if ( $this->update_event_matcher->has_matching_event( $target_id, $version, $baseline ) ) {
+			return;
+		}
+
+		$this->target_run_repository->mark_version_changed_unrecorded( $target_run_id );
 	}
 
 	/**
@@ -530,7 +602,11 @@ class WPCV_Diff_Dispatcher {
 		$excluded_stat_target_ids   = array();
 
 		foreach ( $target_runs as $target_run ) {
-			if ( ! WPCV_Target_Resolver::is_stat_id( (string) $target_run['target_id'] ) ) {
+			// v0.6 §Step12是正: `is_stat_id()`だけで判定すると、`:_stat`接尾辞を
+			// 持たない`core:_config`が「列挙されなかったtarget」として扱われ、
+			// 毎runベースラインが削除されてしまう不具合があった
+			// (`WPCV_Target_Resolver::uses_file_state_storage()`のdocblock参照).
+			if ( ! WPCV_Target_Resolver::uses_file_state_storage( (string) $target_run['target_id'], (string) $target_run['dimension'], (string) $target_run['slug'] ) ) {
 				continue;
 			}
 

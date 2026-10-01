@@ -4,12 +4,13 @@ WordPress のコア・プラグイン・MU プラグインの checksum を検証
 プラグイン。公式の checksum マニフェスト(wp.org のコア/プラグイン checksum)と
 実ファイルを突き合わせ、どのマニフェストにも存在しない未知のファイルも報告する。
 
-> **ステータス**: v0.5.1。検証エンジン、計画していた全ての実行モデル
+> **ステータス**: v0.6.0。検証エンジン、計画していた全ての実行モデル
 > (WP-CLI・WP-Cron・管理画面の「今すぐ実行」ボタン・REST API)、resume対応の
 > ファイル単位分割実行、抑制エンジン(`exclude_target`/`exclude_path`/
 > `allowlist_hash`とstrict mode)、公式checksumの無いプラグイン向けのstat
-> 差分検知、差分検知に基づくメールアラート(下記「アラート」参照)、
-> 検出結果・抑制一覧・実行履歴の管理画面を実装済み。公式テーマの照合と、
+> 差分検知(内容ハッシュ比較のオプション付き)、設定ファイル・ドロップインの
+> 監視、更新イベントの記録、差分検知に基づくメールアラート(下記「アラート」
+> 参照)、検出結果・抑制一覧・実行履歴の管理画面を実装済み。公式テーマの照合と、
 > GitHub Releases 上の非公式プラグイン/テーマの照合はまだ未実装。詳細は
 > `CHANGELOG.md` を参照.
 
@@ -22,6 +23,11 @@ WordPress のコア・プラグイン・MU プラグインの checksum を検証
   finding として報告する.
 - **公式 checksum の無いプラグイン**(独自・有料プラグイン、MU プラグインの loader):
   stat 差分検知で変更を追跡する(下記).
+- **設定ファイルとドロップイン**(`wp-config.php`・`.htaccess`・`.user.ini`・
+  実在するWordPress認識済みドロップイン〔例: `object-cache.php`〕): 同じ仕組みで
+  追跡するが、常に内容ハッシュ比較(下記「内容ハッシュ比較」参照)も行う ――
+  これらのtargetは「Stat-based change detection」の設定とは無関係に無条件で
+  存在する.
 - 未実装: 公式テーマの照合、GitHub Releases 上の非公式プラグイン/テーマの照合.
 
 ### stat 差分検知
@@ -44,8 +50,12 @@ checksum で「正しいファイルか」を確かめられるのは、比べ�
   1回だけ報告し、ベースラインから外す)。サイズが変わったのに mtime が変わっていない場合は
   タイムスタンプ擬装の疑いとして severity を `high` に上げます.
 - **プラグインの更新**: プラグインの version がベースライン作成時の version と違う場合、
-  変更を報告せずにベースラインを作り直し、target に `baseline_rebuilt` を記録します
-  (比較しなかった run であることが実行履歴から分かるようにするため).
+  まずその version 変化に対応する更新イベントの記録(下記「更新イベント」参照)が
+  あるかを確認します。あれば、変更を報告せずにベースラインを作り直し、target に
+  `baseline_rebuilt` を記録します(比較しなかった run であることが実行履歴から分かる
+  ようにするため)。記録が無ければ(更新イベントが見つからない・記録の追跡期間が
+  届いていない)、ベースラインは捨てずに通常どおり比較し、target に
+  `version_changed_unrecorded` を記録します(下記「アラート」参照).
 - **version を上げない大量変更**: 最大 500 ファイルの処理単位の中で、変更が 20 件以上かつ
   比較したファイルの 50% 以上なら、プラグインのルートを path にした1件の `stat_changed` に
   まとめます(タイムスタンプ擬装の疑いがある finding は常に個別に残します)。閾値は暫定値で、
@@ -53,7 +63,58 @@ checksum で「正しいファイルか」を確かめられるのは、比べ�
 - **無効にする**: 設定画面の「Stat-based change detection」のチェックを外します(既定は有効)。
   既存のベースラインは残るため、あとで有効に戻すと古いベースラインと比較します.
 - **既知の制限**: 同じサイズで書き換えて mtime も元に戻された場合も ctime で検出できますが、
-  擬装ではなく通常の `stat_changed` として報告されます.
+  擬装ではなく通常の `stat_changed` として報告されます ―― ただし、そのtargetで下記の
+  内容ハッシュ比較が有効なら、`modified` として直接報告されます.
+
+### 内容ハッシュ比較
+
+サイズ・ctime・mtime の追跡だけでは、「同じサイズ・同じmtimeでの書き換え」を
+「変更なし」と区別できません。内容ハッシュ比較は、各ファイルの内容の sha256
+ハッシュも計算し、前回runで記録した値と比べることでこの穴を埋めます:
+
+- **設定ファイル・ドロップインのtargetでは常に有効**(`core:_config`:
+  `wp-config.php`〔ABSPATHに無ければ1つ上の階層。`wp-settings.php`もその
+  階層に無い場合だけ、というWordPressコア自身の探し方と同じ。どちらの場所でも
+  `wp-config.php`と表示し、サーバーの絶対パスはfindingやアラートメールに
+  出さない〕・
+  `.htaccess`・`.user.ini`。`dropin:_stat`: WordPressが認識するドロップイン
+  〔`advanced-cache.php`・`db.php`・`db-error.php`・`install.php`・
+  `maintenance.php`・`object-cache.php`・`php-error.php`・
+  `fatal-error-handler.php`。マルチサイトのみ`sunrise.php`・
+  `blog-deleted.php`・`blog-inactive.php`・`blog-suspended.php`も追加〕の
+  うち`wp-content/`に実在するもの)。この2つのtargetには本体プラグインも
+  versionという概念も無いため、「Stat-based change detection」の設定や
+  更新イベントの記録の影響を受けず、内容・サイズ・mtimeのいずれかが変われば
+  次のrunでそのまま報告されます。初回はベースラインのみ記録し(他のstat
+  targetと同じ)、ドロップインの追加・削除は他のstat targetと同じく
+  `added`/`missing`として報告されます.
+- **それ以外のstat target(独自・有料プラグイン、MUプラグインのloader)は
+  オプトイン**: 毎回すべてのファイルの内容を読むためI/Oコストが増えることから
+  既定は無効で、設定画面の「Content-hash comparison for custom plugins」で
+  サイトごとに有効化します.
+- 前回runと内容ハッシュが異なれば、size/ctime/mtimeの変化の有無に関わらず
+  `modified`(`hash_algorithm`/`expected_hash`/`actual_hash`付き。checksum
+  targetのfindingと同じ形)として報告されます。内容ハッシュが一致していれば、
+  chmod等のメタデータのみの変更は従来どおり`stat_changed`のままです.
+- 10MBを超えるファイルはハッシュを計算せず、そのファイルだけstatのみの追跡に
+  フォールバックします(`wpcv_content_hash_max_bytes`フィルター)。1回の処理
+  単位では200MiBを読んだ時点でいったん区切り、次の処理単位で続きを読みます
+  (`wpcv_content_hash_chunk_max_bytes`フィルター)。どちらの既定値も実測した
+  ハッシュ計算のスループットに基づく値です(`CHANGELOG.md`参照)。単なる目安
+  ではないため、変更する場合は`wp wpcv bench-stat --hash`で自分の環境を
+  実測し直してください.
+
+### 更新イベント
+
+WordPress のコア・プラグインが更新される(管理画面・WP-CLI〔`wp plugin
+update`・`wp core update`〕・自動更新のいずれでも)たびに、対象・更新直後に
+ディスクから読んだ version・経路(単体/一括/インストール/自動/コア更新)・
+実行者(cron・CLI では `0`)を記録します。この記録が、上記「プラグインの更新」
+やアラート(下記)で「WordPress の更新機構を通った正当な更新」と「それ以外の
+経路での version 変化」を区別するために使われます。`wp --skip-plugins plugin
+update` はこの記録が使うフックを発火しないため、その方法での更新は記録されません.
+記録は90日保持されます(未実測。`wpcv_update_events_retention_days` フィルターで
+変更可能。runが終端に達するたびに古い記録を削除します).
 
 ## 検証の実行方法
 
@@ -94,7 +155,7 @@ MUプラグインすべてをDB上のtarget行として先に列挙し、その�
 
 ### タイムアウトとstale状態
 
-時間に関連する概念が3つ登場し、混同しやすいので整理する:
+時間に関連する概念が4つ登場し、混同しやすいので整理する:
 
 - **chunkの時間予算** — 1回のchunkがcursorを保存してyieldするまでに
   許容される時間(例: `POST /run`のExternal HTTP time budget設定、既定20秒)。
@@ -109,6 +170,14 @@ MUプラグインすべてをDB上のtarget行として先に列挙し、その�
   終端状態に達しなかった場合、runおよび終端に達していないtargetは
   すべて`aborted`にされる。これにより、詰まったrunが次回予定runを
   無期限にブロックすることはない.
+- **更新処理中** — WordPressのコア・プラグインが実際に更新されている間
+  (作られたばかりの`.maintenance`ファイル、または`WP_Upgrader`が保持する
+  `core_updater.lock`/`auto_updater.lock`)は、次のchunkをclaimして更新
+  途中のファイルを読んでしまわないよう、30秒間隔で延期(再チェック)する。
+  この間targetを`skipped`にはせず、単に待つだけ(上記runのdeadlineまで)。
+  ロックも`.maintenance`も持たないプラグイン単体の更新は検知できないが、
+  途中でtargetのversionが変わった場合は既存のcursor不一致によるretry
+  (上記)が拾う.
 
 ### REST API
 
@@ -279,6 +348,18 @@ failed/abortedのrun・差分検知導入前のrunに属するもの)ではす�
 それ単独ではメールを送らない ―— 次に実際に送られるメールの
 「Not verified today」節に同封される.
 
+checksum targetのversion変化は、更新イベントの記録(上記「更新イベント」
+参照)に一致するものが無い場合は扱いが異なる: 古い基準は捨てず、finding は
+通常どおり比較され ―— 設定画面の「Alert on version changes that did not go
+through the WordPress updater」がチェックされていれば(既定でON)、メールに
+「Version changed without a WordPress update:」という節が追加され
+`target: from -> to` の形で列挙される。これは version 文字列への不正な
+書き換えも、git/FTP/Composer による正当なデプロイも同じく検出しうる ――
+そうしたデプロイ方法を使うサイトでは、この設定をOFFにしないと毎回のデプロイ
+でアラートが飛んでしまう。これが唯一報告すべき内容の場合(通常の新規/解消
+findingが無い場合)、件名は`0 new findings, 0 resolved`ではなく`N version
+change(s) without a WordPress update`になる.
+
 同じ同一性の`new`finding は最大でも7日に1回しか再送しない。解決と再発を
 繰り返すファイルがrunのたびにメールを溢れさせないようにするため。メール
 送信が失敗した場合、そのfindingは「通知済み」にせず、次回のrunで再送する
@@ -370,18 +451,26 @@ add_filter( 'wpcv_alert_channels', function ( $channels, $context ) {
 - **抑制一覧(Suppressions)** — これまでに作成された全ての抑制ルール
   (3種別すべて)を、対象・理由・作成者・作成日時・(`allowlist_hash`のみ)
   承認済みversionとhashの先頭部分とともに表示する。有効なルールは
-  (理由入力必須で)取消でき、削除ではなく取消として記録・併記される.
+  (理由入力必須で)取消でき、削除ではなく取消として記録・併記される。
+  `allowlist_hash`ルールは、その対象のversionが承認時と異なるversionへ
+  変わった時点で自動的に失効する(「version changed」と表示される) ―—
+  ハッシュを承認しても、古いversionへ戻したときに永久に効き続けることは
+  無くなった。`exclude_path`/`exclude_target`ルールはこの対象外.
 - **実行履歴(Run History)** — 全runを新しい順に表示し、一覧には**Diff**
   (`+新規 / −解消 / =継続`、差分処理が進行中のrunでは`diff_status`の
   生の値)・**Alert**(`sent`/`not_needed`/`no_recipient`/`failed`)列を
   持つ。run詳細では各targetの状態・`error_code`(`unverifiable`/`retry`/
-  `aborted`/`skipped`なtargetの理由を人間可読なラベルに変換したもの)・
+  `aborted`/`skipped`なtargetの理由を人間可読なラベルに変換したもの。
+  `version_changed_unrecorded`〔上記「アラート」参照〕を含む)・
   ファイル件数・試行回数・**Diff mode**列(上記「アラート」参照)を確認
   できる。run単位の詳細にも差分・アラートの状態、アラートのエラーや
   失敗したチャネル(あれば。管理画面限定 ―— RESTには一切出さない)、
-  その runのfindingsへのリンクを表示する。**Findings ended in this run**
-  節には、そのrunが解消・除外等で終わらせたfindingを一覧表示する
-  (解消を先頭に並べ、基準が大きいrunでもページ分けする).
+  その runのfindingsへのリンクを表示する。**Update events since the
+  previous run**節には、直前runから今回runまでの間に記録された更新イベント
+  (上記「更新イベント」参照)を一覧表示する(最初のrunには直前runが無いため
+  表示しない)。**Findings ended in this run**節には、そのrunが解消・除外等で
+  終わらせたfindingを一覧表示する(解消を先頭に並べ、基準が大きいrunでも
+  ページ分けする).
 
 ## 設定
 
@@ -396,8 +485,12 @@ run」を反映するだけで、サーバーにWP-CLI自体がインストー�
 (UTC。WP-CronとRESTの日次due判定が共通で使う)・RESTエンドポイントの
 時間予算・strict mode(readme.txt/readme.mdの変更を低リスクな「soft change」
 として抑制せず、通常のfindingとして報告する。既定は無効)・stat差分検知
-(既定は有効)・アラートの宛先と「Send test alert」ボタン(上記「アラート」
-参照)・RESTトークンの発行を設定できる.
+(既定は有効)・独自プラグイン・MUプラグインのloader向けの内容ハッシュ比較
+(既定は無効。上記「内容ハッシュ比較」参照。設定ファイル・ドロップインは
+この設定に関わらず常に内容ハッシュ比較の対象)・WordPressの更新機構を
+通らないversion変化を通知するか(既定は有効。上記「アラート」参照)・
+アラートの宛先と「Send test alert」ボタン(上記「アラート」参照)・
+RESTトークンの発行を設定できる.
 
 ## 配布方針
 
