@@ -183,9 +183,12 @@ after the saved mappings, and a target already mapped on the screen wins.
   database and is never shown; the Settings screen only says whether one is
   configured. With a token, assets are downloaded through the GitHub API
   (`Accept: application/octet-stream`), which also works for private
-  repositories; without one, the public `browser_download_url` is used. The
-  permissions a fine-grained token needs are not documented by GitHub in the
-  pages checked and have not been verified yet.
+  repositories; without one, the public `browser_download_url` is used.
+  Verified on 2026-10-01: a fine-grained token limited to one private
+  repository with only the "Contents: Read-only" permission was enough to find
+  the Release and download its asset (without a token the same repository
+  was `manifest_not_found`). Classic tokens also work but are far broader than
+  needed.
 - **Rate limits**: unauthenticated GitHub API requests are limited to 60 per
   hour (measured: a 404 and an `If-None-Match` request also count; downloading a
   public asset through `browser_download_url` does not). Because manifests are

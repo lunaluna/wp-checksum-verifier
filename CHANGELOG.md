@@ -72,10 +72,15 @@ All notable changes to this project will be documented in this file.
   installed version changes (the cache is keyed by version).
 - Must-use plugin loaders and single-file plugins directly in
   `wp-content/plugins/` cannot be mapped yet.
-- The permissions a fine-grained GitHub token needs for private repositories
-  have not been verified.
 - A Release that is still a draft cannot be seen through the API, so it
   cannot be compared until it is published.
+
+### Verified
+
+- Private repositories: a fine-grained GitHub token limited to one repository
+  with only "Contents: Read-only" is enough (Release lookup 0.39 s and asset
+  download through the Assets API 0.61 s on shared hosting; without the token
+  the repository is `manifest_not_found`).
 
 ## [0.7.0] - 2026-10-01
 

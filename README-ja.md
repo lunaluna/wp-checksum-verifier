@@ -155,8 +155,10 @@ theme:my-theme lunaluna/my-theme my-theme-pro
   トークンは DB に保存せず、画面にも出しません(設定画面は設定済みかどうかだけを表示)。
   トークンがあるときはアセットを GitHub API(`Accept: application/octet-stream`)で
   ダウンロードし、非公開リポジトリでも取得できます。無いときは公開の
-  `browser_download_url` を使います。fine-grained トークンに必要な権限は、確認した
-  GitHub のドキュメントに書かれておらず、まだ実機で確かめていません.
+  `browser_download_url` を使います。2026-10-01に実機で確認しました: 非公開リポジトリ
+  1つに限定し、権限を「Contents: Read-only」だけにした fine-grained トークンで、
+  Release の検索とアセットのダウンロードができました(トークン無しでは同じリポジトリが
+  `manifest_not_found` になります)。classic トークンでも動きますが、必要以上に権限が広くなります.
 - **レート制限**: 認証なしの GitHub API は1時間に60回までです(実測: 404 と
   `If-None-Match` 付きのリクエストも1回に数えられ、`browser_download_url` での公開アセットの
   ダウンロードは数えられません)。マニフェストをキャッシュするので、API を呼ぶのは
