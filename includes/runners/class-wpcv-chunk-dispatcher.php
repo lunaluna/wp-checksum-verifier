@@ -694,7 +694,8 @@ class WPCV_Chunk_Dispatcher {
 				array( 'version' => (string) $context['version'] ),
 				rtrim( ABSPATH, '/' ),
 				(string) $context['version'],
-				'wporg'
+				'wporg',
+				null === $this->theme_source ? null : array( __CLASS__, 'without_theme_files' )
 			);
 			return;
 		}
@@ -881,6 +882,35 @@ class WPCV_Chunk_Dispatcher {
 	}
 
 	/**
+	 * コアのマニフェストから `wp-content/themes/` 配下を外す(v0.7 §Step4. D7・U7).
+	 *
+	 * コア同梱テーマ(7.1.2 では twentytwentythree / twentytwentyfour /
+	 * twentytwentyfive)の照合はテーマの target が担当する(zip とコアの md5 の
+	 * どちらかと一致すれば正. `WPCV_Source_Wporg_Theme::to_manifest_files()` 参照).
+	 * コアの照合にも残すと、テーマだけを WordPress.org から更新したときに、コアの
+	 * 照合が更新されたファイルを `modified` として出してしまう(2026-10-01 に
+	 * test-armfu.local で twentytwentyfive を 1.5 → 1.0 に入れ替えて再現。75件).
+	 * 欠落も改変も外す. テーマのソースが組み込まれていないとき(v0.6 までの
+	 * 呼び出し元)は外さない(外すと、どこからも照合されなくなるため).
+	 *
+	 * `wp-content/plugins/akismet` も同じ構造だが、v0.7 では扱わない(プラン §9-4).
+	 * `core:_scan` の既知ファイルの判定(`process_core_scan()`)は `wp-content/` を
+	 * 走査しないので、ここで外しても影響しない.
+	 *
+	 * @param array $files マニフェストの `files`.
+	 * @return array
+	 */
+	public static function without_theme_files( array $files ) {
+		foreach ( array_keys( $files ) as $path ) {
+			if ( 0 === strpos( (string) $path, 'wp-content/themes/' ) ) {
+				unset( $files[ $path ] );
+			}
+		}
+
+		return $files;
+	}
+
+	/**
 	 * 公式テーマ1件を処理する(v0.7 §3.4). `process_plugin()` と同じく、現在の
 	 * `$context['themes']` から解決し直す(plan のあとに消えた・更新されたテーマに追従する).
 	 *
@@ -913,9 +943,11 @@ class WPCV_Chunk_Dispatcher {
 			$target_run,
 			$this->theme_source,
 			array(
-				'slug'       => (string) $target_run['slug'],
-				'version'    => $theme['version'],
-				'update_uri' => $theme['update_uri'],
+				'slug'         => (string) $target_run['slug'],
+				'version'      => $theme['version'],
+				'update_uri'   => $theme['update_uri'],
+				// D7(v0.7 §Step4): コア同梱テーマの md5 を今のコアのマニフェストから引く.
+				'core_version' => (string) $context['version'],
 			),
 			rtrim( WPCV_Path_Normalizer::to_forward_slashes( $theme['stylesheet_dir'] ), '/' ),
 			$theme['version'],
@@ -1632,10 +1664,17 @@ class WPCV_Chunk_Dispatcher {
 	 * @param string               $base_dir        manifestの相対パスを解決する基準ディレクトリ.
 	 * @param string               $version         今回dispatcherが観測した「現在の」version.
 	 * @param string               $source_label     findings.source に記録する値(常に `wporg`).
+	 * @param callable|null        $filter_files     マニフェストの `files` を照合の前に絞り込む
+	 *                                               callable(v0.7 §Step4. コアの照合から
+	 *                                               `wp-content/themes/` を外すのに使う).
 	 * @return void
 	 */
-	private function process_manifest_chunk( $run_id, array $target_run, WPCV_Manifest_Source $source, array $manifest_context, $base_dir, $version, $source_label ) {
+	private function process_manifest_chunk( $run_id, array $target_run, WPCV_Manifest_Source $source, array $manifest_context, $base_dir, $version, $source_label, ?callable $filter_files = null ) {
 		$manifest = $source->get_manifest( $manifest_context );
+
+		if ( null === $manifest['error_code'] && null !== $filter_files ) {
+			$manifest['files'] = call_user_func( $filter_files, $manifest['files'] );
+		}
 
 		if ( null !== $manifest['error_code'] ) {
 			$this->target_run_repository->finalize_immediate(

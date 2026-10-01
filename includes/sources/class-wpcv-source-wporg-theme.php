@@ -29,8 +29,10 @@ if ( ! defined( 'ABSPATH' ) ) {
  *
  * 作ったマニフェストは `WPCV_Manifest_Cache_Repository` に保存し、2回目以降
  * (次の run・同じ run の次の chunk)はそこから返す(`manifest_status = cached`).
- * キャッシュには md5 も保存する(D3. コア同梱テーマとの合成〔D7・v0.7 Step4〕で
- * 使う). 返すマニフェストは sha256 だけ.
+ * キャッシュには md5 も保存する(D3). 返すマニフェストは通常 sha256 だけだが、
+ * コア同梱テーマ(今のコアのマニフェストに `wp-content/themes/{slug}/` がある
+ * テーマ)では、zip とコアの md5 のどちらかと一致すれば正とする(D7. v0.7 Step4.
+ * `to_manifest_files()` 参照).
  *
  * 次の場合は HTTP を出さずに `missing` を返す(D6):
  * - version が空 → `version_unknown`
@@ -130,6 +132,14 @@ class WPCV_Source_Wporg_Theme implements WPCV_Manifest_Source {
 	private $zip_available;
 
 	/**
+	 * コアのマニフェストの取得ソース(D7. v0.7 §Step4). `null` ならコア同梱テーマの
+	 * 合成をしない(zip の sha256 だけで照合する).
+	 *
+	 * @var WPCV_Manifest_Source|null
+	 */
+	private $core_source;
+
+	/**
 	 * コンストラクタ.
 	 *
 	 * @param WPCV_Manifest_Cache_Repository $cache         マニフェストのキャッシュ.
@@ -138,9 +148,12 @@ class WPCV_Source_Wporg_Theme implements WPCV_Manifest_Source {
 	 *                                                      CLI では読み込まれていないので、ここで読む).
 	 * @param callable|null                  $zip_available `ZipArchive` が使えるかを返す. 省略時は
 	 *                                                      `class_exists( 'ZipArchive' )`.
+	 * @param WPCV_Manifest_Source|null      $core_source   コアのマニフェストの取得ソース(D7.
+	 *                                                      `WPCV_Source_Core`). 省略時は合成しない.
 	 */
-	public function __construct( WPCV_Manifest_Cache_Repository $cache, ?callable $downloader = null, ?callable $zip_available = null ) {
+	public function __construct( WPCV_Manifest_Cache_Repository $cache, ?callable $downloader = null, ?callable $zip_available = null, ?WPCV_Manifest_Source $core_source = null ) {
 		$this->cache         = $cache;
+		$this->core_source   = $core_source;
 		$this->downloader    = $downloader ?? static function ( $url, $timeout ) {
 			if ( ! function_exists( 'download_url' ) ) {
 				require_once ABSPATH . 'wp-admin/includes/file.php';
@@ -162,7 +175,9 @@ class WPCV_Source_Wporg_Theme implements WPCV_Manifest_Source {
 	 *     @type string $slug       テーマの stylesheet(`WP_Theme::get_stylesheet()`). 必須.
 	 *     @type string $version    ローカルのテーマの version(`style.css` のヘッダー値)。
 	 *                              空なら HTTP を出さず `version_unknown` を返す.
-	 *     @type string $update_uri `style.css` の `Update URI` ヘッダー値(空でよい). D6 参照.
+	 *     @type string $update_uri   `style.css` の `Update URI` ヘッダー値(空でよい). D6 参照.
+	 *     @type string $core_version WordPress の version(D7. コアのマニフェストを引くのに使う.
+	 *                                空ならコア同梱テーマの合成をしない).
 	 * }
 	 * @return array インターフェースの docblock を参照.
 	 *
@@ -177,6 +192,8 @@ class WPCV_Source_Wporg_Theme implements WPCV_Manifest_Source {
 		$slug       = (string) $context['slug'];
 		$version    = isset( $context['version'] ) ? (string) $context['version'] : '';
 		$update_uri = isset( $context['update_uri'] ) ? (string) $context['update_uri'] : '';
+
+		$core_version = isset( $context['core_version'] ) ? (string) $context['core_version'] : '';
 
 		// D6 ①. version はバージョンを推測しない(プラグインと同じ方針. §3.4).
 		if ( '' === $version ) {
@@ -200,7 +217,7 @@ class WPCV_Source_Wporg_Theme implements WPCV_Manifest_Source {
 			return array(
 				'manifest_status' => 'cached',
 				'error_code'      => null,
-				'files'           => self::to_manifest_files( $cached['files'] ),
+				'files'           => $this->to_manifest_files( $cached['files'], $slug, $core_version ),
 			);
 		}
 
@@ -237,7 +254,7 @@ class WPCV_Source_Wporg_Theme implements WPCV_Manifest_Source {
 			return array(
 				'manifest_status' => 'ok',
 				'error_code'      => null,
-				'files'           => self::to_manifest_files( $result ),
+				'files'           => $this->to_manifest_files( $result, $slug, $core_version ),
 			);
 		} finally {
 			// `download_url()` の一時ファイルは呼び出し側が消す(`file.php:1161` の WARNING).
@@ -517,27 +534,97 @@ class WPCV_Source_Wporg_Theme implements WPCV_Manifest_Source {
 	}
 
 	/**
-	 * キャッシュの形(`{ path: { sha256, md5 } }`)を、インターフェースの `files` の形
-	 * (sha256 のみ)に変える(D3).
+	 * キャッシュの形(`{ path: { sha256, md5 } }`)を、インターフェースの `files` の形に変える.
 	 *
-	 * @param array $cached_files キャッシュの `files`.
+	 * 通常は sha256 だけを返す(D3). 今のコアのマニフェストにこのテーマのファイル
+	 * (`wp-content/themes/{slug}/`)が含まれていれば(コア同梱テーマ. D7)、ファイルごとに
+	 * 「zip の md5」と「コアのマニフェストの md5」のどちらかと一致すれば正とする
+	 * (`algorithm = md5`、`hashes` に2つの候補). コアに同梱された版は、WordPress.org の
+	 * 同じ version の zip と中身が違うことがあるため(7.1.2 の twentytwentyfive 1.5 で
+	 * 3ファイル. プラン §2.3). 逆に、テーマだけを WordPress.org から更新した場合は
+	 * zip の md5 と一致する.
+	 *
+	 * 正解のパスの集合は zip のパスにする. コアにだけあるファイルは欠落として出さない
+	 * (コアの照合でも `wp-content/` 配下の欠落は外している. v0.5 U2).
+	 *
+	 * コアのマニフェストを取得できなかった場合は、zip の sha256 だけで照合する
+	 * (コア同梱テーマでは、コア同梱版との差が `modified` として出る). コアの
+	 * マニフェストもキャッシュされる(`WPCV_Source_Core`)ので、一度取得できれば
+	 * 以後はこの状態にならない.
+	 *
+	 * @param array  $cached_files キャッシュの `files`.
+	 * @param string $slug         テーマの stylesheet.
+	 * @param string $core_version WordPress の version(空なら合成しない).
 	 * @return array インターフェースの docblock にある `files` の形式.
 	 */
-	private static function to_manifest_files( array $cached_files ) {
-		$files = array();
+	private function to_manifest_files( array $cached_files, $slug, $core_version ) {
+		$core_md5 = $this->core_bundled_md5( $slug, $core_version );
+		$files    = array();
 
 		foreach ( $cached_files as $path => $hashes ) {
 			if ( ! is_array( $hashes ) || empty( $hashes['sha256'] ) ) {
 				continue;
 			}
 
-			$files[ (string) $path ] = array(
-				'algorithm' => WPCV_File_Hasher::ALGO_SHA256,
-				'hashes'    => array( (string) $hashes['sha256'] ),
+			$path = (string) $path;
+
+			if ( array() === $core_md5 ) {
+				$files[ $path ] = array(
+					'algorithm' => WPCV_File_Hasher::ALGO_SHA256,
+					'hashes'    => array( (string) $hashes['sha256'] ),
+				);
+				continue;
+			}
+
+			$candidates = array( (string) $hashes['md5'] );
+
+			if ( isset( $core_md5[ $path ] ) && $core_md5[ $path ] !== $candidates[0] ) {
+				$candidates[] = $core_md5[ $path ];
+			}
+
+			$files[ $path ] = array(
+				'algorithm' => WPCV_File_Hasher::ALGO_MD5,
+				'hashes'    => $candidates,
 			);
 		}
 
 		return $files;
+	}
+
+	/**
+	 * 今のコアのマニフェストから、このテーマのファイルの md5 を取り出す(D7).
+	 *
+	 * @param string $slug         テーマの stylesheet.
+	 * @param string $core_version WordPress の version.
+	 * @return array<string, string> テーマ内の相対パス => md5. コア同梱テーマでなければ空.
+	 */
+	private function core_bundled_md5( $slug, $core_version ) {
+		if ( null === $this->core_source || '' === $core_version ) {
+			return array();
+		}
+
+		$core = $this->core_source->get_manifest( array( 'version' => $core_version ) );
+
+		if ( null !== $core['error_code'] ) {
+			return array();
+		}
+
+		$prefix = 'wp-content/themes/' . $slug . '/';
+		$md5    = array();
+
+		foreach ( $core['files'] as $path => $spec ) {
+			if ( 0 !== strpos( (string) $path, $prefix ) || WPCV_File_Hasher::ALGO_MD5 !== $spec['algorithm'] ) {
+				continue;
+			}
+
+			$hashes = (array) $spec['hashes'];
+
+			if ( isset( $hashes[0] ) ) {
+				$md5[ substr( (string) $path, strlen( $prefix ) ) ] = (string) $hashes[0];
+			}
+		}
+
+		return $md5;
 	}
 
 	/**

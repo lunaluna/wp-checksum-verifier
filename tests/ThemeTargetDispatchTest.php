@@ -325,7 +325,8 @@ class ThemeTargetDispatchTest extends TestCase {
 
 	/**
 	 * WordPress.org と照合できたテーマ: 本体は success で finding なし、`:_stat` は
-	 * `checksum_covered` で走査しない. 照合ソースには slug・version・Update URI が渡る.
+	 * `checksum_covered` で走査しない. 照合ソースには slug・version・Update URI と、
+	 * WordPress の version(v0.7 §Step4)が渡る.
 	 *
 	 * @return void
 	 */
@@ -379,9 +380,11 @@ class ThemeTargetDispatchTest extends TestCase {
 
 		$this->assertSame(
 			array(
-				'slug'       => 'acme',
-				'version'    => '1.2',
-				'update_uri' => 'https://wordpress.org/themes/acme/',
+				'slug'         => 'acme',
+				'version'      => '1.2',
+				'update_uri'   => 'https://wordpress.org/themes/acme/',
+				// D7(v0.7 §Step4): コア同梱テーマの md5 を引くための WordPress の version.
+				'core_version' => '6.8',
 			),
 			$this->source_calls[0]
 		);
@@ -552,5 +555,83 @@ class ThemeTargetDispatchTest extends TestCase {
 
 		$this->assertSame( WPCV_Error_Code::UNKNOWN_SOURCE, $this->find_target_run( $made, 'theme:acme' )['error_code'] );
 		$this->assertSame( WPCV_Target_Status::SUCCESS, $this->find_target_run( $made, 'theme:acme:_stat' )['status'] );
+	}
+
+	/**
+	 * テーマのファイルと、ABSPATH 直下のファイルを1つずつ含むコアのマニフェスト
+	 * (どちらもローカルと違う md5).
+	 *
+	 * @return WPCV_Test_Fake_Manifest_Source
+	 */
+	private static function core_source_with_theme_and_root_files() {
+		return new WPCV_Test_Fake_Manifest_Source(
+			array(
+				'manifest_status' => 'ok',
+				'error_code'      => null,
+				'files'           => array(
+					'wp-content/themes/acme/style.css'  => array(
+						'algorithm' => 'md5',
+						'hashes'    => array( md5( 'core-bundled' ) ),
+					),
+					'wp-content/themes/gone/style.css'  => array(
+						'algorithm' => 'md5',
+						'hashes'    => array( md5( 'not installed' ) ),
+					),
+					'wp-login.php'                      => array(
+						'algorithm' => 'md5',
+						'hashes'    => array( md5( 'core login' ) ),
+					),
+				),
+			)
+		);
+	}
+
+	/**
+	 * D7・U7(v0.7 §Step4): テーマのソースが組み込まれていれば、コアの照合は
+	 * `wp-content/themes/` 配下を見ない(改変も欠落も). それ以外のコアのファイルは
+	 * 従来どおり照合する.
+	 *
+	 * @return void
+	 */
+	public function test_core_target_skips_theme_files_when_theme_source_is_set() {
+		$this->put_theme_file( 'acme', 'style.css', 'updated from wordpress.org' );
+		file_put_contents( ABSPATH . 'wp-login.php', 'tampered login' );
+
+		$made = wpcv_test_make_fake_environment(
+			self::core_source_with_theme_and_root_files(),
+			null,
+			null,
+			null,
+			$this->theme_source( array( 'acme' => self::ok_manifest( array( 'style.css' => 'updated from wordpress.org' ) ) ) )
+		);
+
+		$this->reserve_and_run( $made, $this->context_with_themes( array( 'acme' => array() ) ) );
+
+		$core_paths = array_column( $this->findings_of( $made, 'core' ), 'path' );
+
+		$this->assertSame( array( 'wp-login.php' ), $core_paths );
+		$this->assertSame( 1, (int) $this->find_target_run( $made, 'core' )['files_total'] );
+		$this->assertSame( array(), $this->findings_of( $made, 'theme:acme' ) );
+	}
+
+	/**
+	 * テーマのソースが組み込まれていない呼び出し元(v0.6 まで)では、コアの照合は
+	 * 従来どおり `wp-content/themes/` 配下の改変も出す(外すと、どこからも照合されなくなる).
+	 *
+	 * @return void
+	 */
+	public function test_core_target_still_checks_theme_files_without_theme_source() {
+		$this->put_theme_file( 'acme', 'style.css', 'updated from wordpress.org' );
+		file_put_contents( ABSPATH . 'wp-login.php', 'tampered login' );
+
+		$made = wpcv_test_make_fake_environment( self::core_source_with_theme_and_root_files() );
+
+		$this->reserve_and_run( $made, $this->context_with_themes( array( 'acme' => array() ) ) );
+
+		$core_paths = array_column( $this->findings_of( $made, 'core' ), 'path' );
+		sort( $core_paths );
+
+		// 入っていない gone テーマの欠落は v0.5 U2 のとおり出さない.
+		$this->assertSame( array( 'wp-content/themes/acme/style.css', 'wp-login.php' ), $core_paths );
 	}
 }

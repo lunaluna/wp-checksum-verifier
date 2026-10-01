@@ -14,8 +14,33 @@ if ( ! defined( 'ABSPATH' ) ) {
  *
  * `get_core_checksums()`(`wp-admin/includes/update.php`)を使う. WP-CLI 不要、
  * PHP のみで完結する.
+ *
+ * v0.7 §Step4(§3.5): `get_core_checksums()` は呼ぶたびに HTTP を出す(自前の
+ * キャッシュを持たない. 7.1.2 の `update.php` で確認). コア同梱テーマの照合
+ * (D7)で、テーマの target もコアのマニフェストを見るようになったため、
+ * `WPCV_Manifest_Cache_Repository`(`source = core`、slug = locale)に保存して
+ * 2回目からはそこから返す(`manifest_status = cached`). en_US に切り替えて取得した
+ * マニフェスト(`locale_fallback`)はキャッシュしない. キャッシュには期限が無いため、
+ * 保存すると、後でその locale のマニフェストが公開されても en_US との照合が
+ * 続いてしまうから.
  */
 class WPCV_Source_Core implements WPCV_Manifest_Source {
+
+	/**
+	 * マニフェストのキャッシュ. `null` ならキャッシュしない(v0.6 までと同じ).
+	 *
+	 * @var WPCV_Manifest_Cache_Repository|null
+	 */
+	private $cache;
+
+	/**
+	 * コンストラクタ.
+	 *
+	 * @param WPCV_Manifest_Cache_Repository|null $cache マニフェストのキャッシュ(v0.7 §Step4).
+	 */
+	public function __construct( ?WPCV_Manifest_Cache_Repository $cache = null ) {
+		$this->cache = $cache;
+	}
 
 	/**
 	 * コアの checksum マニフェストを取得する.
@@ -45,6 +70,18 @@ class WPCV_Source_Core implements WPCV_Manifest_Source {
 		global $wp_local_package;
 		$locale = $wp_local_package ?? 'en_US';
 
+		if ( null !== $this->cache ) {
+			$cached = $this->cache->find( WPCV_Manifest_Cache_Repository::SOURCE_CORE, $locale, $version );
+
+			if ( null !== $cached ) {
+				return array(
+					'manifest_status' => 'cached',
+					'error_code'      => null,
+					'files'           => self::cached_to_files( $cached['files'] ),
+				);
+			}
+		}
+
 		$checksums       = get_core_checksums( $version, $locale );
 		$manifest_status = 'ok';
 
@@ -63,11 +100,40 @@ class WPCV_Source_Core implements WPCV_Manifest_Source {
 			);
 		}
 
+		if ( null !== $this->cache && 'ok' === $manifest_status ) {
+			$to_cache = array();
+
+			foreach ( $checksums as $path => $hash ) {
+				$to_cache[ $path ] = array( 'md5' => (string) $hash );
+			}
+
+			$this->cache->save( WPCV_Manifest_Cache_Repository::SOURCE_CORE, $locale, $version, $to_cache );
+		}
+
 		return array(
 			'manifest_status' => $manifest_status,
 			'error_code'      => null,
 			'files'           => self::to_files( $checksums ),
 		);
+	}
+
+	/**
+	 * キャッシュの形(`{ path: { md5 } }`)を、共通のマニフェスト形式に変換する
+	 * (`to_files()` と同じ結果になる).
+	 *
+	 * @param array $cached_files キャッシュの `files`.
+	 * @return array インターフェースの docblock にある `files` の形式.
+	 */
+	private static function cached_to_files( array $cached_files ) {
+		$checksums = array();
+
+		foreach ( $cached_files as $path => $hashes ) {
+			if ( is_array( $hashes ) && isset( $hashes['md5'] ) && '' !== $hashes['md5'] ) {
+				$checksums[ (string) $path ] = (string) $hashes['md5'];
+			}
+		}
+
+		return self::to_files( $checksums );
 	}
 
 	/**

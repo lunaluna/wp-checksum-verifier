@@ -129,9 +129,10 @@ class SourceWporgThemeTest extends TestCase {
 	 *                                                     取得が呼ばれたらテストを失敗させる.
 	 * @param WPCV_Manifest_Cache_Repository $cache        キャッシュ.
 	 * @param bool                           $zip_ok       `ZipArchive` が使えることにするか.
+	 * @param WPCV_Manifest_Source|null      $core_source  コアのマニフェスト(D7. v0.7 §Step4).
 	 * @return WPCV_Source_Wporg_Theme
 	 */
-	private function make_source( $zip_or_error, WPCV_Manifest_Cache_Repository $cache, $zip_ok = true ) {
+	private function make_source( $zip_or_error, WPCV_Manifest_Cache_Repository $cache, $zip_ok = true, ?WPCV_Manifest_Source $core_source = null ) {
 		return new WPCV_Source_Wporg_Theme(
 			$cache,
 			function ( $url, $timeout ) use ( $zip_or_error ) {
@@ -153,7 +154,8 @@ class SourceWporgThemeTest extends TestCase {
 			},
 			static function () use ( $zip_ok ) {
 				return $zip_ok;
-			}
+			},
+			$core_source
 		);
 	}
 
@@ -621,5 +623,180 @@ class SourceWporgThemeTest extends TestCase {
 		$this->expectException( InvalidArgumentException::class );
 
 		$this->make_source( null, $this->make_cache() )->get_manifest( array( 'version' => '1.2' ) );
+	}
+
+	/**
+	 * コアのマニフェスト(md5)を返す偽物. 呼ばれた回数を `$calls` に数える.
+	 *
+	 * @param array<string, string> $md5_by_path ABSPATH 相対パス => md5. null なら取得失敗.
+	 * @param int                   $calls       呼ばれた回数(参照).
+	 * @return WPCV_Manifest_Source
+	 */
+	private function core_source( $md5_by_path, &$calls = 0 ) {
+		return new class( $md5_by_path, $calls ) implements WPCV_Manifest_Source {
+
+			/**
+			 * ABSPATH 相対パス => md5(null なら取得失敗).
+			 *
+			 * @var array|null
+			 */
+			private $md5_by_path;
+
+			/**
+			 * 呼ばれた回数(参照).
+			 *
+			 * @var int
+			 */
+			private $calls;
+
+			/**
+			 * コンストラクタ.
+			 *
+			 * @param array|null $md5_by_path ABSPATH 相対パス => md5.
+			 * @param int        $calls       呼ばれた回数(参照).
+			 */
+			public function __construct( $md5_by_path, &$calls ) {
+				$this->md5_by_path = $md5_by_path;
+				$this->calls       = &$calls;
+			}
+
+			/**
+			 * マニフェストを返す.
+			 *
+			 * @param array $context コンテキスト.
+			 * @return array
+			 */
+			public function get_manifest( array $context ) {
+				++$this->calls;
+
+				if ( null === $this->md5_by_path ) {
+					return array(
+						'manifest_status' => 'missing',
+						'error_code'      => WPCV_Error_Code::HTTP_ERROR,
+						'files'           => array(),
+					);
+				}
+
+				$files = array();
+
+				foreach ( $this->md5_by_path as $path => $md5 ) {
+					$files[ $path ] = array(
+						'algorithm' => 'md5',
+						'hashes'    => array( $md5 ),
+					);
+				}
+
+				return array(
+					'manifest_status' => 'ok',
+					'error_code'      => null,
+					'files'           => $files,
+				);
+			}
+		};
+	}
+
+	/**
+	 * D7: 今のコアのマニフェストにこのテーマのファイルがあれば(コア同梱テーマ)、
+	 * ファイルごとに zip の md5 とコアの md5 の両方を候補にする. 同じ値なら1つにまとめ、
+	 * コアにだけあるファイルは正解に含めない(欠落として出さない). 2回目(キャッシュ)も
+	 * 同じ結果になる.
+	 *
+	 * @return void
+	 */
+	public function test_core_bundled_theme_accepts_zip_or_core_md5() {
+		$style = "/* Theme Name: Acme */\n";
+		$index = '<!-- wp:post-content /-->';
+		$core  = $this->core_source(
+			array(
+				'wp-content/themes/acme/style.css'            => md5( 'core-bundled style' ),
+				'wp-content/themes/acme/templates/index.html' => md5( $index ),
+				'wp-content/themes/acme/core-only.php'        => md5( 'only in core' ),
+				'wp-content/themes/acme-child/style.css'      => md5( 'other theme' ),
+				'wp-login.php'                                => md5( 'login' ),
+			)
+		);
+		$cache = $this->make_cache();
+
+		$expected = array(
+			'style.css'            => array(
+				'algorithm' => 'md5',
+				'hashes'    => array( md5( $style ), md5( 'core-bundled style' ) ),
+			),
+			'templates/index.html' => array(
+				'algorithm' => 'md5',
+				'hashes'    => array( md5( $index ) ),
+			),
+		);
+
+		$context = array(
+			'slug'         => 'acme',
+			'version'      => '1.2',
+			'core_version' => '7.1.2',
+		);
+
+		$first = $this->make_source( $this->make_zip( $this->valid_entries() ), $cache, true, $core )->get_manifest( $context );
+		$this->assertSame( 'ok', $first['manifest_status'] );
+		$this->assertSame( $expected, $first['files'] );
+
+		$second = $this->make_source( null, $cache, true, $core )->get_manifest( $context );
+		$this->assertSame( 'cached', $second['manifest_status'] );
+		$this->assertSame( $expected, $second['files'] );
+	}
+
+	/**
+	 * コアのマニフェストにこのテーマのファイルが無ければ(`acme-child` のように先頭が
+	 * 同じ別のテーマしか無い場合も)、zip の sha256 だけで照合する.
+	 *
+	 * @return void
+	 */
+	public function test_theme_not_bundled_in_core_uses_sha256() {
+		$core   = $this->core_source( array( 'wp-content/themes/acme-child/style.css' => md5( 'x' ) ) );
+		$result = $this->make_source( $this->make_zip( $this->valid_entries() ), $this->make_cache(), true, $core )->get_manifest(
+			array(
+				'slug'         => 'acme',
+				'version'      => '1.2',
+				'core_version' => '7.1.2',
+			)
+		);
+
+		$this->assertSame( 'sha256', $result['files']['style.css']['algorithm'] );
+	}
+
+	/**
+	 * コアのマニフェストを取得できなければ、zip の sha256 だけで照合する(docblock 参照).
+	 *
+	 * @return void
+	 */
+	public function test_core_manifest_failure_falls_back_to_sha256() {
+		$result = $this->make_source( $this->make_zip( $this->valid_entries() ), $this->make_cache(), true, $this->core_source( null ) )->get_manifest(
+			array(
+				'slug'         => 'acme',
+				'version'      => '1.2',
+				'core_version' => '7.1.2',
+			)
+		);
+
+		$this->assertSame( 'ok', $result['manifest_status'] );
+		$this->assertSame( 'sha256', $result['files']['style.css']['algorithm'] );
+	}
+
+	/**
+	 * `core_version` が無ければ、コアのマニフェストを取りに行かない.
+	 *
+	 * @return void
+	 */
+	public function test_without_core_version_core_manifest_is_not_requested() {
+		$calls = 0;
+		$core  = $this->core_source( array( 'wp-content/themes/acme/style.css' => md5( 'x' ) ), $calls );
+
+		$result = $this->make_source( $this->make_zip( $this->valid_entries() ), $this->make_cache(), true, $core )->get_manifest(
+			array(
+				'slug'    => 'acme',
+				'version' => '1.2',
+			)
+		);
+
+		$this->assertSame( 0, $calls );
+		$this->assertSame( 'sha256', $result['files']['style.css']['algorithm'] );
 	}
 }

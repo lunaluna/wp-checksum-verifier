@@ -551,12 +551,16 @@ class WPCV_Plugin {
 	 * @return WPCV_Chunk_Dispatcher
 	 */
 	private static function build_dispatcher( ?callable $continuation_scheduler = null ) {
+		// v0.7 §Step4: コアのマニフェストもキャッシュする. テーマのソースも同じ
+		// インスタンスを使い、コア同梱テーマの md5 を引く(D7).
+		$core_source = new WPCV_Source_Core( self::manifest_cache_repository() );
+
 		return new WPCV_Chunk_Dispatcher(
 			self::run_repository(),
 			self::target_run_repository(),
 			self::chunk_result_repository(),
 			new WPCV_Chunk_Verifier(),
-			new WPCV_Source_Core(),
+			$core_source,
 			new WPCV_Source_Wporg_Plugin(),
 			new WPCV_Unknown_File_Scanner(),
 			null,
@@ -566,7 +570,7 @@ class WPCV_Plugin {
 			self::diff_dispatcher(),
 			self::update_event_matcher(),
 			self::update_lock_detector(),
-			new WPCV_Source_Wporg_Theme( self::manifest_cache_repository() )
+			new WPCV_Source_Wporg_Theme( self::manifest_cache_repository(), null, null, $core_source )
 		);
 	}
 
