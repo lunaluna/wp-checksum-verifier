@@ -746,4 +746,72 @@ class ThemeTargetDispatchTest extends TestCase {
 		$this->assertSame( WPCV_Error_Code::MANIFEST_NOT_FOUND, $scan['error_code'] );
 		$this->assertSame( array(), $this->findings_of( $made, 'theme:custom:_scan' ) );
 	}
+
+	/**
+	 * 更新イベントを1件記録する(基準 run の開始より後の時刻. StatTargetDispatchTest と同じ).
+	 *
+	 * @param array  $made      `wpcv_test_make_fake_environment()` の戻り値.
+	 * @param string $target_id target_id.
+	 * @param string $version   記録する version.
+	 * @return void
+	 */
+	private function insert_update_event( array $made, $target_id, $version ) {
+		$later_now = static function () {
+			return '2026-09-08 12:00:01';
+		};
+
+		( new WPCV_Update_Event_Repository( $made['wpdb'], $later_now ) )->insert( $target_id, $version, 'theme_update' );
+	}
+
+	/**
+	 * v0.7 §Step6(D9・v0.6 D8): 照合できなかったテーマの `:_stat` は、本体の target_id
+	 * (`theme:{stylesheet}`. `body_id_of_stat()` で求める)の更新イベントがあれば、version が
+	 * 同じでも黙ってベースラインを作り直す.
+	 *
+	 * @return void
+	 */
+	public function test_theme_stat_rebuilds_silently_when_update_event_recorded() {
+		$this->put_theme_file( 'custom', 'style.css', 'css' );
+
+		$source  = $this->theme_source( array( 'custom' => self::missing_manifest( WPCV_Error_Code::MANIFEST_NOT_FOUND ) ) );
+		$context = $this->context_with_themes( array( 'custom' => array( 'version' => '1.0' ) ) );
+		$made    = wpcv_test_make_fake_environment( null, null, null, null, $source );
+
+		$this->reserve_and_run( $made, $context );
+
+		$this->insert_update_event( $made, 'theme:custom', '1.0' );
+		file_put_contents( $this->theme_dir( 'custom' ) . '/style.css', 'css updated by WordPress' );
+		clearstatcache();
+
+		$second = $this->reserve_and_run( $made, $context );
+
+		$this->assertSame( WPCV_Error_Code::BASELINE_REBUILT, $this->find_target_run( $made, 'theme:custom:_stat', $second['run_id'] )['error_code'] );
+		$this->assertSame( array(), $this->findings_of( $made, 'theme:custom:_stat', $second['run_id'] ) );
+	}
+
+	/**
+	 * v0.7 §Step6(D9・v0.6 D7): 記録の無い version の変化は、作り直さずに比べて
+	 * `version_changed_unrecorded` を残す(テーマでも同じ).
+	 *
+	 * @return void
+	 */
+	public function test_theme_stat_compares_and_flags_unrecorded_version_change() {
+		$this->put_theme_file( 'custom', 'style.css', 'css' );
+		touch( $this->theme_dir( 'custom' ) . '/style.css', 1700000000 );
+
+		$source = $this->theme_source( array( 'custom' => self::missing_manifest( WPCV_Error_Code::MANIFEST_NOT_FOUND ) ) );
+		$made   = wpcv_test_make_fake_environment( null, null, null, null, $source );
+
+		$this->reserve_and_run( $made, $this->context_with_themes( array( 'custom' => array( 'version' => '1.0' ) ) ) );
+
+		$GLOBALS['_wpcv_test_options']['wpcv_update_events_since'] = '2020-01-01 00:00:00';
+		file_put_contents( $this->theme_dir( 'custom' ) . '/style.css', 'css changed by hand' );
+		touch( $this->theme_dir( 'custom' ) . '/style.css', 1700000100 );
+		clearstatcache();
+
+		$second = $this->reserve_and_run( $made, $this->context_with_themes( array( 'custom' => array( 'version' => '1.1' ) ) ) );
+
+		$this->assertSame( WPCV_Error_Code::VERSION_CHANGED_UNRECORDED, $this->find_target_run( $made, 'theme:custom:_stat', $second['run_id'] )['error_code'] );
+		$this->assertSame( array( 'stat_changed' ), array_column( $this->findings_of( $made, 'theme:custom:_stat', $second['run_id'] ), 'status' ) );
+	}
 }

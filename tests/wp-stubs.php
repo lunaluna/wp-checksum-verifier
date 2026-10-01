@@ -1354,3 +1354,43 @@ if ( ! function_exists( 'wp_get_themes' ) ) {
 		return $GLOBALS['_wpcv_test_themes'] ?? array();
 	}
 }
+
+if ( ! function_exists( 'get_theme_root' ) ) {
+	/**
+	 * Stub get_theme_root() — `$GLOBALS['_wpcv_test_theme_root']` を返す(無ければ
+	 * ABSPATH の `wp-content/themes`. v0.7 §Step6).
+	 *
+	 * @param string $stylesheet_or_template 無視する.
+	 * @return string
+	 */
+	function get_theme_root( $stylesheet_or_template = '' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		unset( $stylesheet_or_template );
+
+		return $GLOBALS['_wpcv_test_theme_root'] ?? ABSPATH . 'wp-content/themes';
+	}
+}
+
+if ( ! function_exists( 'get_file_data' ) ) {
+	/**
+	 * Stub get_file_data() — 実際のファイルの先頭 8KB からヘッダーを読む(v0.7 §Step6.
+	 * 本物〔wp-includes/functions.php〕の正規表現を簡略化したもの. `$context` の
+	 * フィルターは無い).
+	 *
+	 * @param string $file            ファイルのパス.
+	 * @param array  $default_headers キー => ヘッダー名.
+	 * @param string $context         無視する.
+	 * @return array<string, string>
+	 */
+	function get_file_data( $file, $default_headers, $context = '' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		unset( $context );
+
+		$contents = (string) file_get_contents( $file, false, null, 0, 8192 ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
+		$headers  = array();
+
+		foreach ( $default_headers as $key => $name ) {
+			$headers[ $key ] = 1 === preg_match( '/^(?:[ \t]*<\?php)?[ \t\/*#@]*' . preg_quote( $name, '/' ) . ':(.*)$/mi', $contents, $matches ) ? trim( $matches[1] ) : '';
+		}
+
+		return $headers;
+	}
+}

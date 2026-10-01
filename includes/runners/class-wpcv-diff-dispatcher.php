@@ -395,6 +395,17 @@ class WPCV_Diff_Dispatcher {
 			return;
 		}
 
+		// v0.7 §Step6 是正: テーマの `:_scan`(本体と同じ version を持つ派生の target)には
+		// 印を付けない. 更新イベントは本体の target_id(`theme:{stylesheet}`)で記録されるので、
+		// `:_scan` の target_id のままでは記録のある更新でも見つからず、印が付いてしまう
+		// (2026-10-01 test-armfu.local で、WP-CLI の更新のあと `theme:twentytwentyone:_scan`
+		// に付いた). `:_scan` は本体が照合できたときしか走らないので、version の変化は
+		// 本体の target_run に印が付く(記録が無ければ). 二重に通知しないためにも付けない.
+		// stat の target(`:_stat`)は `start_target()` で常に `event` モードになり、ここへは来ない.
+		if ( null !== WPCV_Target_Resolver::body_id_of_scan( $target_id ) ) {
+			return;
+		}
+
 		if ( $this->update_event_matcher->has_matching_event( $target_id, $version, $baseline ) ) {
 			return;
 		}
