@@ -50,4 +50,23 @@ class TargetResolverTest extends TestCase {
 
 		WPCV_Target_Resolver::body_id_of_stat( 'plugin:custom-plugin' );
 	}
+
+	/**
+	 * 本体ごとの未知ファイル走査 target の id を作り、本体の id に戻せることを確認する
+	 * (v0.7 §Step5). 領域全体の走査(`core:_scan`・`muplugin:_scan`)と、`:_scan` で
+	 * 終わらない id は null.
+	 *
+	 * @return void
+	 */
+	public function test_build_scan_id_and_body_id_of_scan() {
+		$this->assertSame( 'theme:acme:_scan', WPCV_Target_Resolver::build_scan_id( 'theme:acme' ) );
+		$this->assertSame( 'theme:acme', WPCV_Target_Resolver::body_id_of_scan( 'theme:acme:_scan' ) );
+		$this->assertSame( 'theme:collection/acme', WPCV_Target_Resolver::body_id_of_scan( 'theme:collection/acme:_scan' ) );
+
+		$this->assertNull( WPCV_Target_Resolver::body_id_of_scan( 'core:_scan' ) );
+		$this->assertNull( WPCV_Target_Resolver::body_id_of_scan( 'muplugin:_scan' ) );
+		$this->assertNull( WPCV_Target_Resolver::body_id_of_scan( 'theme:acme' ) );
+		$this->assertNull( WPCV_Target_Resolver::body_id_of_scan( 'theme:acme:_stat' ) );
+		$this->assertNull( WPCV_Target_Resolver::body_id_of_scan( ':_scan' ) );
+	}
 }

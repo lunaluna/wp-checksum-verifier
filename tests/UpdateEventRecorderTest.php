@@ -64,6 +64,42 @@ class UpdateEventRecorderTest extends TestCase {
 	protected function setUp(): void {
 		parent::setUp();
 		unset( $GLOBALS['_wpcv_test_plugin_data'], $GLOBALS['_wpcv_test_current_user_id'] );
+		$this->remove_fixture_themes();
+	}
+
+	/**
+	 * 作ったテーマのフィクスチャを消す(v0.7 §Step6).
+	 *
+	 * @return void
+	 */
+	protected function tearDown(): void {
+		$this->remove_fixture_themes();
+		parent::tearDown();
+	}
+
+	/**
+	 * ABSPATH の `wp-content` 以下を消す(このテストが作るのはテーマだけ).
+	 *
+	 * @return void
+	 */
+	private function remove_fixture_themes() {
+		$root = ABSPATH . 'wp-content';
+
+		if ( ! is_dir( $root ) ) {
+			return;
+		}
+
+		$iterator = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $root, FilesystemIterator::SKIP_DOTS ), RecursiveIteratorIterator::CHILD_FIRST );
+
+		foreach ( $iterator as $entry ) {
+			if ( $entry->isDir() ) {
+				rmdir( $entry->getPathname() );
+			} else {
+				unlink( $entry->getPathname() );
+			}
+		}
+
+		rmdir( $root );
 	}
 
 	/**
@@ -270,15 +306,219 @@ class UpdateEventRecorderTest extends TestCase {
 	}
 
 	/**
-	 * `type = theme` は記録しないことを確認する(D11。v0.7までテーマはtargetとして
-	 * 列挙されないため、念のための防御).
+	 * テーマのディレクトリと `style.css` を作る(v0.7 §Step6).
+	 *
+	 * @param string      $stylesheet テーマの stylesheet.
+	 * @param string|null $version    `Version:` ヘッダーの値. null なら style.css を作らない.
+	 * @return string テーマのディレクトリ.
+	 */
+	private function make_theme( $stylesheet, $version ) {
+		$dir = ABSPATH . 'wp-content/themes/' . $stylesheet;
+
+		if ( ! is_dir( $dir ) ) {
+			mkdir( $dir, 0777, true );
+		}
+
+		if ( null !== $version ) {
+			file_put_contents( $dir . '/style.css', "/*\nTheme Name: {$stylesheet}\nVersion: {$version}\n*/\n" );
+		}
+
+		return $dir;
+	}
+
+	/**
+	 * 記録された行を返す.
+	 *
+	 * @param WPCV_Test_Fake_WPDB $wpdb フェイク wpdb.
+	 * @return array<int, array>
+	 */
+	private static function event_rows( WPCV_Test_Fake_WPDB $wpdb ) {
+		return array_values( $wpdb->rows[ $wpdb->base_prefix . 'wpcv_update_events' ] ?? array() );
+	}
+
+	/**
+	 * テーマの単体更新・自動更新(`type=theme`・`action=update`・`theme`)で、
+	 * `style.css` から読み直した version が `theme_update` として記録される
+	 * (v0.7 §Step6. D9).
 	 *
 	 * @return void
 	 */
-	public function test_does_not_record_for_theme_type() {
-		$wpdb       = new WPCV_Test_Fake_WPDB();
-		$repository = new WPCV_Update_Event_Repository( $wpdb );
-		$recorder   = new WPCV_Update_Event_Recorder( $repository );
+	public function test_records_single_theme_update_with_version_from_style_css() {
+		$wpdb     = new WPCV_Test_Fake_WPDB();
+		$recorder = new WPCV_Update_Event_Recorder( new WPCV_Update_Event_Repository( $wpdb ) );
+
+		$this->make_theme( 'acme', '2.0.1' );
+
+		$recorder->handle_upgrader_process_complete(
+			new stdClass(),
+			array(
+				'theme'  => 'acme',
+				'type'   => 'theme',
+				'action' => 'update',
+			)
+		);
+
+		$rows = self::event_rows( $wpdb );
+		$this->assertCount( 1, $rows );
+		$this->assertSame( 'theme:acme', $rows[0]['target_id'] );
+		$this->assertSame( '2.0.1', $rows[0]['version'] );
+		$this->assertSame( 'theme_update', $rows[0]['source'] );
+	}
+
+	/**
+	 * テーマの一括更新(`bulk=true`・`themes` 配列)で、テーマごとに `theme_bulk_update` が
+	 * 記録される(v0.7 §Step6).
+	 *
+	 * @return void
+	 */
+	public function test_records_bulk_theme_update_for_each_theme() {
+		$wpdb     = new WPCV_Test_Fake_WPDB();
+		$recorder = new WPCV_Update_Event_Recorder( new WPCV_Update_Event_Repository( $wpdb ) );
+
+		$this->make_theme( 'acme', '2.0' );
+		$this->make_theme( 'beta', '3.1' );
+
+		$recorder->handle_upgrader_process_complete(
+			new stdClass(),
+			array(
+				'action' => 'update',
+				'type'   => 'theme',
+				'bulk'   => true,
+				'themes' => array( 'acme', 'beta' ),
+			)
+		);
+
+		$rows = self::event_rows( $wpdb );
+		$this->assertSame( array( 'theme:acme', 'theme:beta' ), array_column( $rows, 'target_id' ) );
+		$this->assertSame( array( '2.0', '3.1' ), array_column( $rows, 'version' ) );
+		$this->assertSame( array( 'theme_bulk_update', 'theme_bulk_update' ), array_column( $rows, 'source' ) );
+	}
+
+	/**
+	 * テーマのインストール(`action=install`. slug は無い)では `theme_info()` の
+	 * テーマのディレクトリから version を読み、`theme_install` として記録する(v0.7 §Step6).
+	 *
+	 * @return void
+	 */
+	public function test_records_theme_install_using_theme_info() {
+		$wpdb     = new WPCV_Test_Fake_WPDB();
+		$recorder = new WPCV_Update_Event_Recorder( new WPCV_Update_Event_Repository( $wpdb ) );
+		$dir      = $this->make_theme( 'acme', '1.0' );
+
+		$upgrader = new class( $dir ) {
+
+			/**
+			 * テーマのディレクトリ.
+			 *
+			 * @var string
+			 */
+			private $dir;
+
+			/**
+			 * コンストラクタ.
+			 *
+			 * @param string $dir テーマのディレクトリ.
+			 */
+			public function __construct( $dir ) {
+				$this->dir = $dir;
+			}
+
+			/**
+			 * `Theme_Upgrader::theme_info()` の代わり(`WP_Theme` の代わりの物を返す).
+			 *
+			 * @return object
+			 */
+			public function theme_info() {
+				$dir = $this->dir;
+
+				return new class( $dir ) {
+
+					/**
+					 * テーマのディレクトリ.
+					 *
+					 * @var string
+					 */
+					private $dir;
+
+					/**
+					 * コンストラクタ.
+					 *
+					 * @param string $dir テーマのディレクトリ.
+					 */
+					public function __construct( $dir ) {
+						$this->dir = $dir;
+					}
+
+					/**
+					 * Stylesheet を返す.
+					 *
+					 * @return string
+					 */
+					public function get_stylesheet() {
+						return basename( $this->dir );
+					}
+
+					/**
+					 * ディレクトリを返す.
+					 *
+					 * @return string
+					 */
+					public function get_stylesheet_directory() {
+						return $this->dir;
+					}
+				};
+			}
+		};
+
+		$recorder->handle_upgrader_process_complete(
+			$upgrader,
+			array(
+				'type'   => 'theme',
+				'action' => 'install',
+			)
+		);
+
+		$rows = self::event_rows( $wpdb );
+		$this->assertCount( 1, $rows );
+		$this->assertSame( 'theme:acme', $rows[0]['target_id'] );
+		$this->assertSame( '1.0', $rows[0]['version'] );
+		$this->assertSame( 'theme_install', $rows[0]['source'] );
+	}
+
+	/**
+	 * `style.css` が読めなければ version は null で記録する(D3 と同じ).
+	 *
+	 * @return void
+	 */
+	public function test_records_null_theme_version_when_style_css_is_missing() {
+		$wpdb     = new WPCV_Test_Fake_WPDB();
+		$recorder = new WPCV_Update_Event_Recorder( new WPCV_Update_Event_Repository( $wpdb ) );
+
+		$this->make_theme( 'broken', null );
+
+		$recorder->handle_upgrader_process_complete(
+			new stdClass(),
+			array(
+				'theme'  => 'broken',
+				'type'   => 'theme',
+				'action' => 'update',
+			)
+		);
+
+		$rows = self::event_rows( $wpdb );
+		$this->assertCount( 1, $rows );
+		$this->assertNull( $rows[0]['version'] );
+	}
+
+	/**
+	 * テーマの名前が無い更新・`theme_info()` を持たない install・`type` の無い発火
+	 * (子テーマと一緒に入る親テーマの `run()`)は何も記録しない(v0.7 §Step6).
+	 *
+	 * @return void
+	 */
+	public function test_does_not_record_theme_without_identifiable_stylesheet() {
+		$wpdb     = new WPCV_Test_Fake_WPDB();
+		$recorder = new WPCV_Update_Event_Recorder( new WPCV_Update_Event_Repository( $wpdb ) );
 
 		$recorder->handle_upgrader_process_complete(
 			new stdClass(),
@@ -287,9 +527,16 @@ class UpdateEventRecorderTest extends TestCase {
 				'action' => 'update',
 			)
 		);
+		$recorder->handle_upgrader_process_complete(
+			new stdClass(),
+			array(
+				'type'   => 'theme',
+				'action' => 'install',
+			)
+		);
+		$recorder->handle_upgrader_process_complete( new stdClass(), array() );
 
-		$table = $wpdb->base_prefix . 'wpcv_update_events';
-		$this->assertArrayNotHasKey( $table, $wpdb->rows );
+		$this->assertSame( array(), self::event_rows( $wpdb ) );
 	}
 
 	/**

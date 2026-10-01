@@ -1239,3 +1239,158 @@ if ( ! function_exists( 'network_admin_url' ) ) {
 		return 'http://example.com/wp-admin/network/' . ltrim( $path, '/' );
 	}
 }
+
+if ( ! function_exists( 'wp_parse_url' ) ) {
+	/**
+	 * Stub wp_parse_url() — PHP の parse_url() をそのまま呼ぶ(v0.7 §Step2.
+	 * `WPCV_Source_Wporg_Theme` の Update URI のホスト判定用. 本物は PHP 5.4.7 より
+	 * 前の不具合の回避を含むが、テストの PHP では不要).
+	 *
+	 * @param string $url       URL.
+	 * @param int    $component 取り出す部分(`PHP_URL_*`). -1 なら全体.
+	 * @return mixed
+	 */
+	function wp_parse_url( $url, $component = -1 ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return parse_url( $url, $component ); // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url
+	}
+}
+
+if ( ! function_exists( 'wp_delete_file' ) ) {
+	/**
+	 * Stub wp_delete_file() — ファイルを消す(v0.7 §Step2. 本物は
+	 * `wp_delete_file` フィルターを通してから unlink() する).
+	 *
+	 * @param string $file 消すファイルのパス.
+	 * @return void
+	 */
+	function wp_delete_file( $file ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		@unlink( $file ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.unlink_unlink
+	}
+}
+
+if ( ! class_exists( 'WPCV_Test_Fake_Theme' ) ) {
+	/**
+	 * `WP_Theme` の代わり(v0.7 §Step3. `WPCV_Context_Builder::describe_themes()` が
+	 * 呼ぶメソッドだけを持つ).
+	 */
+	class WPCV_Test_Fake_Theme {
+
+		/**
+		 * ヘッダー値(`Version`・`UpdateURI` など).
+		 *
+		 * @var array<string, string>
+		 */
+		private $headers;
+
+		/**
+		 * 親テーマの stylesheet.
+		 *
+		 * @var string
+		 */
+		private $template;
+
+		/**
+		 * テーマのディレクトリ.
+		 *
+		 * @var string
+		 */
+		private $stylesheet_dir;
+
+		/**
+		 * コンストラクタ.
+		 *
+		 * @param array  $headers        ヘッダー値.
+		 * @param string $template       親テーマの stylesheet.
+		 * @param string $stylesheet_dir テーマのディレクトリ.
+		 */
+		public function __construct( array $headers, $template, $stylesheet_dir ) {
+			$this->headers        = $headers;
+			$this->template       = $template;
+			$this->stylesheet_dir = $stylesheet_dir;
+		}
+
+		/**
+		 * ヘッダー値を返す(無ければ空文字列. 本物は false を返す場合がある).
+		 *
+		 * @param string $header ヘッダー名.
+		 * @return string
+		 */
+		public function get( $header ) {
+			return $this->headers[ $header ] ?? '';
+		}
+
+		/**
+		 * 親テーマの stylesheet を返す.
+		 *
+		 * @return string
+		 */
+		public function get_template() {
+			return $this->template;
+		}
+
+		/**
+		 * テーマのディレクトリを返す.
+		 *
+		 * @return string
+		 */
+		public function get_stylesheet_directory() {
+			return $this->stylesheet_dir;
+		}
+	}
+}
+
+if ( ! function_exists( 'wp_get_themes' ) ) {
+	/**
+	 * Stub wp_get_themes() — `$GLOBALS['_wpcv_test_themes']`(stylesheet =>
+	 * `WPCV_Test_Fake_Theme`)を返す. 渡された引数は `$GLOBALS['_wpcv_test_wp_get_themes_args']`
+	 * に記録する(v0.7 §Step3. `errors => null` で呼んでいるかを確かめるため).
+	 *
+	 * @param array $args 引数.
+	 * @return array
+	 */
+	function wp_get_themes( $args = array() ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_wp_get_themes_args'] = $args;
+
+		return $GLOBALS['_wpcv_test_themes'] ?? array();
+	}
+}
+
+if ( ! function_exists( 'get_theme_root' ) ) {
+	/**
+	 * Stub get_theme_root() — `$GLOBALS['_wpcv_test_theme_root']` を返す(無ければ
+	 * ABSPATH の `wp-content/themes`. v0.7 §Step6).
+	 *
+	 * @param string $stylesheet_or_template 無視する.
+	 * @return string
+	 */
+	function get_theme_root( $stylesheet_or_template = '' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		unset( $stylesheet_or_template );
+
+		return $GLOBALS['_wpcv_test_theme_root'] ?? ABSPATH . 'wp-content/themes';
+	}
+}
+
+if ( ! function_exists( 'get_file_data' ) ) {
+	/**
+	 * Stub get_file_data() — 実際のファイルの先頭 8KB からヘッダーを読む(v0.7 §Step6.
+	 * 本物〔wp-includes/functions.php〕の正規表現を簡略化したもの. `$context` の
+	 * フィルターは無い).
+	 *
+	 * @param string $file            ファイルのパス.
+	 * @param array  $default_headers キー => ヘッダー名.
+	 * @param string $context         無視する.
+	 * @return array<string, string>
+	 */
+	function get_file_data( $file, $default_headers, $context = '' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		unset( $context );
+
+		$contents = (string) file_get_contents( $file, false, null, 0, 8192 ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
+		$headers  = array();
+
+		foreach ( $default_headers as $key => $name ) {
+			$headers[ $key ] = 1 === preg_match( '/^(?:[ \t]*<\?php)?[ \t\/*#@]*' . preg_quote( $name, '/' ) . ':(.*)$/mi', $contents, $matches ) ? trim( $matches[1] ) : '';
+		}
+
+		return $headers;
+	}
+}

@@ -10,6 +10,8 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-error-code.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-file-hasher.php';
 require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-source.php';
 require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-source-core.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-manifest-cache-repository.php';
+require_once __DIR__ . '/doubles.php';
 
 use PHPUnit\Framework\TestCase;
 
@@ -126,5 +128,70 @@ class SourceCoreTest extends TestCase {
 
 		$source = new WPCV_Source_Core();
 		$source->get_manifest( array() );
+	}
+
+	/**
+	 * キャッシュを渡すと、1回目に取得したマニフェストを保存し、2回目は HTTP を出さずに
+	 * `cached` で同じ `files` を返すことを確認する(v0.7 §Step4. キーは locale と version).
+	 *
+	 * @return void
+	 */
+	public function test_caches_manifest_and_returns_cached_on_second_call() {
+		$GLOBALS['wp_local_package']         = 'ja';
+		$GLOBALS['_wpcv_test_core_checksums'] = array(
+			'ja' => array(
+				'wp-login.php'                            => 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+				'wp-content/themes/twentytwentyfive/a.css' => 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+			),
+		);
+
+		$cache  = new WPCV_Manifest_Cache_Repository( new WPCV_Test_Fake_WPDB() );
+		$first  = ( new WPCV_Source_Core( $cache ) )->get_manifest( array( 'version' => '6.8' ) );
+		$second = ( new WPCV_Source_Core( $cache ) )->get_manifest( array( 'version' => '6.8' ) );
+
+		$this->assertSame( 'ok', $first['manifest_status'] );
+		$this->assertSame( 'cached', $second['manifest_status'] );
+		$this->assertNull( $second['error_code'] );
+		$this->assertSame( $first['files'], $second['files'] );
+		$this->assertSame( array( array( '6.8', 'ja' ) ), $GLOBALS['_wpcv_test_core_checksums_calls'] );
+		$this->assertNotNull( $cache->find( WPCV_Manifest_Cache_Repository::SOURCE_CORE, 'ja', '6.8' ) );
+	}
+
+	/**
+	 * en_US に切り替えて取得したマニフェスト(`locale_fallback`)はキャッシュしないことを
+	 * 確認する(期限が無いので、後でその locale のマニフェストが公開されても切り替わらなく
+	 * なるため). 次の呼び出しは再び locale のマニフェストを取りに行く.
+	 *
+	 * @return void
+	 */
+	public function test_does_not_cache_locale_fallback() {
+		$GLOBALS['wp_local_package']         = 'ja';
+		$GLOBALS['_wpcv_test_core_checksums'] = array(
+			'en_US' => array( 'wp-login.php' => 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ),
+		);
+
+		$cache  = new WPCV_Manifest_Cache_Repository( new WPCV_Test_Fake_WPDB() );
+		$source = new WPCV_Source_Core( $cache );
+
+		$this->assertSame( 'locale_fallback', $source->get_manifest( array( 'version' => '6.8' ) )['manifest_status'] );
+		$this->assertNull( $cache->find( WPCV_Manifest_Cache_Repository::SOURCE_CORE, 'ja', '6.8' ) );
+		$this->assertNull( $cache->find( WPCV_Manifest_Cache_Repository::SOURCE_CORE, 'en_US', '6.8' ) );
+
+		$GLOBALS['_wpcv_test_core_checksums']['ja'] = array( 'wp-login.php' => 'cccccccccccccccccccccccccccccccc' );
+
+		$this->assertSame( 'ok', $source->get_manifest( array( 'version' => '6.8' ) )['manifest_status'] );
+	}
+
+	/**
+	 * 取得できなかった場合(`manifest_not_found`)もキャッシュしないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_does_not_cache_missing_manifest() {
+		$wpdb   = new WPCV_Test_Fake_WPDB();
+		$source = new WPCV_Source_Core( new WPCV_Manifest_Cache_Repository( $wpdb ) );
+
+		$this->assertSame( WPCV_Error_Code::MANIFEST_NOT_FOUND, $source->get_manifest( array( 'version' => '6.8' ) )['error_code'] );
+		$this->assertArrayNotHasKey( 'wp_wpcv_manifest_cache', $wpdb->rows );
 	}
 }

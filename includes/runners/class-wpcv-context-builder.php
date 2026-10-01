@@ -48,6 +48,43 @@ class WPCV_Context_Builder {
 			$context['mu_plugins']    = get_mu_plugins();
 		}
 
+		$context['themes'] = self::describe_themes();
+
 		return $context;
+	}
+
+	/**
+	 * インストールされているテーマを、`WPCV_Run_Planner`・`WPCV_Chunk_Dispatcher` が
+	 * 使う形にまとめる(v0.7 §3.3).
+	 *
+	 * `errors => null` で、エラーのあるテーマ(親テーマが無い子テーマなど)も含める.
+	 * 既定の `errors => false` はそれらを隠す(`wp-includes/theme.php:92-95`)が、
+	 * そうしたテーマこそ stat で見たい(D5). マルチサイトでも `allowed` を指定しない
+	 * ので、どのサイトで有効かに関係なく、ディスク上の全テーマが対象になる
+	 * (照合はインストール全体が単位. `WPCV_Migrator` のクラス docblock 参照).
+	 *
+	 * ディレクトリは `get_stylesheet_directory()` で取る. `register_theme_directory()` で
+	 * テーマのルートが複数ありうるため、`WP_CONTENT_DIR . '/themes/'` から組み立てない(§1.5).
+	 *
+	 * @return array<string, array{version: string, template: string, stylesheet_dir: string, update_uri: string}>
+	 *         stylesheet をキーにした配列.
+	 */
+	private static function describe_themes() {
+		if ( ! function_exists( 'wp_get_themes' ) ) {
+			return array();
+		}
+
+		$themes = array();
+
+		foreach ( wp_get_themes( array( 'errors' => null ) ) as $stylesheet => $theme ) {
+			$themes[ (string) $stylesheet ] = array(
+				'version'        => (string) $theme->get( 'Version' ),
+				'template'       => (string) $theme->get_template(),
+				'stylesheet_dir' => (string) $theme->get_stylesheet_directory(),
+				'update_uri'     => (string) $theme->get( 'UpdateURI' ),
+			);
+		}
+
+		return $themes;
 	}
 }

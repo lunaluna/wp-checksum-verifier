@@ -49,7 +49,7 @@ class WPCV_API {
 	 * @param array $args {
 	 *     絞り込み条件.
 	 *
-	 *     @type array $dimension core|plugin|theme|muplugin.
+	 *     @type array $dimension core|plugin|theme|muplugin|dropin.
 	 *     @type array $status    success|unverifiable|failed|skipped|retried.
 	 *     @type int   $limit     既定 0(無制限).
 	 * }
@@ -110,7 +110,7 @@ class WPCV_API {
 	 * @param array $args {
 	 *     絞り込み条件.
 	 *
-	 *     @type array $dimension           core|plugin|theme|muplugin.
+	 *     @type array $dimension           core|plugin|theme|muplugin|dropin.
 	 *     @type array $status              modified|added|missing|unreadable|stat_changed
 	 *                                      (`stat_changed`はv0.5 §Step8で追加.
 	 *                                      v0.5後半 §16でdocblockに書き足した).

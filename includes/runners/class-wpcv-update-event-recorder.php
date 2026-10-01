@@ -19,8 +19,9 @@ if ( ! defined( 'ABSPATH' ) ) {
  * `upgrader_post_install` は使わない(コア更新では呼ばれず、翻訳の一括更新が
  * `remove_all_filters()` するため。プラン§1.4参照).
  *
- * テーマ・翻訳の更新イベントはv0.6では記録しない(D11。翻訳ファイルはどの
- * 走査の対象でもなく、テーマはv0.7までtargetとして列挙されないため).
+ * 翻訳の更新イベントは記録しない(v0.6 D11。翻訳ファイルはどの走査の対象でもない
+ * ため)。テーマは v0.7 §Step6(D9)から記録する(v0.7 でテーマが target になったため。
+ * 経路と `$hook_extra` の形は v0.7 プラン §1.3 参照).
  *
  * 記録する version は「フックの時点でディスクから読み直した値」であり、更新が
  * 成功したかどうかは判定しない(D3)。`upgrader_process_complete` は
@@ -83,15 +84,19 @@ class WPCV_Update_Event_Recorder {
 	 * @return void
 	 */
 	private function process_hook_extra( $upgrader, array $hook_extra ) {
-		$type = isset( $hook_extra['type'] ) ? (string) $hook_extra['type'] : '';
+		$type   = isset( $hook_extra['type'] ) ? (string) $hook_extra['type'] : '';
+		$action = isset( $hook_extra['action'] ) ? (string) $hook_extra['action'] : '';
 
-		if ( 'plugin' !== $type ) {
-			// core は `_core_updated_successfully` で処理する(D2)。theme/translationは
-			// D11のとおり記録しない.
+		if ( 'theme' === $type ) {
+			$this->process_theme_hook_extra( $upgrader, $action, $hook_extra );
 			return;
 		}
 
-		$action = isset( $hook_extra['action'] ) ? (string) $hook_extra['action'] : '';
+		if ( 'plugin' !== $type ) {
+			// core は `_core_updated_successfully` で処理する(D2)。translation は
+			// D11のとおり記録しない.
+			return;
+		}
 
 		if ( 'install' === $action ) {
 			$this->record_install( $upgrader );
@@ -112,6 +117,105 @@ class WPCV_Update_Event_Recorder {
 		if ( ! empty( $hook_extra['plugin'] ) ) {
 			$this->record_plugin( (string) $hook_extra['plugin'], 'plugin_update' );
 		}
+	}
+
+	/**
+	 * テーマの経路を判定して記録する(v0.7 §Step6. D9. 経路は v0.7 プラン §1.3 の表).
+	 *
+	 * | 経路                    | `$hook_extra`                                       | source              |
+	 * |-------------------------|-----------------------------------------------------|---------------------|
+	 * | install(zip の上書きも)| `action = install`. slug は無い → `theme_info()`    | `theme_install`     |
+	 * | 単体の更新・自動更新    | `action = update`・`theme`                          | `theme_update`      |
+	 * | 一括更新                | `action = update`・`bulk = true`・`themes`(配列)  | `theme_bulk_update` |
+	 *
+	 * 子テーマのインストールで親テーマが自動で入る経路(`Theme_Upgrader::check_parent_theme_filter()`)
+	 * では、親テーマの `run()` に `hook_extra` が渡らない(`class-theme-upgrader.php:173-180`)
+	 * ので、`type` の無い発火になり親テーマは記録されない. 新しく入ったテーマには前回の
+	 * 照合結果が無く、突き合わせ(D5)自体が起きないので害は無い.
+	 *
+	 * @param mixed  $upgrader   更新処理を行った upgrader インスタンス(通常は `Theme_Upgrader`).
+	 * @param string $action     `install` / `update`.
+	 * @param array  $hook_extra `handle_upgrader_process_complete()` から渡された配列.
+	 * @return void
+	 */
+	private function process_theme_hook_extra( $upgrader, $action, array $hook_extra ) {
+		if ( 'install' === $action ) {
+			if ( ! is_object( $upgrader ) || ! method_exists( $upgrader, 'theme_info' ) ) {
+				return;
+			}
+
+			$theme = $upgrader->theme_info();
+
+			if ( ! is_object( $theme ) || ! method_exists( $theme, 'get_stylesheet' ) ) {
+				return;
+			}
+
+			$this->record_theme( (string) $theme->get_stylesheet(), 'theme_install', (string) $theme->get_stylesheet_directory() );
+			return;
+		}
+
+		if ( 'update' !== $action ) {
+			return;
+		}
+
+		if ( ! empty( $hook_extra['bulk'] ) && ! empty( $hook_extra['themes'] ) && is_array( $hook_extra['themes'] ) ) {
+			foreach ( $hook_extra['themes'] as $stylesheet ) {
+				$this->record_theme( (string) $stylesheet, 'theme_bulk_update' );
+			}
+			return;
+		}
+
+		if ( ! empty( $hook_extra['theme'] ) ) {
+			$this->record_theme( (string) $hook_extra['theme'], 'theme_update' );
+		}
+	}
+
+	/**
+	 * 1件のテーマの更新イベントを記録する(v0.7 §Step6).
+	 *
+	 * @param string      $stylesheet テーマの stylesheet.
+	 * @param string      $source     `theme_update` / `theme_bulk_update` / `theme_install`.
+	 * @param string|null $dir        テーマのディレクトリ. 省略時は `get_theme_root( $stylesheet )`
+	 *                                から組み立てる(`register_theme_directory()` で複数の
+	 *                                テーマのルートがありうるため、`WP_CONTENT_DIR` からは組み立てない).
+	 * @return void
+	 */
+	private function record_theme( $stylesheet, $source, $dir = null ) {
+		if ( '' === $stylesheet ) {
+			return;
+		}
+
+		$dir = null === $dir ? rtrim( (string) get_theme_root( $stylesheet ), '/' ) . '/' . $stylesheet : $dir;
+
+		$this->repository->insert(
+			WPCV_Target_Resolver::build_id( WPCV_Target_Resolver::DIMENSION_THEME, $stylesheet ),
+			self::read_theme_version( $dir ),
+			$source,
+			get_current_user_id()
+		);
+	}
+
+	/**
+	 * フックの時点でディスクから テーマの version を読み直す(D9. プラグインの D4 と同じ考え方).
+	 *
+	 * `wp_get_theme()` は使わない. `WP_Theme` は `themes` グループのキャッシュに
+	 * ヘッダーを持ち、自動更新(`clear_update_cache => false`. `class-wp-automatic-updater.php:481`)
+	 * ではフックの時点でキャッシュが消えていない. `style.css` を直接読む.
+	 *
+	 * @param string $dir テーマのディレクトリ.
+	 * @return string|null 読めなければ null.
+	 */
+	private static function read_theme_version( $dir ) {
+		$style = rtrim( $dir, '/' ) . '/style.css';
+
+		if ( ! is_readable( $style ) ) {
+			return null;
+		}
+
+		$data    = get_file_data( $style, array( 'Version' => 'Version' ), 'theme' );
+		$version = isset( $data['Version'] ) ? (string) $data['Version'] : '';
+
+		return '' === $version ? null : $version;
 	}
 
 	/**

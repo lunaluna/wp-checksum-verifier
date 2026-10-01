@@ -18,6 +18,8 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-update-lock-detec
 require_once dirname( __DIR__ ) . '/includes/sources/interface-wpcv-manifest-source.php';
 require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-source-core.php';
 require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-source-wporg-plugin.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-manifest-cache-repository.php';
+require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-source-wporg-theme.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-verifier.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';

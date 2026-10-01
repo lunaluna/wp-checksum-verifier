@@ -616,6 +616,8 @@ class WPCV_Test_Fake_WPDB {
 
 		if ( 1 === preg_match( '/^INSERT INTO\s+(\S+)\s*\(([^)]+)\)\s*VALUES\s*(.+?)\s*ON DUPLICATE KEY UPDATE/is', $query, $matches ) ) {
 			$this->apply_bulk_upsert( $matches[1], $matches[2], $matches[3] );
+		} elseif ( 1 === preg_match( '/^INSERT IGNORE INTO\s+(\S+)\s*\(([^)]+)\)\s*VALUES\s*\((.+)\)\s*$/is', $query, $matches ) ) {
+			return $this->apply_insert_ignore( $matches[1], $matches[2], $matches[3] );
 		} elseif ( 1 === preg_match( '/^UPDATE\s+(\S+)\s+SET\s+(.+?)\s+WHERE\s+(.+)$/is', $query, $matches ) ) {
 			$this->apply_bulk_update( $matches[1], $matches[2], $matches[3] );
 		}
@@ -829,6 +831,69 @@ class WPCV_Test_Fake_WPDB {
 	}
 
 	/**
+	 * テーブルごとの一意キーの列(`apply_insert_ignore()` が重複を判定するのに使う.
+	 * 本番のスキーマの UNIQUE KEY と同じ列を書く. `WPCV_Migrator::table_definitions()` 参照).
+	 *
+	 * @var array<string, string[]>
+	 */
+	public $unique_keys_by_table = array(
+		'wp_wpcv_manifest_cache' => array( 'source', 'slug', 'version' ),
+	);
+
+	/**
+	 * `INSERT IGNORE INTO {table} (cols) VALUES (...)`(1行)を解釈し、`$this->rows` へ
+	 * 反映する(`query()` 専用のヘルパー. v0.7 §Step1: `WPCV_Manifest_Cache_Repository::save()`
+	 * 用). `$unique_keys_by_table` の列がすべて一致する行が既にあれば何もせず 0 を返す
+	 * (本番の `INSERT IGNORE` が重複キーの行を捨て、影響行数 0 を返すのと同じ).
+	 *
+	 * @param string $table       テーブル名.
+	 * @param string $columns_str カラム名のカンマ区切り文字列(括弧の中身).
+	 * @param string $values_str  `VALUES` の括弧の中身(1タプル分).
+	 * @return int 追加した行数(0 または 1).
+	 */
+	private function apply_insert_ignore( $table, $columns_str, $values_str ) {
+		$columns  = array_map( 'trim', explode( ',', $columns_str ) );
+		$literals = $this->split_sql_value_literals( $values_str );
+		$row      = array();
+
+		foreach ( $columns as $index => $column ) {
+			$row[ $column ] = $this->parse_sql_value_literal( $literals[ $index ] );
+		}
+
+		$unique_columns = $this->unique_keys_by_table[ $table ] ?? array();
+
+		foreach ( $this->rows[ $table ] ?? array() as $existing_row ) {
+			if ( array() === $unique_columns ) {
+				break;
+			}
+
+			$same = true;
+
+			foreach ( $unique_columns as $column ) {
+				if ( ( $existing_row[ $column ] ?? null ) !== $row[ $column ] ) {
+					$same = false;
+					break;
+				}
+			}
+
+			if ( $same ) {
+				return 0;
+			}
+		}
+
+		if ( ! isset( $this->next_id[ $table ] ) ) {
+			$this->next_id[ $table ] = 1;
+		}
+
+		$id                          = $this->next_id[ $table ]++;
+		$row['id']                   = $id;
+		$this->rows[ $table ][ $id ] = $row;
+		$this->insert_id             = $id;
+
+		return 1;
+	}
+
+	/**
 	 * SQLの値リテラル列("'a', 123, NULL, 'b'" のような文字列)を、各要素の
 	 * 生文字列表現の配列に分割する(`apply_bulk_upsert()` 専用のヘルパー).
 	 *
@@ -987,6 +1052,9 @@ class WPCV_Test_Fake_WPDB {
  *                                                          のクラス docblock 参照).
  * @param WPCV_Update_Event_Matcher|null $update_event_matcher   D5・D6の突き合わせ(v0.6 §Step4).
  *                                                          省略時は`null`(既存v0.5の挙動のまま).
+ * @param WPCV_Manifest_Source|null      $theme_source           公式テーマ照合ソース(v0.7 §Step3).
+ *                                                          省略時は`null`(テーマの本体は
+ *                                                          unknown_sourceになる).
  * @return array{
  *     coordinator: WPCV_Run_Coordinator,
  *     dispatcher: WPCV_Chunk_Dispatcher,
@@ -1001,7 +1069,7 @@ class WPCV_Test_Fake_WPDB {
  *     wpdb: WPCV_Test_Fake_WPDB,
  * }
  */
-function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = null, $continuation_scheduler = null, ?WPCV_Update_Event_Matcher $update_event_matcher = null ) {
+function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = null, $continuation_scheduler = null, ?WPCV_Update_Event_Matcher $update_event_matcher = null, ?WPCV_Manifest_Source $theme_source = null ) {
 	$core_source   = $core_source ?? new WPCV_Test_Fake_Manifest_Source(
 		array(
 			'manifest_status' => 'ok',
@@ -1055,7 +1123,9 @@ function wpcv_test_make_fake_environment( $core_source = null, $plugin_source = 
 		},
 		$file_state_repository,
 		null,
-		$update_event_matcher
+		$update_event_matcher,
+		null,
+		$theme_source
 	);
 
 	$coordinator = new WPCV_Run_Coordinator( new WPCV_Run_Planner( $suppression_repository ), $run_repository, $target_run_repository, $dispatcher );

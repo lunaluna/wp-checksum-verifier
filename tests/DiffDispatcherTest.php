@@ -346,15 +346,16 @@ class DiffDispatcherTest extends TestCase {
 	 * 今回runとtarget_runを1組作る(`test_dispatch_diff_version_changed_mode`と
 	 * 同じ構成。基準runのstarted_atは固定の`self::NOW`).
 	 *
-	 * @param array $env `make_environment()`の戻り値.
+	 * @param array  $env       `make_environment()`の戻り値.
+	 * @param string $target_id 対象の target_id(v0.7 §Step6 でテーマも確かめるため引数にした).
 	 * @return array{run_id: int, target_run_id: int, baseline_run_id: int}
 	 */
-	private function make_version_changed_scenario( array $env ) {
+	private function make_version_changed_scenario( array $env, $target_id = 'plugin:foo' ) {
 		$baseline_run_id = $this->make_run_ready_for_diff( $env['run_repository'] );
-		$this->insert_target_run( $env['wpdb'], $baseline_run_id, array( 'target_id' => 'plugin:foo', 'version' => '1.0' ) );
+		$this->insert_target_run( $env['wpdb'], $baseline_run_id, array( 'target_id' => $target_id, 'version' => '1.0' ) );
 
 		$run_id        = $this->make_run_ready_for_diff( $env['run_repository'] );
-		$target_run_id = $this->insert_target_run( $env['wpdb'], $run_id, array( 'target_id' => 'plugin:foo', 'version' => '2.0' ) );
+		$target_run_id = $this->insert_target_run( $env['wpdb'], $run_id, array( 'target_id' => $target_id, 'version' => '2.0' ) );
 
 		return array(
 			'run_id'          => $run_id,
@@ -400,6 +401,51 @@ class DiffDispatcherTest extends TestCase {
 			WPCV_Error_Code::VERSION_CHANGED_UNRECORDED,
 			$env['wpdb']->rows['wp_wpcv_target_runs'][ $scenario['target_run_id'] ]['error_code']
 		);
+	}
+
+	/**
+	 * v0.7 §Step6(D9): テーマの本体 target(`theme:{stylesheet}`)でも、記録
+	 * (`theme_update`)があれば `error_code` を書かず、無ければ `version_changed_unrecorded`
+	 * を書くことを確認する(突き合わせは target_id だけで行うので、テーマにもそのまま効く).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_diff_version_changed_mode_matches_theme_update_events() {
+		$GLOBALS['_wpcv_test_options']['wpcv_update_events_since'] = '2020-01-01 00:00:00';
+
+		$recorded = $this->make_environment();
+		$scenario = $this->make_version_changed_scenario( $recorded, 'theme:acme' );
+		$this->insert_update_event( $recorded['wpdb'], 'theme:acme', '2.0', 'theme_update' );
+		$recorded['dispatcher']->dispatch_diff( $scenario['run_id'] );
+
+		$this->assertNull( $recorded['wpdb']->rows['wp_wpcv_target_runs'][ $scenario['target_run_id'] ]['error_code'] );
+
+		$unrecorded = $this->make_environment();
+		$scenario   = $this->make_version_changed_scenario( $unrecorded, 'theme:acme' );
+		// 別のテーマの記録は一致しない.
+		$this->insert_update_event( $unrecorded['wpdb'], 'theme:other', '2.0', 'theme_update' );
+		$unrecorded['dispatcher']->dispatch_diff( $scenario['run_id'] );
+
+		$this->assertSame(
+			WPCV_Error_Code::VERSION_CHANGED_UNRECORDED,
+			$unrecorded['wpdb']->rows['wp_wpcv_target_runs'][ $scenario['target_run_id'] ]['error_code']
+		);
+	}
+
+	/**
+	 * v0.7 §Step6 是正: テーマの `:_scan` には、記録が無くても印を付けない
+	 * (version の変化は本体の target_run に付くので、二重に通知しない).
+	 *
+	 * @return void
+	 */
+	public function test_dispatch_diff_theme_scan_target_is_never_flagged() {
+		$GLOBALS['_wpcv_test_options']['wpcv_update_events_since'] = '2020-01-01 00:00:00';
+
+		$env      = $this->make_environment();
+		$scenario = $this->make_version_changed_scenario( $env, 'theme:acme:_scan' );
+		$env['dispatcher']->dispatch_diff( $scenario['run_id'] );
+
+		$this->assertNull( $env['wpdb']->rows['wp_wpcv_target_runs'][ $scenario['target_run_id'] ]['error_code'] );
 	}
 
 	/**

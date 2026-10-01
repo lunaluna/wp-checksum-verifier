@@ -79,6 +79,8 @@ jobs:
         with:
           php-version: '8.1'
           coverage: none
+          # SourceWporgThemeTest builds real zip files with ZipArchive (v0.7 Step2).
+          extensions: zip
 
       - name: Install Composer dependencies
         uses: ramsey/composer-install@v3

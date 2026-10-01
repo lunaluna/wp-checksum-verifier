@@ -2,6 +2,64 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0] - 2026-10-01
+
+### Added
+
+- **Official theme verification.** Each installed theme is compared against
+  a manifest built from its wordpress.org zip
+  (`downloads.wordpress.org/theme/{slug}.{version}.zip`; wordpress.org has
+  no theme checksum API). The zip is hashed while being read and never
+  extracted to disk. Each theme gets three targets: `theme:{stylesheet}`
+  (checksum comparison), `theme:{stylesheet}:_stat` (stat-based change
+  detection for themes that are not on wordpress.org or cannot be compared
+  with it), and `theme:{stylesheet}:_scan` (unknown files in themes that
+  were compared). Themes with errors (e.g. a child theme without its
+  parent) are included.
+- Themes whose `Update URI` header points to a host other than
+  `wordpress.org`/`w.org` (including `false`), themes in a sub-directory of
+  the theme root, and themes with an empty version are not compared against
+  wordpress.org (no download) and go to stat-based change detection.
+- Zip safety checks before any file is read (absolute paths, drive letters,
+  `..`/`.`/empty segments, control characters, a root other than
+  `{slug}/`, symlinks, duplicate names) and provisional size limits:
+  download 100 MB, 20,000 entries, 50 MB per file, 500 MB in total,
+  compression ratio 100 — each adjustable with a
+  `wpcv_theme_zip_max_*` filter. Download timeout 30 seconds
+  (`wpcv_theme_zip_download_timeout`); measured at most about 2 seconds per
+  theme on shared hosting (Xserver) and 4.6 seconds locally.
+- **Manifest cache** (new database table `wpcv_manifest_cache`, schema
+  version 7). Theme manifests are reused until the theme's version
+  changes, and the WordPress core manifest is cached too (except an
+  `en_US` fallback). Rows for themes/versions that no longer appear in a
+  run are deleted when a run ends as `success` or `partial`.
+- Theme installs and updates are now recorded as update events
+  (`theme_install`/`theme_update`/`theme_bulk_update`), so a theme updated
+  through WordPress is not reported as a version change without an update.
+
+### Changed
+
+- **Core verification no longer checks files under `wp-content/themes/`.**
+  Themes bundled with core are verified by their theme target instead,
+  where each file is accepted if it matches either the wordpress.org zip
+  or the core checksums (a bundled copy can differ from the zip of the same
+  version). Previously, updating a bundled theme from wordpress.org ahead
+  of core made core verification report the updated files as `modified`
+  (reproduced with 75 files).
+- The core target's `manifest_status` is now `cached` from the second run
+  on, and its `files_total` no longer includes `wp-content/themes/`.
+
+### Known limitations
+
+- Older default themes no longer bundled with core can differ from their
+  wordpress.org zip by build differences only (e.g. a re-minified
+  `style.min.css`) and show up as `modified` on the first run; approve them
+  with `allowlist_hash` (the approval expires when the theme is updated).
+- On a server without PHP's ZipArchive extension, themes are reported as
+  `unverifiable` (`ziparchive_missing`) on every run and are not checked by
+  stat-based change detection either; this does not trigger the
+  repeated-unverifiable alert.
+
 ## [0.6.0] - 2026-10-01
 
 ### Added

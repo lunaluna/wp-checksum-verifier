@@ -3,7 +3,7 @@
  * Plugin Name:       WP Checksum Verifier
  * Plugin URI:        https://github.com/lunaluna/wp-checksum-verifier
  * Description:       WordPress コア・プラグイン・テーマ・MU プラグインの checksum を日次で検証し、改ざんを検出するプラグイン.
- * Version:           0.6.0
+ * Version:           0.7.0
  * Requires at least: 6.8
  * Tested up to:      7.1
  * Requires PHP:      7.4
@@ -44,8 +44,11 @@ if ( ! defined( 'ABSPATH' ) ) {
  *
  * 更新イベント連動(v0.6プラン§2.1・D1)用に `wpcv_update_events` テーブルを
  * 新設したため、v0.6 §Step1で6へ更新した(`WPCV_Migrator::table_definitions()` 参照).
+ *
+ * テーマ照合(v0.7プラン§3.1・U3)のマニフェストキャッシュ用に
+ * `wpcv_manifest_cache` テーブルを新設したため、v0.7 §Step1で7へ更新した.
  */
-define( 'WPCV_DB_VERSION', 6 );
+define( 'WPCV_DB_VERSION', 7 );
 
 /**
  * Public API contract のバージョン. 後方互換を維持する契約(§10).
@@ -143,11 +146,14 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-file-hash
 require_once plugin_dir_path( __FILE__ ) . 'includes/engine/class-wpcv-path-normalizer.php';
 
 /**
- * 照合ソース(§3). コア照合(§3.2)と wp.org 公式プラグイン照合(§3.4).
+ * 照合ソース(§3). コア照合(§3.2)と wp.org 公式プラグイン照合(§3.4)、
+ * wp.org 公式テーマ照合(v0.7 §3.2. zip から作ったマニフェストを
+ * `WPCV_Manifest_Cache_Repository` に保存する).
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/interface-wpcv-manifest-source.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-core.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-wporg-plugin.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/sources/class-wpcv-source-wporg-theme.php';
 
 /**
  * Chunk予算(時間・件数・メモリ)判定の共有ロジック(v0.4.0コードレビューCR-08是正)。
@@ -235,6 +241,13 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-file-state-repos
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-update-event-repository.php';
 
 /**
+ * マニフェストキャッシュ(`wpcv_manifest_cache`)の永続化層(v0.7 §Step1). テーマの
+ * マニフェストのソース(v0.7 Step2)とコアのマニフェスト(Step4)から使う. 他クラスからの
+ * 依存はまだ無いため読み込み順の制約は無いが、他のRepository群と同じ場所にまとめる.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-manifest-cache-repository.php';
+
+/**
  * D5・D6の突き合わせ(v0.6 §Step3・§Step4)。`WPCV_Diff_Dispatcher`・
  * `WPCV_Chunk_Dispatcher`の両方がコンストラクタで型宣言するため、それより
  * 前に読み込む必要がある。`WPCV_Update_Event_Repository`・`WPCV_Run_Repository`
@@ -297,6 +310,13 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-run-fail
  * (`WPCV_Run_Failure_Alerter` の登録と同じ理由).
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-update-event-recorder.php';
+
+/**
+ * Run の終端でのマニフェストキャッシュの掃除(v0.7 §Step7. D4). `wpcv_run_terminated` の
+ * ハンドラをファイル末尾で登録する. `WPCV_Update_Event_Recorder` と同じ理由で、
+ * `WPCV_Plugin` 本体より前に読み込んでも問題ない.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-manifest-cache-cleaner.php';
 
 /**
  * Run開始時の「列挙(plan)→保存」を失敗時の後始末込みで行う共通処理

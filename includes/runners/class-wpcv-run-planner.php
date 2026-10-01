@@ -64,6 +64,9 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 見ずに常に列挙する。実在するファイルの絞り込みはここでは行わない(クラス
  * docblock「ファイルシステムアクセスを一切行わない」不変条件のまま。
  * `WPCV_Chunk_Dispatcher` が dispatch 時点で絞り込む).
+ * v0.7 §Step3 で、プラグインの後にテーマ(`theme:{stylesheet}` と `:_stat`)を
+ * 列挙するようにした(`$context['themes']`). §Step5 で `:_scan` も足した
+ * (テーマの数 × 3 件増える. stat 差分検知が無効なら × 2).
  */
 class WPCV_Run_Planner {
 
@@ -123,6 +126,9 @@ class WPCV_Run_Planner {
 	 *                                 MU プラグイン領域を列挙しない.
 	 *     @type array  $mu_plugins    `get_mu_plugins()` と同じ形式(ファイル名 =>
 	 *                                 ヘッダー配列。キーのみ使う). 既定は空配列.
+	 *     @type array  $themes        stylesheet => `version` 等(v0.7 §Step3.
+	 *                                 `WPCV_Context_Builder::describe_themes()` の形).
+	 *                                 既定は空配列.
 	 * }
 	 * @return array `WPCV_Target_Status::QUEUED` 状態の target_run の配列
 	 *               (id/run_id 無し。§5.3 のスキーマに準拠).
@@ -221,6 +227,46 @@ class WPCV_Run_Planner {
 			if ( $this->stat_detection_enabled ) {
 				$target_runs[] = $this->maybe_apply_exclude_target( self::queued_stat_target_run( $body_target_id, WPCV_Target_Resolver::DIMENSION_PLUGIN, $resolved['slug'], $plugin_version ) );
 			}
+		}
+
+		// v0.7 §3.3(D5): テーマごとに本体(`theme:{stylesheet}`. WordPress.org の zip と
+		// 照合)、stat 差分検知が有効なら `:_stat`、未知ファイル走査の `:_scan`(Step5)を
+		// この順で列挙する. WordPress.org と照合しない条件(D6)の判定は、ここではなく
+		// 照合ソースが行う(version の空・入れ子・Update URI. どれも HTTP を出さずに
+		// unverifiable になり、`:_stat` が走査する).
+		$themes = isset( $context['themes'] ) ? (array) $context['themes'] : array();
+
+		foreach ( $themes as $stylesheet => $theme ) {
+			$theme_version  = isset( $theme['version'] ) ? (string) $theme['version'] : '';
+			$body_target_id = WPCV_Target_Resolver::build_id( WPCV_Target_Resolver::DIMENSION_THEME, (string) $stylesheet );
+
+			$target_runs[] = $this->maybe_apply_exclude_target(
+				self::queued_target_run(
+					$body_target_id,
+					WPCV_Target_Resolver::DIMENSION_THEME,
+					(string) $stylesheet,
+					'' === $theme_version ? null : $theme_version,
+					'wporg'
+				)
+			);
+
+			if ( $this->stat_detection_enabled ) {
+				$target_runs[] = $this->maybe_apply_exclude_target( self::queued_stat_target_run( $body_target_id, WPCV_Target_Resolver::DIMENSION_THEME, (string) $stylesheet, $theme_version ) );
+			}
+
+			// v0.7 §Step5(D8・U5): 未知ファイルの走査. 本体が wp.org と照合できたとき
+			// だけ走査する判定は dispatcher が行う(ここでは無条件に列挙する). stat ではない
+			// ので `stat_detection_enabled` とは無関係. 本体と同じ dimension/slug を持つ
+			// ので、本体の `exclude_target` もそのまま効く.
+			$target_runs[] = $this->maybe_apply_exclude_target(
+				self::queued_target_run(
+					WPCV_Target_Resolver::build_scan_id( $body_target_id ),
+					WPCV_Target_Resolver::DIMENSION_THEME,
+					(string) $stylesheet,
+					'' === $theme_version ? null : $theme_version,
+					'wporg'
+				)
+			);
 		}
 
 		if ( ! empty( $context['mu_plugin_dir'] ) ) {

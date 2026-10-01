@@ -449,4 +449,129 @@ class RunPlannerTest extends TestCase {
 		// plugin + loader + muplugin:_scan の7件.
 		$this->assertCount( 7, $target_runs );
 	}
+
+	/**
+	 * テーマごとに本体(`theme:{stylesheet}`. source = wporg)・`:_stat`(source = stat)・
+	 * `:_scan`(v0.7 §Step5)がこの順で、プラグインの後・MU プラグインの前に列挙される
+	 * ことを確認する(v0.7 §3.3).
+	 * Version が空のテーマは version を null にする(照合ソースが `version_unknown` を返す).
+	 * 入れ子のテーマ(`dir/sub`)も target_id にそのまま入る.
+	 *
+	 * @return void
+	 */
+	public function test_plan_lists_theme_body_and_stat_targets() {
+		$planner     = new WPCV_Run_Planner( new WPCV_Suppression_Repository( new WPCV_Test_Fake_WPDB() ) );
+		$target_runs = $planner->plan(
+			array(
+				'version'       => '6.8',
+				'plugins'       => array( 'akismet/akismet.php' => array( 'Version' => '5.3' ) ),
+				'plugin_dir'    => '/var/www/wp-content/plugins',
+				'mu_plugin_dir' => '/var/www/wp-content/mu-plugins',
+				'mu_plugins'    => array(),
+				'themes'        => array(
+					'twentytwentyfive' => array( 'version' => '1.5' ),
+					'collection/acme'  => array( 'version' => '' ),
+				),
+			)
+		);
+
+		$this->assertSame(
+			array(
+				'core',
+				'core:_scan',
+				'core:_config',
+				'dropin:_stat',
+				'plugin:akismet',
+				'plugin:akismet:_stat',
+				'theme:twentytwentyfive',
+				'theme:twentytwentyfive:_stat',
+				'theme:twentytwentyfive:_scan',
+				'theme:collection/acme',
+				'theme:collection/acme:_stat',
+				'theme:collection/acme:_scan',
+				'muplugin:_scan',
+			),
+			array_column( $target_runs, 'target_id' )
+		);
+
+		$this->assertSame( 'theme', $target_runs[6]['dimension'] );
+		$this->assertSame( 'twentytwentyfive', $target_runs[6]['slug'] );
+		$this->assertSame( '1.5', $target_runs[6]['version'] );
+		$this->assertSame( 'wporg', $target_runs[6]['source'] );
+		$this->assertSame( 'queued', $target_runs[6]['status'] );
+
+		$this->assertSame( 'twentytwentyfive', $target_runs[7]['slug'] );
+		$this->assertSame( '1.5', $target_runs[7]['version'] );
+		$this->assertSame( 'stat', $target_runs[7]['source'] );
+
+		// `:_scan`(v0.7 §Step5)も本体と同じ dimension/slug/version を持つ.
+		$this->assertSame( 'theme', $target_runs[8]['dimension'] );
+		$this->assertSame( 'twentytwentyfive', $target_runs[8]['slug'] );
+		$this->assertSame( '1.5', $target_runs[8]['version'] );
+		$this->assertSame( 'wporg', $target_runs[8]['source'] );
+
+		$this->assertSame( 'collection/acme', $target_runs[9]['slug'] );
+		$this->assertNull( $target_runs[9]['version'] );
+		$this->assertNull( $target_runs[10]['version'] );
+		$this->assertNull( $target_runs[11]['version'] );
+	}
+
+	/**
+	 * Stat 差分検知を無効にすると、テーマの `:_stat` も列挙しない(v0.7 §3.3).
+	 *
+	 * @return void
+	 */
+	public function test_plan_omits_theme_stat_target_when_stat_detection_disabled() {
+		$planner     = new WPCV_Run_Planner( new WPCV_Suppression_Repository( new WPCV_Test_Fake_WPDB() ), false );
+		$target_runs = $planner->plan(
+			array(
+				'version' => '6.8',
+				'themes'  => array( 'acme' => array( 'version' => '1.0' ) ),
+			)
+		);
+
+		$this->assertContains( 'theme:acme', array_column( $target_runs, 'target_id' ) );
+		$this->assertNotContains( 'theme:acme:_stat', array_column( $target_runs, 'target_id' ) );
+		// `:_scan` は stat ではないので、stat 差分検知を無効にしても列挙する(v0.7 §Step5).
+		$this->assertContains( 'theme:acme:_scan', array_column( $target_runs, 'target_id' ) );
+	}
+
+	/**
+	 * テーマに `exclude_target` ルールがあれば、本体・`:_stat`・`:_scan` がすべて skipped/excluded に
+	 * なる(dimension を決め打ちしていないので、テーマにもそのまま効く. v0.7 §3.3).
+	 *
+	 * @return void
+	 */
+	public function test_plan_marks_theme_targets_excluded() {
+		$suppression_repository = new WPCV_Suppression_Repository( new WPCV_Test_Fake_WPDB() );
+		$suppression_repository->insert(
+			array(
+				'type'       => WPCV_Suppression_Type::EXCLUDE_TARGET,
+				'dimension'  => 'theme',
+				'slug'       => 'acme',
+				'reason'     => 'test',
+				'created_by' => 1,
+			)
+		);
+
+		$planner     = new WPCV_Run_Planner( $suppression_repository );
+		$target_runs = $planner->plan(
+			array(
+				'version' => '6.8',
+				'themes'  => array(
+					'acme'  => array( 'version' => '1.0' ),
+					'other' => array( 'version' => '1.0' ),
+				),
+			)
+		);
+
+		$by_id = array_column( $target_runs, null, 'target_id' );
+
+		foreach ( array( 'theme:acme', 'theme:acme:_stat', 'theme:acme:_scan' ) as $target_id ) {
+			$this->assertSame( 'skipped', $by_id[ $target_id ]['status'] );
+			$this->assertSame( WPCV_Error_Code::EXCLUDED, $by_id[ $target_id ]['error_code'] );
+		}
+
+		$this->assertSame( 'queued', $by_id['theme:other']['status'] );
+	}
 }

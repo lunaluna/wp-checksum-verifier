@@ -207,6 +207,15 @@ class WPCV_Chunk_Dispatcher {
 	private $plugin_source;
 
 	/**
+	 * 公式テーマのマニフェスト取得ソース(v0.7 §Step3. `WPCV_Source_Wporg_Theme`).
+	 * `null` ならテーマの本体 target は v0.6 までと同じく unverifiable/unknown_source に
+	 * なる(既存の呼び出し元との後方互換. そのとき `:_stat` が stat で走査する).
+	 *
+	 * @var WPCV_Manifest_Source|null
+	 */
+	private $theme_source;
+
+	/**
 	 * 未知ファイル走査エンジン.
 	 *
 	 * @var WPCV_Unknown_File_Scanner
@@ -347,6 +356,9 @@ class WPCV_Chunk_Dispatcher {
 	 *                                                                判定(v0.6 §Step6. D10). `null`
 	 *                                                                なら延期を行わない(既存呼び出し元
 	 *                                                                との後方互換).
+	 * @param WPCV_Manifest_Source|null       $theme_source         公式テーマ照合ソース(v0.7 §Step3).
+	 *                                                                `null`ならテーマの本体targetは
+	 *                                                                unknown_sourceになる(後方互換).
 	 */
 	public function __construct(
 		WPCV_Run_Repository $run_repository,
@@ -362,7 +374,8 @@ class WPCV_Chunk_Dispatcher {
 		?WPCV_File_State_Repository $file_state_repository = null,
 		?WPCV_Diff_Dispatcher $diff_dispatcher = null,
 		?WPCV_Update_Event_Matcher $update_event_matcher = null,
-		?WPCV_Update_Lock_Detector $update_lock_detector = null
+		?WPCV_Update_Lock_Detector $update_lock_detector = null,
+		?WPCV_Manifest_Source $theme_source = null
 	) {
 		$this->run_repository          = $run_repository;
 		$this->target_run_repository   = $target_run_repository;
@@ -386,6 +399,7 @@ class WPCV_Chunk_Dispatcher {
 		$this->diff_dispatcher       = $diff_dispatcher;
 		$this->update_event_matcher  = $update_event_matcher;
 		$this->update_lock_detector  = $update_lock_detector;
+		$this->theme_source          = $theme_source;
 	}
 
 	/**
@@ -680,7 +694,8 @@ class WPCV_Chunk_Dispatcher {
 				array( 'version' => (string) $context['version'] ),
 				rtrim( ABSPATH, '/' ),
 				(string) $context['version'],
-				'wporg'
+				'wporg',
+				null === $this->theme_source ? null : array( __CLASS__, 'without_theme_files' )
 			);
 			return;
 		}
@@ -710,9 +725,21 @@ class WPCV_Chunk_Dispatcher {
 			return;
 		}
 
-		// 現状(v0.4.0)ではtheme次元のtarget_runはplannerが列挙しないため
-		// 到達しない想定だが、将来次元が増えた際に無言で無視しないよう明示的に
-		// unverifiable/unknown_sourceで終端化しておく.
+		// v0.7 §Step5(D8): テーマの未知ファイル走査(`theme:{stylesheet}:_scan`)は
+		// 本体と同じ dimension/slug を持つため、本体の処理より先に target_id で判定する.
+		if ( WPCV_Target_Resolver::DIMENSION_THEME === $dimension && null !== WPCV_Target_Resolver::body_id_of_scan( (string) $target_run['target_id'] ) ) {
+			$this->process_theme_scan( $run_id, $target_run, $context );
+			return;
+		}
+
+		if ( WPCV_Target_Resolver::DIMENSION_THEME === $dimension && null !== $this->theme_source ) {
+			$this->process_theme( $run_id, $target_run, $context );
+			return;
+		}
+
+		// テーマのソースが注入されていない場合(v0.6 までの呼び出し元)と、将来
+		// 次元が増えた場合に、無言で無視しないよう明示的に unverifiable/unknown_source で
+		// 終端化しておく(テーマならこのあと `:_stat` が stat で走査する).
 		$this->target_run_repository->finalize_immediate(
 			$target_run['id'],
 			array(
@@ -862,6 +889,279 @@ class WPCV_Chunk_Dispatcher {
 	}
 
 	/**
+	 * 同じ run の中から、本体 target の target_run を探す(`:_stat`・`:_scan` が
+	 * 本体の結果で振り分けるのに使う. v0.7 §Step5 で `process_stat_target()` から切り出した).
+	 *
+	 * @param int    $run_id         run の id.
+	 * @param string $body_target_id 本体の target_id.
+	 * @return array|null 見つからなければ null.
+	 */
+	private function find_body_target_run( $run_id, $body_target_id ) {
+		foreach ( $this->target_run_repository->find_all_by_run( $run_id ) as $candidate ) {
+			if ( $candidate['target_id'] === $body_target_id ) {
+				return $candidate;
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * テーマの未知ファイル走査(`theme:{stylesheet}:_scan`)を処理する(v0.7 §Step5. D8・U5).
+	 *
+	 * 同じ run の本体 target_run の状態で振り分ける:
+	 *
+	 * | 本体 target_run の状態       | `:_scan` の扱い                                  |
+	 * |------------------------------|--------------------------------------------------|
+	 * | 見つからない                 | unverifiable / target_missing                     |
+	 * | 非終端(まだ処理中)         | `defer_for_dependency()` で retry へ戻す          |
+	 * | success(wp.org と照合できた)| 走査する(既知 = マニフェストのパス ∪ コアのパス) |
+	 * | それ以外                     | skipped(error_code は本体の値を引き継ぐ)        |
+	 *
+	 * 照合できなかったテーマは、`:_stat` が全ファイルを見ているので、追加されたファイルは
+	 * そちらで `added` として出る. ここで走査すると二重に出るため走査しない(D8).
+	 * 本体が success でも、テーマのファイル以外(本体の照合で見ていないファイル)は
+	 * どこからも見られていないので、ここで走査する.
+	 *
+	 * 既知のファイルは、本体と同じマニフェスト(2回目以降はキャッシュから返る)のパスに、
+	 * コア同梱テーマならコアのマニフェストにだけあるパスも足す(D7. コア同梱版にだけある
+	 * ファイルを未知として出さないため).
+	 *
+	 * @param int   $run_id     対象の run の id.
+	 * @param array $target_run claim済みのtarget_run行.
+	 * @param array $context    `dispatch()` に渡された `$context`.
+	 * @return void
+	 */
+	private function process_theme_scan( $run_id, array $target_run, array $context ) {
+		$body_target_id = (string) WPCV_Target_Resolver::body_id_of_scan( (string) $target_run['target_id'] );
+		$body           = $this->find_body_target_run( $run_id, $body_target_id );
+
+		if ( null === $body ) {
+			$this->target_run_repository->finalize_immediate(
+				$target_run['id'],
+				array(
+					'status'     => WPCV_Target_Status::UNVERIFIABLE,
+					'error_code' => WPCV_Error_Code::TARGET_MISSING,
+				),
+				$target_run['lease_owner']
+			);
+			return;
+		}
+
+		if ( ! WPCV_Target_Status::is_terminal( $body['status'] ) ) {
+			// `process_stat_target()` と同じ理由で、本体の lease が切れるまでの最大時間だけ待つ.
+			$this->target_run_repository->defer_for_dependency( $target_run['id'], $target_run['lease_owner'], WPCV_Target_Run_Repository::DEFAULT_LEASE_SECONDS );
+			return;
+		}
+
+		$theme = self::resolve_current_theme_context( $context, (string) $target_run['slug'] );
+
+		if ( WPCV_Target_Status::SUCCESS !== $body['status'] || null === $this->theme_source || null === $theme ) {
+			$body_error_code = isset( $body['error_code'] ) ? (string) $body['error_code'] : '';
+
+			$this->target_run_repository->finalize_immediate(
+				$target_run['id'],
+				array(
+					'status'        => WPCV_Target_Status::SKIPPED,
+					'error_code'    => '' === $body_error_code ? null : $body_error_code,
+					'error_message' => sprintf( '本体 target(%s)が %s のため未知ファイルの走査を行いませんでした.', $body_target_id, $body['status'] ),
+				),
+				$target_run['lease_owner']
+			);
+			return;
+		}
+
+		$manifest = $this->theme_source->get_manifest(
+			array(
+				'slug'         => (string) $target_run['slug'],
+				'version'      => $theme['version'],
+				'update_uri'   => $theme['update_uri'],
+				'core_version' => (string) $context['version'],
+			)
+		);
+
+		if ( null !== $manifest['error_code'] ) {
+			// 本体の照合のあとでマニフェストが取れなくなった(キャッシュが消え、取得にも
+			// 失敗した等)。既知のファイルが決まらないので走査しない(`process_core_scan()` と同じ).
+			$this->target_run_repository->finalize_immediate(
+				$target_run['id'],
+				array(
+					'manifest_status' => $manifest['manifest_status'],
+					'status'          => WPCV_Target_Status::UNVERIFIABLE,
+					'error_code'      => $manifest['error_code'],
+				),
+				$target_run['lease_owner']
+			);
+			return;
+		}
+
+		$root_dir      = rtrim( WPCV_Path_Normalizer::to_forward_slashes( $theme['stylesheet_dir'] ), '/' );
+		$root_relative = WPCV_Path_Normalizer::to_relative( $root_dir );
+		$known_files   = array();
+
+		foreach ( array_keys( $manifest['files'] ) as $path ) {
+			$known_files[ $root_relative . '/' . $path ] = true;
+		}
+
+		foreach ( $this->core_bundled_theme_paths( (string) $target_run['slug'], (string) $context['version'] ) as $path ) {
+			$known_files[ $root_relative . '/' . $path ] = true;
+		}
+
+		$scan_result = $this->scanner->scan(
+			$root_dir,
+			$known_files,
+			array(
+				'recursive'        => true,
+				'php_severity'     => 'high',
+				'non_php_severity' => 'medium',
+				'budget'           => $this->walk_budget(),
+			)
+		);
+
+		if ( $scan_result['truncated'] ) {
+			// `process_core_scan()` と同じ理由(v0.4.0コードレビューCR-08是正)で、
+			// 不完全な走査結果は使わず retry へ戻す.
+			$this->target_run_repository->mark_scan_incomplete( $target_run['id'], $target_run['lease_owner'] );
+			return;
+		}
+
+		$this->process_scan_chunk( $run_id, $target_run, $scan_result['items'], $theme['version'], 'wporg' );
+	}
+
+	/**
+	 * 今のコアのマニフェストにある、このテーマのファイルのテーマ内の相対パス
+	 * (v0.7 §Step5. コア同梱テーマでなければ空. コアのマニフェストが取れなければ空).
+	 *
+	 * コアのマニフェストのキーは標準の配置(`wp-content/themes/{slug}/...`)なので、
+	 * テーマ内の相対パスにしてから、呼び出し側が実際のテーマのディレクトリにつなぐ
+	 * (`WP_CONTENT_DIR` を変えている環境でも合うように).
+	 *
+	 * @param string $slug         テーマの stylesheet.
+	 * @param string $core_version WordPress の version.
+	 * @return string[]
+	 */
+	private function core_bundled_theme_paths( $slug, $core_version ) {
+		if ( '' === $core_version ) {
+			return array();
+		}
+
+		$core = $this->core_source->get_manifest( array( 'version' => $core_version ) );
+
+		if ( null !== $core['error_code'] ) {
+			return array();
+		}
+
+		$prefix = 'wp-content/themes/' . $slug . '/';
+		$paths  = array();
+
+		foreach ( array_keys( $core['files'] ) as $path ) {
+			if ( 0 === strpos( (string) $path, $prefix ) ) {
+				$paths[] = substr( (string) $path, strlen( $prefix ) );
+			}
+		}
+
+		return $paths;
+	}
+
+	/**
+	 * コアのマニフェストから `wp-content/themes/` 配下を外す(v0.7 §Step4. D7・U7).
+	 *
+	 * コア同梱テーマ(7.1.2 では twentytwentythree / twentytwentyfour /
+	 * twentytwentyfive)の照合はテーマの target が担当する(zip とコアの md5 の
+	 * どちらかと一致すれば正. `WPCV_Source_Wporg_Theme::to_manifest_files()` 参照).
+	 * コアの照合にも残すと、テーマだけを WordPress.org から更新したときに、コアの
+	 * 照合が更新されたファイルを `modified` として出してしまう(2026-10-01 に
+	 * test-armfu.local で twentytwentyfive を 1.5 → 1.0 に入れ替えて再現。75件).
+	 * 欠落も改変も外す. テーマのソースが組み込まれていないとき(v0.6 までの
+	 * 呼び出し元)は外さない(外すと、どこからも照合されなくなるため).
+	 *
+	 * `wp-content/plugins/akismet` も同じ構造だが、v0.7 では扱わない(プラン §9-4).
+	 * `core:_scan` の既知ファイルの判定(`process_core_scan()`)は `wp-content/` を
+	 * 走査しないので、ここで外しても影響しない.
+	 *
+	 * @param array $files マニフェストの `files`.
+	 * @return array
+	 */
+	public static function without_theme_files( array $files ) {
+		foreach ( array_keys( $files ) as $path ) {
+			if ( 0 === strpos( (string) $path, 'wp-content/themes/' ) ) {
+				unset( $files[ $path ] );
+			}
+		}
+
+		return $files;
+	}
+
+	/**
+	 * 公式テーマ1件を処理する(v0.7 §3.4). `process_plugin()` と同じく、現在の
+	 * `$context['themes']` から解決し直す(plan のあとに消えた・更新されたテーマに追従する).
+	 *
+	 * マニフェストのパスはテーマのディレクトリ(`get_stylesheet_directory()`)からの
+	 * 相対パスなので、`base_dir` にはそのディレクトリを渡す. マニフェストは chunk ごとに
+	 * 取り直すが、2回目以降は `WPCV_Manifest_Cache_Repository` から返る(§3.4).
+	 *
+	 * @param int   $run_id     対象の run の id.
+	 * @param array $target_run claim済みのtarget_run行.
+	 * @param array $context    `dispatch()` に渡された `$context`.
+	 * @return void
+	 */
+	private function process_theme( $run_id, array $target_run, array $context ) {
+		$theme = self::resolve_current_theme_context( $context, (string) $target_run['slug'] );
+
+		if ( null === $theme ) {
+			$this->target_run_repository->finalize_immediate(
+				$target_run['id'],
+				array(
+					'status'     => WPCV_Target_Status::UNVERIFIABLE,
+					'error_code' => WPCV_Error_Code::TARGET_MISSING,
+				),
+				$target_run['lease_owner']
+			);
+			return;
+		}
+
+		$this->process_manifest_chunk(
+			$run_id,
+			$target_run,
+			$this->theme_source,
+			array(
+				'slug'         => (string) $target_run['slug'],
+				'version'      => $theme['version'],
+				'update_uri'   => $theme['update_uri'],
+				// D7(v0.7 §Step4): コア同梱テーマの md5 を今のコアのマニフェストから引く.
+				'core_version' => (string) $context['version'],
+			),
+			rtrim( WPCV_Path_Normalizer::to_forward_slashes( $theme['stylesheet_dir'] ), '/' ),
+			$theme['version'],
+			'wporg'
+		);
+	}
+
+	/**
+	 * `$context['themes']` から、指定した stylesheet のテーマを探す(v0.7 §3.4).
+	 *
+	 * @param array  $context    `dispatch()` に渡された `$context`.
+	 * @param string $stylesheet 探したい stylesheet(target_run.slug).
+	 * @return array{version: string, stylesheet_dir: string, update_uri: string}|null
+	 *         見つからなければ null(plan のあとでローカルから消えている).
+	 */
+	private static function resolve_current_theme_context( array $context, $stylesheet ) {
+		$themes = isset( $context['themes'] ) ? (array) $context['themes'] : array();
+
+		if ( ! isset( $themes[ $stylesheet ] ) || empty( $themes[ $stylesheet ]['stylesheet_dir'] ) ) {
+			return null;
+		}
+
+		$theme = $themes[ $stylesheet ];
+
+		return array(
+			'version'        => isset( $theme['version'] ) ? (string) $theme['version'] : '',
+			'stylesheet_dir' => (string) $theme['stylesheet_dir'],
+			'update_uri'     => isset( $theme['update_uri'] ) ? (string) $theme['update_uri'] : '',
+		);
+	}
+
+	/**
 	 * `$context['plugins']` から、指定 slug に解決される plugin_file を探す.
 	 *
 	 * @param array  $context `dispatch()` に渡された `$context`.
@@ -913,14 +1213,7 @@ class WPCV_Chunk_Dispatcher {
 	 */
 	private function process_stat_target( $run_id, array $target_run, array $context ) {
 		$body_target_id = WPCV_Target_Resolver::body_id_of_stat( (string) $target_run['target_id'] );
-		$body           = null;
-
-		foreach ( $this->target_run_repository->find_all_by_run( $run_id ) as $candidate ) {
-			if ( $candidate['target_id'] === $body_target_id ) {
-				$body = $candidate;
-				break;
-			}
-		}
+		$body           = $this->find_body_target_run( $run_id, $body_target_id );
 
 		if ( null === $body ) {
 			$this->target_run_repository->finalize_immediate(
@@ -1434,6 +1727,36 @@ class WPCV_Chunk_Dispatcher {
 			return $scan;
 		}
 
+		// v0.7 §3.4: テーマはディレクトリ全体を再帰的に走査する(ディレクトリ型の
+		// プラグインと同じ). 本体が wp.org と照合できなかったとき(独自テーマ・
+		// Update URI が wp.org 以外・入れ子・version が空)だけここに来る.
+		if ( WPCV_Target_Resolver::DIMENSION_THEME === $target_run['dimension'] ) {
+			$theme = self::resolve_current_theme_context( $context, (string) $target_run['slug'] );
+
+			if ( null === $theme ) {
+				return null;
+			}
+
+			$root_dir = rtrim( WPCV_Path_Normalizer::to_forward_slashes( $theme['stylesheet_dir'] ), '/' );
+
+			$scan = $this->scanner->scan(
+				$root_dir,
+				array(),
+				array(
+					'recursive'        => true,
+					'php_severity'     => 'high',
+					'non_php_severity' => 'medium',
+					'budget'           => $this->walk_budget(),
+					'collect_stat'     => true,
+				)
+			);
+
+			$scan['root_path'] = WPCV_Path_Normalizer::to_relative( $root_dir );
+			$scan['version']   = $theme['version'];
+
+			return $scan;
+		}
+
 		if ( WPCV_Target_Resolver::DIMENSION_MUPLUGIN === $target_run['dimension'] ) {
 			$mu_plugin_dir = isset( $context['mu_plugin_dir'] ) ? rtrim( WPCV_Path_Normalizer::to_forward_slashes( (string) $context['mu_plugin_dir'] ), '/' ) : '';
 
@@ -1516,10 +1839,17 @@ class WPCV_Chunk_Dispatcher {
 	 * @param string               $base_dir        manifestの相対パスを解決する基準ディレクトリ.
 	 * @param string               $version         今回dispatcherが観測した「現在の」version.
 	 * @param string               $source_label     findings.source に記録する値(常に `wporg`).
+	 * @param callable|null        $filter_files     マニフェストの `files` を照合の前に絞り込む
+	 *                                               callable(v0.7 §Step4. コアの照合から
+	 *                                               `wp-content/themes/` を外すのに使う).
 	 * @return void
 	 */
-	private function process_manifest_chunk( $run_id, array $target_run, WPCV_Manifest_Source $source, array $manifest_context, $base_dir, $version, $source_label ) {
+	private function process_manifest_chunk( $run_id, array $target_run, WPCV_Manifest_Source $source, array $manifest_context, $base_dir, $version, $source_label, ?callable $filter_files = null ) {
 		$manifest = $source->get_manifest( $manifest_context );
+
+		if ( null === $manifest['error_code'] && null !== $filter_files ) {
+			$manifest['files'] = call_user_func( $filter_files, $manifest['files'] );
+		}
 
 		if ( null !== $manifest['error_code'] ) {
 			$this->target_run_repository->finalize_immediate(
