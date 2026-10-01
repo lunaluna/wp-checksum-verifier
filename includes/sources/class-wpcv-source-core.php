@@ -66,9 +66,7 @@ class WPCV_Source_Core implements WPCV_Manifest_Source {
 
 		$version = (string) $context['version'];
 
-		// Core_Upgrader::upgrade() と同じ locale 決定ロジック(class-core-upgrader.php).
-		global $wp_local_package;
-		$locale = $wp_local_package ?? 'en_US';
+		$locale = self::current_locale();
 
 		if ( null !== $this->cache ) {
 			$cached = $this->cache->find( WPCV_Manifest_Cache_Repository::SOURCE_CORE, $locale, $version );
@@ -115,6 +113,19 @@ class WPCV_Source_Core implements WPCV_Manifest_Source {
 			'error_code'      => null,
 			'files'           => self::to_files( $checksums ),
 		);
+	}
+
+	/**
+	 * コアのマニフェストの locale を返す(`Core_Upgrader::upgrade()` と同じ決め方.
+	 * class-core-upgrader.php). キャッシュのキー(slug)にも使う. v0.7 §Step7 で、
+	 * キャッシュの掃除(`WPCV_Manifest_Cache_Cleaner`)と共有するため切り出した.
+	 *
+	 * @return string
+	 */
+	public static function current_locale() {
+		global $wp_local_package;
+
+		return isset( $wp_local_package ) && '' !== (string) $wp_local_package ? (string) $wp_local_package : 'en_US';
 	}
 
 	/**

@@ -182,6 +182,14 @@ class WPCV_Plugin {
 	private static $manifest_cache_repository = null;
 
 	/**
+	 * 組み立て済みの `WPCV_Manifest_Cache_Cleaner`(1リクエスト内で使い回す.
+	 * v0.7 §Step7).
+	 *
+	 * @var WPCV_Manifest_Cache_Cleaner|null
+	 */
+	private static $manifest_cache_cleaner = null;
+
+	/**
 	 * 本番用に配線された `WPCV_Run_Coordinator` を返す.
 	 *
 	 * @return WPCV_Run_Coordinator
@@ -484,6 +492,32 @@ class WPCV_Plugin {
 	 */
 	public static function handle_update_events_run_terminated( $run_id, $status ) {
 		self::update_event_recorder()->handle_run_terminated( (int) $run_id, (string) $status );
+	}
+
+	/**
+	 * 本番用に配線された `WPCV_Manifest_Cache_Cleaner` を返す(v0.7 §Step7).
+	 *
+	 * @return WPCV_Manifest_Cache_Cleaner
+	 */
+	public static function manifest_cache_cleaner() {
+		if ( null === self::$manifest_cache_cleaner ) {
+			self::$manifest_cache_cleaner = new WPCV_Manifest_Cache_Cleaner( self::manifest_cache_repository(), self::target_run_repository() );
+		}
+
+		return self::$manifest_cache_cleaner;
+	}
+
+	/**
+	 * `wpcv_run_terminated`フックのハンドラ(v0.7 §Step7. `WPCV_Manifest_Cache_Cleaner`が
+	 * 使われなくなったマニフェストキャッシュの行を消す. D4.
+	 * `includes/runners/class-wpcv-manifest-cache-cleaner.php`の末尾で登録する).
+	 *
+	 * @param int    $run_id 終端に達した run の id.
+	 * @param string $status 遷移後の `wpcv_runs.status`.
+	 * @return void
+	 */
+	public static function handle_manifest_cache_run_terminated( $run_id, $status ) {
+		self::manifest_cache_cleaner()->handle_run_terminated( (int) $run_id, (string) $status );
 	}
 
 	/**

@@ -1,9 +1,9 @@
 # WP Checksum Verifier
 
-WordPress core, plugin, and must-use plugin checksum verifier. Detects
+WordPress core, plugin, theme, and must-use plugin checksum verifier. Detects
 tampering by comparing installed files against official checksum manifests
-(wp.org core/plugin checksums) and reports unknown files not present in any
-manifest.
+(wp.org core/plugin checksums, and manifests built from wp.org theme zips)
+and reports unknown files not present in any manifest.
 
 > **Status**: v0.6.0. The verification engine, all planned execution model
 > entry points (WP-CLI, WP-Cron, admin "Run now" button, REST API),
@@ -12,9 +12,9 @@ manifest.
 > stat-based change detection for plugins without official checksums
 > (with optional content-hash comparison), configuration-file and drop-in
 > monitoring, update-event tracking, diff-based email alerts (see Alerts
-> below), and the Findings/Suppressions/Run History admin screens are
-> implemented. Official theme verification and GitHub-hosted plugin/theme
-> verification are not implemented yet. See `CHANGELOG.md` for details.
+> below), official theme verification, and the Findings/Suppressions/Run
+> History admin screens are implemented. GitHub-hosted plugin/theme
+> verification is not implemented yet. See `CHANGELOG.md` for details.
 
 ## Verification targets
 
@@ -22,20 +22,88 @@ manifest.
   installed version/locale.
 - **Official (wp.org) plugins**: compared against each plugin's official
   checksums for its installed version.
+- **Official (wp.org) themes**: compared against a manifest built from the
+  theme's wp.org zip for its installed version (see "Official theme
+  verification" below).
 - **Must-use plugins**: scanned for unknown files (no official checksum
   source exists for MU plugins).
 - **Unknown files**: files present on disk but absent from the relevant
   manifest are reported as findings, for every target above.
-- **Plugins without official checksums** (custom or premium plugins, and
-  MU-plugin loaders): tracked by stat-based change detection (see below).
+- **Plugins and themes without official checksums** (custom or premium
+  plugins and themes, and MU-plugin loaders): tracked by stat-based change
+  detection (see below).
 - **Configuration files and drop-ins** (`wp-config.php`, `.htaccess`,
   `.user.ini`, and any WordPress-recognized drop-in that is actually present,
   e.g. `object-cache.php`): tracked the same way, but always with
   content-hash comparison (see "Content-hash comparison" below) — these
   targets exist unconditionally, independent of the "Stat-based change
   detection" setting.
-- Not yet implemented: official theme verification, and checksum
-  verification for unofficial plugins/themes hosted on GitHub Releases.
+- Not yet implemented: checksum verification for unofficial plugins/themes
+  hosted on GitHub Releases.
+
+### Official theme verification
+
+wordpress.org publishes no checksum API for themes, so the plugin downloads
+`https://downloads.wordpress.org/theme/{slug}.{version}.zip` for each
+installed theme and hashes the files inside it (sha256 and md5) without ever
+extracting the zip to disk. The resulting manifest is cached in the database
+(`wpcv_manifest_cache`) and reused until the theme's version changes, so only
+the first run after installing or updating a theme pays for the download
+(about 1.5–2.5 seconds per theme in a local measurement). Cache rows for
+themes and versions that no longer appear in a run are deleted when a run
+finishes as `success` or `partial`. The WordPress core manifest is cached the
+same way (except when it fell back to `en_US` because the locale's manifest
+was not published yet).
+
+- **Targets**: each theme gets `theme:{stylesheet}` (checksum comparison),
+  `theme:{stylesheet}:_stat` (stat-based change detection, used only when the
+  theme could not be compared against wp.org), and `theme:{stylesheet}:_scan`
+  (unknown files, used only when it could). All three share the theme's
+  suppression rules. Themes with errors (e.g. a child theme whose parent is
+  missing) are included.
+- **Not compared against wp.org** (no download; the theme goes to stat-based
+  change detection instead): the theme is not on wp.org (the zip returns 404:
+  `manifest_not_found`), its `Update URI` header points to a host other than
+  `wordpress.org`/`w.org` — including `Update URI: false` — so a same-named
+  theme on wp.org is never used (`unknown_source`), it lives in a
+  sub-directory of the theme root (`unknown_source`), or its version is empty
+  (`version_unknown`).
+- **Themes bundled with WordPress core** (e.g. twentytwentyfive): a bundled
+  copy can differ from the wp.org zip of the same version, so each file is
+  accepted if it matches either the wp.org zip or the core checksums. Core
+  verification no longer checks anything under `wp-content/themes/`; the theme
+  target is responsible for those files. Which themes count as bundled depends
+  on the core manifest for your locale (for example, the `ja` 7.1.2 manifest
+  also includes twentytwentytwo, the `en_US` one does not).
+- **Older default themes** that are no longer bundled with core may differ
+  from their wp.org zip by build differences only (e.g. a re-minified
+  `style.min.css`). These show up as `modified` on the first run; approve
+  them with `allowlist_hash`. The approval expires when the theme's version
+  changes, so updating the theme clears it.
+- **Unknown files**: for themes that matched wp.org, files not in the zip
+  (nor, for bundled themes, in the core checksums) are reported as `added`
+  (`high` for PHP-like files, `medium` otherwise). For themes that did not,
+  stat-based change detection already reports new files, so they are not
+  reported twice.
+- **When the zip cannot be used**: a temporary download failure
+  (`http_error`), a zip that fails the safety checks (`archive_rejected`) or
+  is corrupt (`archive_invalid`), and a server without PHP's ZipArchive
+  extension (`ziparchive_missing`) leave the theme `unverifiable` for that
+  run **without** falling back to stat-based change detection, so no
+  baseline is ever created by accident. On a server without ZipArchive this
+  means themes stay unchecked on every run — and, like custom themes, they do
+  not trigger the repeated-unverifiable alert — so check Run History if your
+  host may lack the extension.
+- **Safety checks and limits**: entries are checked before any file is read —
+  absolute paths, drive letters, `..`/`.`/empty segments, control characters,
+  a root other than `{slug}/`, symlinks, and duplicate names are rejected.
+  Size limits (provisional, about 10× the largest measured wp.org theme):
+  download 100 MB (`wpcv_theme_zip_max_archive_bytes`), 20,000 entries
+  (`wpcv_theme_zip_max_entries`), 50 MB per file
+  (`wpcv_theme_zip_max_entry_bytes`), 500 MB in total
+  (`wpcv_theme_zip_max_total_bytes`), and a compression ratio of 100
+  (`wpcv_theme_zip_max_compression_ratio`). The download timeout is 30
+  seconds (`wpcv_theme_zip_download_timeout`; unmeasured on shared hosting).
 
 ### Stat-based change detection
 
@@ -46,14 +114,16 @@ followed and file contents are never read) and reports what changed since
 the previous run. It points you at files worth reviewing; it does not judge
 whether a change is malicious.
 
-- **Which targets**: only plugins whose checksum lookup came back as
-  "no checksums exist" (`manifest_not_found`, `unknown_source`,
-  `version_unknown`) and MU-plugin loaders. Plugins that verified against
-  checksums are skipped (`checksum_covered`), and plugins whose lookup failed
-  temporarily (`http_error`, `rate_limited`) are skipped for that run so an
-  outage on wordpress.org never creates baselines by accident. Each such
-  plugin gets an extra target named `plugin:{slug}:_stat`
-  (`muplugin:{file}:_stat` for loaders) that shares its suppression rules.
+- **Which targets**: only plugins and themes whose checksum lookup came back
+  as "no checksums exist" (`manifest_not_found`, `unknown_source`,
+  `version_unknown`) and MU-plugin loaders. Plugins and themes that verified
+  against checksums are skipped (`checksum_covered`), and those whose lookup
+  failed temporarily (`http_error`, `rate_limited`, or for themes a zip that
+  could not be used — see "Official theme verification" above) are skipped
+  for that run so an outage on wordpress.org never creates baselines by
+  accident. Each such plugin gets an extra target named `plugin:{slug}:_stat`
+  (`theme:{stylesheet}:_stat` for themes, `muplugin:{file}:_stat` for
+  loaders) that shares its suppression rules.
 - **First run**: only records a baseline; nothing is reported.
 - **Findings**: `stat_changed` (size, ctime, or mtime differ — the `detail`
   field holds the old and new values), `added` (a new file), and `missing`
@@ -128,11 +198,14 @@ hash recorded on the previous run:
 
 ### Update events
 
-Whenever WordPress core or a plugin is updated — through the admin
-screens, WP-CLI (`wp plugin update`/`wp core update`), or an automatic
-update — the plugin records the target, the version read from disk right
-after the update, the source (manual/bulk/install/automatic/core update),
-and who triggered it (`0` for cron/CLI). This log is what "Plugin updates"
+Whenever WordPress core, a plugin, or a theme is updated or installed —
+through the admin screens, WP-CLI (`wp plugin update`/`wp theme
+update`/`wp core update`), or an automatic update — the plugin records the
+target, the version read from disk right after the update, the source
+(manual/bulk/install/automatic/core update), and who triggered it (`0` for
+cron/CLI). A parent theme that WordPress installs automatically together with
+a child theme is not recorded; that is harmless, because a newly installed
+theme has no previous result to compare against. This log is what "Plugin updates"
 above and the checksum-target alert below use to tell a legitimate
 WordPress-driven update apart from a version change that happened some
 other way. `wp --skip-plugins plugin update` does not fire the hooks this
@@ -157,7 +230,7 @@ Every run sweeps and fails any previous run stuck in `running` state
 ### Execution model
 
 A run does not verify every target in one pass. It first enumerates every
-target (core, each official plugin, must-use plugins) into per-target rows
+target (core, each official plugin, each theme, must-use plugins) into per-target rows
 tracked in the database, then processes them one file-chunk at a time:
 
 - Each chunk verifies a bounded batch of files (bounded by count, elapsed
@@ -378,7 +451,7 @@ targets.
   manifest to diff against, so every stat-detected change is new
   information by definition.
 
-A plugin update does not, by itself, produce `new` findings: when a
+A plugin or theme update does not, by itself, produce `new` findings: when a
 target's version differs from its baseline's version, the old baseline is
 discarded and findings are compared against nothing (marked
 `version_changed`) rather than reported as newly added. A run that only

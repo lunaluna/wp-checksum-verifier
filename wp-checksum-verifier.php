@@ -312,6 +312,13 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-run-fail
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-update-event-recorder.php';
 
 /**
+ * Run の終端でのマニフェストキャッシュの掃除(v0.7 §Step7. D4). `wpcv_run_terminated` の
+ * ハンドラをファイル末尾で登録する. `WPCV_Update_Event_Recorder` と同じ理由で、
+ * `WPCV_Plugin` 本体より前に読み込んでも問題ない.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-manifest-cache-cleaner.php';
+
+/**
  * Run開始時の「列挙(plan)→保存」を失敗時の後始末込みで行う共通処理
  * (v0.4.0 §Step5)。`WPCV_Run_Coordinator`・`WPCV_Runner_Async` の両方が使う.
  */

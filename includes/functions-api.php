@@ -16,7 +16,7 @@ if ( ! function_exists( 'wpcv_get_latest_findings' ) ) {
 	 * @param array $args {
 	 *     絞り込み条件.
 	 *
-	 *     @type array $dimension           core|plugin|theme|muplugin.
+	 *     @type array $dimension           core|plugin|theme|muplugin|dropin.
 	 *     @type array $status              modified|added|missing|unreadable.
 	 *     @type array $severity            high|medium|low.
 	 *     @type bool  $include_suppressed  既定 false.
@@ -48,7 +48,7 @@ if ( ! function_exists( 'wpcv_get_latest_target_runs' ) ) {
 	 * @param array $args {
 	 *     絞り込み条件.
 	 *
-	 *     @type array $dimension core|plugin|theme|muplugin.
+	 *     @type array $dimension core|plugin|theme|muplugin|dropin.
 	 *     @type array $status    success|unverifiable|failed|skipped|retried.
 	 *     @type int   $limit     既定 0(無制限).
 	 * }

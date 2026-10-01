@@ -1,8 +1,9 @@
 # WP Checksum Verifier
 
-WordPress のコア・プラグイン・MU プラグインの checksum を検証し、改ざんを検出する
-プラグイン。公式の checksum マニフェスト(wp.org のコア/プラグイン checksum)と
-実ファイルを突き合わせ、どのマニフェストにも存在しない未知のファイルも報告する。
+WordPress のコア・プラグイン・テーマ・MU プラグインの checksum を検証し、改ざんを
+検出するプラグイン。公式の checksum マニフェスト(wp.org のコア/プラグイン checksum、
+wp.org のテーマの zip から作るマニフェスト)と実ファイルを突き合わせ、どのマニフェスト
+にも存在しない未知のファイルも報告する。
 
 > **ステータス**: v0.6.0。検証エンジン、計画していた全ての実行モデル
 > (WP-CLI・WP-Cron・管理画面の「今すぐ実行」ボタン・REST API)、resume対応の
@@ -10,7 +11,7 @@ WordPress のコア・プラグイン・MU プラグインの checksum を検証
 > `allowlist_hash`とstrict mode)、公式checksumの無いプラグイン向けのstat
 > 差分検知(内容ハッシュ比較のオプション付き)、設定ファイル・ドロップインの
 > 監視、更新イベントの記録、差分検知に基づくメールアラート(下記「アラート」
-> 参照)、検出結果・抑制一覧・実行履歴の管理画面を実装済み。公式テーマの照合と、
+> 参照)、公式テーマの照合、検出結果・抑制一覧・実行履歴の管理画面を実装済み。
 > GitHub Releases 上の非公式プラグイン/テーマの照合はまだ未実装。詳細は
 > `CHANGELOG.md` を参照.
 
@@ -18,17 +19,73 @@ WordPress のコア・プラグイン・MU プラグインの checksum を検証
 
 - **WordPress コア**: インストール済みバージョン/ロケールの公式 checksum と照合する.
 - **公式(wp.org)プラグイン**: インストール済みバージョンの公式 checksum と照合する.
+- **公式(wp.org)テーマ**: インストール済みバージョンの wp.org の zip から作った
+  マニフェストと照合する(下記「公式テーマの照合」参照).
 - **MU プラグイン**: 公式の checksum ソースが存在しないため、未知ファイルの検出のみ行う.
 - **未知ファイル**: 上記いずれの対象についても、マニフェストに存在しないファイルは
   finding として報告する.
-- **公式 checksum の無いプラグイン**(独自・有料プラグイン、MU プラグインの loader):
-  stat 差分検知で変更を追跡する(下記).
+- **公式 checksum の無いプラグイン・テーマ**(独自・有料のプラグインとテーマ、
+  MU プラグインの loader): stat 差分検知で変更を追跡する(下記).
 - **設定ファイルとドロップイン**(`wp-config.php`・`.htaccess`・`.user.ini`・
   実在するWordPress認識済みドロップイン〔例: `object-cache.php`〕): 同じ仕組みで
   追跡するが、常に内容ハッシュ比較(下記「内容ハッシュ比較」参照)も行う ――
   これらのtargetは「Stat-based change detection」の設定とは無関係に無条件で
   存在する.
-- 未実装: 公式テーマの照合、GitHub Releases 上の非公式プラグイン/テーマの照合.
+- 未実装: GitHub Releases 上の非公式プラグイン/テーマの照合.
+
+### 公式テーマの照合
+
+wordpress.org にはテーマの checksum API が無いため、インストールされている
+テーマごとに `https://downloads.wordpress.org/theme/{slug}.{version}.zip` を
+取得し、zip の中のファイルのハッシュ(sha256 と md5)を計算します。zip はディスクに
+展開しません。作ったマニフェストは DB(`wpcv_manifest_cache`)に保存し、テーマの
+version が変わるまで使い回すので、取得に時間がかかるのはテーマを入れた・更新した
+あとの最初の run だけです(ローカルでの実測で1テーマあたり1.5〜2.5秒程度)。
+run に出てこなくなったテーマ・version の行は、run が `success` か `partial` で
+終わったときに消します。WordPress コアのマニフェストも同じようにキャッシュします
+(その locale のマニフェストがまだ公開されておらず `en_US` で代用した場合を除く).
+
+- **target**: テーマごとに `theme:{stylesheet}`(checksum 照合)、
+  `theme:{stylesheet}:_stat`(stat 差分検知。wp.org と照合できなかったときだけ使う)、
+  `theme:{stylesheet}:_scan`(未知ファイル。照合できたときだけ使う)の3つを作ります。
+  抑制ルールは3つとも共有します。エラーのあるテーマ(親テーマが無い子テーマなど)も
+  対象に含めます.
+- **wp.org と照合しないもの**(取得せず、stat 差分検知に回す): wp.org に無いテーマ
+  (zip が 404。`manifest_not_found`)、`Update URI` ヘッダーが `wordpress.org`/`w.org`
+  以外のホストを指すテーマ(`Update URI: false` も含む。wp.org にある同じ名前の別の
+  テーマと照合しないため。`unknown_source`)、テーマのルートの下の階層にあるテーマ
+  (`unknown_source`)、version が空のテーマ(`version_unknown`).
+- **WordPress コアに同梱されたテーマ**(twentytwentyfive など): 同梱版は同じ version の
+  wp.org の zip と中身が違うことがあるため、ファイルごとに wp.org の zip とコアの
+  checksum のどちらかと一致すれば正とします。コアの照合では `wp-content/themes/`
+  配下を見なくなり、これらのファイルはテーマの target が担当します。どのテーマが
+  同梱扱いになるかは、その locale のコアのマニフェストで決まります(たとえば
+  `ja` 7.1.2 のマニフェストには twentytwentytwo も含まれますが、`en_US` には
+  含まれません).
+- **今のコアに同梱されていない古い既定テーマ**は、ビルドの違いだけ(`style.min.css`
+  の minify のやり直しなど)で wp.org の zip と一致しないことがあります。初回の run で
+  `modified` として出るので、`allowlist_hash` で承認してください。承認はテーマの
+  version が変わると失効するので、テーマを更新すれば片付きます.
+- **未知ファイル**: wp.org と照合できたテーマでは、zip に無いファイル(コア同梱
+  テーマではコアの checksum にも無いファイル)を `added` として報告します(PHP 系の
+  ファイルは `high`、それ以外は `medium`)。照合できなかったテーマは stat 差分検知が
+  新しいファイルを報告するので、二重には報告しません.
+- **zip を使えないとき**: 一時的な取得の失敗(`http_error`)、安全性の検査に落ちた
+  zip(`archive_rejected`)、壊れた zip(`archive_invalid`)、PHP の ZipArchive 拡張が
+  無いサーバー(`ziparchive_missing`)では、その run のテーマは `unverifiable` になり、
+  stat 差分検知には**回しません**(ベースラインを不意に作らないため)。そのため
+  ZipArchive の無いサーバーでは、テーマは毎回検査されないままになり、独自テーマと
+  同じく「連続 unverifiable」のアラートも出ません。サーバーに拡張が無いおそれがある
+  場合は実行履歴を確認してください.
+- **安全性の検査と上限**: ファイルを読む前に全エントリを検査し、絶対パス・
+  ドライブレター・`..`/`.`/空のセグメント・制御文字・`{slug}/` 以外のルート・
+  シンボリックリンク・重複する名前を拒否します。サイズの上限(暫定値。実測した
+  wp.org のテーマの最大の約10倍以上): ダウンロード 100MB
+  (`wpcv_theme_zip_max_archive_bytes`)、エントリ 20,000 件
+  (`wpcv_theme_zip_max_entries`)、1ファイル 50MB(`wpcv_theme_zip_max_entry_bytes`)、
+  合計 500MB(`wpcv_theme_zip_max_total_bytes`)、圧縮率 100 倍
+  (`wpcv_theme_zip_max_compression_ratio`)。取得のタイムアウトは30秒
+  (`wpcv_theme_zip_download_timeout`。共有ホスティングでは未実測).
 
 ### stat 差分検知
 
@@ -39,11 +96,12 @@ checksum で「正しいファイルか」を確かめられるのは、比べ�
 どうかは判定しません.
 
 - **対象**: checksum の取得結果が「配布物が無い」(`manifest_not_found`・`unknown_source`・
-  `version_unknown`)だったプラグインと、MU プラグインの loader だけです。checksum で照合
-  できたプラグインは省略します(`checksum_covered`)。取得が一時的に失敗したプラグイン
-  (`http_error`・`rate_limited`)もその run では省略し、wordpress.org の障害で不意に
-  ベースラインが作られないようにしています。対象のプラグインごとに `plugin:{slug}:_stat`
-  (loader は `muplugin:{file}:_stat`)という target が追加され、抑制ルールは本体と共有します.
+  `version_unknown`)だったプラグイン・テーマと、MU プラグインの loader だけです。checksum で
+  照合できたものは省略します(`checksum_covered`)。取得が一時的に失敗したもの
+  (`http_error`・`rate_limited`、テーマでは使えなかった zip。上記「公式テーマの照合」参照)も
+  その run では省略し、wordpress.org の障害で不意にベースラインが作られないようにしています。
+  対象のプラグインごとに `plugin:{slug}:_stat`(テーマは `theme:{stylesheet}:_stat`、loader は
+  `muplugin:{file}:_stat`)という target が追加され、抑制ルールは本体と共有します.
 - **初回**: ベースラインを記録するだけで、何も報告しません.
 - **finding**: `stat_changed`(サイズ・ctime・mtime のいずれかが変化。`detail` に前回値と
   今回値が入る)、`added`(新しいファイル)、`missing`(ベースラインにあったファイルが消えた。
@@ -106,10 +164,12 @@ checksum で「正しいファイルか」を確かめられるのは、比べ�
 
 ### 更新イベント
 
-WordPress のコア・プラグインが更新される(管理画面・WP-CLI〔`wp plugin
-update`・`wp core update`〕・自動更新のいずれでも)たびに、対象・更新直後に
-ディスクから読んだ version・経路(単体/一括/インストール/自動/コア更新)・
-実行者(cron・CLI では `0`)を記録します。この記録が、上記「プラグインの更新」
+WordPress のコア・プラグイン・テーマが更新・インストールされる(管理画面・
+WP-CLI〔`wp plugin update`・`wp theme update`・`wp core update`〕・自動更新の
+いずれでも)たびに、対象・更新直後にディスクから読んだ version・経路(単体/一括/
+インストール/自動/コア更新)・実行者(cron・CLI では `0`)を記録します。子テーマと
+一緒に WordPress が自動で入れる親テーマは記録されませんが、新しく入ったテーマには
+比べる前回の結果が無いので害はありません。この記録が、上記「プラグインの更新」
 やアラート(下記)で「WordPress の更新機構を通った正当な更新」と「それ以外の
 経路での version 変化」を区別するために使われます。`wp --skip-plugins plugin
 update` はこの記録が使うフックを発火しないため、その方法での更新は記録されません.
@@ -132,7 +192,7 @@ update` はこの記録が使うフックを発火しないため、その方法
 ### 実行モデル
 
 1回のrunは全targetを一気に検証するのではなく、まずコア・各公式プラグイン・
-MUプラグインすべてをDB上のtarget行として先に列挙し、その後1chunkずつ
+各テーマ・MUプラグインすべてをDB上のtarget行として先に列挙し、その後1chunkずつ
 処理する:
 
 - 各chunkは件数・経過時間・メモリ余裕で区切られた範囲のファイルだけを検証し、
@@ -340,7 +400,7 @@ failed/abortedのrun・差分検知導入前のrunに属するもの)ではす�
   ではないため、stat差分検知が検出した変化はその時点で常に新しい情報
   だから.
 
-プラグインの更新それ自体は`new`のfindingを生まない: targetのversionが
+プラグイン・テーマの更新それ自体は`new`のfindingを生まない: targetのversionが
 基準のversionと異なる場合、古い基準は捨てられ、findingは(何とも比較
 せずに)`version_changed`として扱われる ―— 新規追加として報告される
 ことはない。version変更後にstatのベースラインを作り直しただけのrunや、
