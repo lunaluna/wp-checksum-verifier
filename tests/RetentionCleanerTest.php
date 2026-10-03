@@ -442,6 +442,141 @@ class RetentionCleanerTest extends TestCase {
 	}
 
 	/**
+	 * 同じキーを通知した期限切れの行が複数あっても、残るのは最新の1行だけで、
+	 * 再送抑制が読む `MAX(notified_at)` は掃除の前後で変わらない(v0.9.1).
+	 *
+	 * @return void
+	 */
+	public function test_only_the_newest_notification_per_key_is_kept() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+
+		$r1       = self::insert_run( $wpdb, '2026-05-01 00:00:00' );
+		$r2       = self::insert_run( $wpdb, '2026-05-02 00:00:00' );
+		$r3       = self::insert_run( $wpdb, '2026-05-03 00:00:00' );
+		$r_prev   = self::insert_run( $wpdb, '2026-10-01 00:00:00' );
+		$r_recent = self::insert_run( $wpdb, '2026-10-02 00:00:00', 'success', 'pending' );
+
+		$tr1    = self::insert_target_run( $wpdb, $r1, 'plugin:a' );
+		$tr2    = self::insert_target_run( $wpdb, $r2, 'plugin:a' );
+		$tr3    = self::insert_target_run( $wpdb, $r3, 'plugin:a' );
+		$prev   = self::insert_target_run( $wpdb, $r_prev, 'plugin:a' );
+		$latest = self::insert_target_run( $wpdb, $r_recent, 'plugin:a' );
+
+		self::insert_finding( $wpdb, $r1, $tr1, 'plugin:a', 'k', '2026-05-01 03:10:00' );
+		self::insert_finding( $wpdb, $r2, $tr2, 'plugin:a', 'k', '2026-05-02 03:10:00' );
+		$f3      = self::insert_finding( $wpdb, $r3, $tr3, 'plugin:a', 'k', '2026-05-03 03:10:00' );
+		$f_prev  = self::insert_finding( $wpdb, $r_prev, $prev, 'plugin:a', 'k' );
+		$f_final = self::insert_finding( $wpdb, $r_recent, $latest, 'plugin:a', 'k' );
+
+		$finding_repository = new WPCV_Finding_Repository( $wpdb );
+		$before             = $finding_repository->find_last_notified_at_by_keys( array( 'k' ), 0 );
+
+		self::set_retention( 3 );
+		self::make_cleaner( $wpdb )->handle_run_terminated( $r_recent, 'success' );
+
+		$this->assertEqualsCanonicalizing( array( $f3, $f_prev, $f_final ), self::ids( $wpdb, 'findings' ) );
+		$this->assertEqualsCanonicalizing( array( $tr3, $prev, $latest ), self::ids( $wpdb, 'target_runs' ) );
+		$this->assertSame( $before, $finding_repository->find_last_notified_at_by_keys( array( 'k' ), 0 ) );
+	}
+
+	/**
+	 * 期限内の run により新しい通知がある場合、期限切れ側の同じキーの通知済み行は残らない(v0.9.1).
+	 *
+	 * @return void
+	 */
+	public function test_expired_notification_is_dropped_when_a_newer_one_is_within_the_period() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+
+		$r_old    = self::insert_run( $wpdb, '2026-05-01 00:00:00' );
+		$r_in     = self::insert_run( $wpdb, '2026-09-01 00:00:00' );
+		$r_prev   = self::insert_run( $wpdb, '2026-10-01 00:00:00' );
+		$r_recent = self::insert_run( $wpdb, '2026-10-02 00:00:00', 'success', 'pending' );
+
+		$old    = self::insert_target_run( $wpdb, $r_old, 'plugin:a' );
+		$in     = self::insert_target_run( $wpdb, $r_in, 'plugin:a' );
+		$prev   = self::insert_target_run( $wpdb, $r_prev, 'plugin:a' );
+		$latest = self::insert_target_run( $wpdb, $r_recent, 'plugin:a' );
+
+		self::insert_finding( $wpdb, $r_old, $old, 'plugin:a', 'k', '2026-05-01 03:10:00' );
+		$f_in = self::insert_finding( $wpdb, $r_in, $in, 'plugin:a', 'k', '2026-09-01 03:10:00' );
+		self::insert_finding( $wpdb, $r_recent, $latest, 'plugin:a', 'k' );
+
+		self::set_retention( 3 );
+		self::make_cleaner( $wpdb )->handle_run_terminated( $r_recent, 'success' );
+
+		$this->assertContains( $f_in, self::ids( $wpdb, 'findings' ) );
+		$this->assertNotContains( $old, self::ids( $wpdb, 'target_runs' ) );
+		$this->assertCount( 2, $wpdb->rows['wp_wpcv_findings'] );
+	}
+
+	/**
+	 * 同じ日時の通知が2つあっても、どちらも消えることはなく、1つだけ残る(v0.9.1).
+	 *
+	 * @return void
+	 */
+	public function test_equal_notification_times_keep_exactly_one() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+
+		$r1       = self::insert_run( $wpdb, '2026-05-01 00:00:00' );
+		$r2       = self::insert_run( $wpdb, '2026-05-02 00:00:00' );
+		$r_prev   = self::insert_run( $wpdb, '2026-10-01 00:00:00' );
+		$r_recent = self::insert_run( $wpdb, '2026-10-02 00:00:00', 'success', 'pending' );
+
+		$tr1    = self::insert_target_run( $wpdb, $r1, 'plugin:a' );
+		$tr2    = self::insert_target_run( $wpdb, $r2, 'plugin:a' );
+		$prev   = self::insert_target_run( $wpdb, $r_prev, 'plugin:a' );
+		$latest = self::insert_target_run( $wpdb, $r_recent, 'plugin:a' );
+
+		self::insert_finding( $wpdb, $r1, $tr1, 'plugin:a', 'k', '2026-05-01 03:10:00' );
+		$f2 = self::insert_finding( $wpdb, $r2, $tr2, 'plugin:a', 'k', '2026-05-01 03:10:00' );
+		self::insert_finding( $wpdb, $r_recent, $latest, 'plugin:a', 'k' );
+
+		self::set_retention( 3 );
+		self::make_cleaner( $wpdb )->handle_run_terminated( $r_recent, 'success' );
+
+		$this->assertContains( $f2, self::ids( $wpdb, 'findings' ) );
+		$this->assertCount( 2, $wpdb->rows['wp_wpcv_findings'] );
+		$this->assertEqualsCanonicalizing( array( $tr2, $prev, $latest ), self::ids( $wpdb, 'target_runs' ) );
+	}
+
+	/**
+	 * 何も消さずに残した target_run が上限の件数以上先頭に並んでいても、その後ろの
+	 * 期限切れの target_run が1回の呼び出しで消える(v0.9.1. 以前は上限に数えて停滞した).
+	 *
+	 * @return void
+	 */
+	public function test_kept_target_runs_do_not_block_later_expired_rows() {
+		$wpdb     = new WPCV_Test_Fake_WPDB();
+		$r_old    = self::insert_run( $wpdb, '2026-05-01 00:00:00' );
+		$r_recent = self::insert_run( $wpdb, '2026-10-02 00:00:00', 'success', 'pending' );
+		$kept     = WPCV_Retention_Cleaner::MAX_TARGET_RUNS_PER_CALL + 2;
+
+		// 先頭: キーがそれぞれ別で、いまも続いている通知済みの finding を持つ target_run(残る).
+		for ( $i = 0; $i < $kept; $i++ ) {
+			$tr = self::insert_target_run( $wpdb, $r_old, 'plugin:a' );
+			self::insert_finding( $wpdb, $r_old, $tr, 'plugin:a', 'key-' . $i, '2026-05-01 03:10:00' );
+		}
+
+		// その後ろ: 消せる期限切れの target_run.
+		$deletable = self::insert_target_run( $wpdb, $r_old, 'plugin:a' );
+		// 最後の1件は I3(今終わった run の基準)として残る.
+		self::insert_target_run( $wpdb, $r_old, 'plugin:a' );
+
+		$latest = self::insert_target_run( $wpdb, $r_recent, 'plugin:a' );
+
+		for ( $i = 0; $i < $kept; $i++ ) {
+			self::insert_finding( $wpdb, $r_recent, $latest, 'plugin:a', 'key-' . $i );
+		}
+
+		self::set_retention( 3 );
+		self::make_cleaner( $wpdb )->handle_run_terminated( $r_recent, 'success' );
+
+		$this->assertNotContains( $deletable, self::ids( $wpdb, 'target_runs' ) );
+		// 残す行は消えていない.
+		$this->assertCount( $kept + 2, $wpdb->rows['wp_wpcv_target_runs'] );
+	}
+
+	/**
 	 * 掃除中の例外(DB エラー)を呼び出し元へ伝えない(run の確定を妨げない).
 	 *
 	 * @return void
