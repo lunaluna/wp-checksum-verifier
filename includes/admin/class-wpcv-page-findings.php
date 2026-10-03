@@ -239,7 +239,13 @@ class WPCV_Page_Findings {
 		// 抑制ルールを作る権限が無い人には、操作の列を出さない(v0.9.1).
 		$can_manage = self::can_manage_suppressions();
 
+		// 「Active on」は過去の run を開いても今の状態である旨を、表の上に1行で添える(v0.9.1).
+		$active_on_note = self::active_on_note();
+
 		?>
+		<?php if ( '' !== $active_on_note ) : ?>
+			<p class="description"><?php echo esc_html( $active_on_note ); ?></p>
+		<?php endif; ?>
 		<table class="wp-list-table widefat fixed striped">
 			<thead>
 				<tr>
@@ -281,6 +287,23 @@ class WPCV_Page_Findings {
 			</tbody>
 		</table>
 		<?php
+	}
+
+	/**
+	 * 「Active on」列の説明文を返す(v0.9.1).
+	 *
+	 * この列は finding の発生時点の状態を保存せず、画面を開いた時点の有効化状態を計算して表示する
+	 * (README の「Active on column」節). 過去の run を開いたときに、当時の状態と読み違えないよう
+	 * 説明を添える. 列が出るのはマルチサイトだけなので、単一サイトでは空文字を返す.
+	 *
+	 * @return string 説明文(エスケープ前). 列が無いときは空文字.
+	 */
+	public static function active_on_note() {
+		if ( ! is_multisite() ) {
+			return '';
+		}
+
+		return __( 'Active on shows where each plugin or theme is active now, not when the run took place.', 'wp-checksum-verifier' );
 	}
 
 	/**
