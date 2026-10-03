@@ -790,7 +790,9 @@ Always kept, whatever their age:
   the result each of them is compared against;
 - findings that were already emailed and still exist in that baseline (and the
   result they belong to) — the re-send suppression looks them up, so deleting
-  them would email the same finding again;
+  them would email the same finding again. Only the newest emailed row of each
+  finding is kept: the suppression reads just the latest email time, so older
+  rows of the same finding change nothing;
 - active suppression rules (revoked or expired rules are deleted once they have
   been expired for longer than the period).
 
@@ -840,7 +842,9 @@ where the plugin or theme is in use:
 At most five site names are listed, followed by "and N more". The column is
 computed when the screen is shown, by reading the active plugins and theme of
 every site (deleted and spam sites are skipped; archived sites are included);
-nothing is stored or cached, and nothing is computed during a run. Reading a
+nothing is stored or cached, and nothing is computed during a run. So the
+column always shows where it is in use *now*, even when you open an older run
+(the screen says so above the table). Reading a
 site costs about 1 ms (measured on a 20-site network); this has not been
 measured on a large network. When the network has more than 500 sites the column
 is not computed and says "Not shown (the network has N sites)". Change the
@@ -863,9 +867,11 @@ neither is affected.
 
 The `wpcv_required_capability` filter receives the capability and the name of
 the screen (`settings`, `runs`, `findings`, `suppressions` or `notices` — the
-alert notices) and returns the capability to require. The menu, the screen
-itself, every form it posts and the notice use the same value for a given name.
-A return value that is not a non-empty string is ignored.
+alert notices) or the action `manage_suppressions` (creating a suppression rule
+on the Findings screen and revoking one on the Suppressions screen), and returns
+the capability to require. The menu, the screen itself, every form it posts and
+the notice use the same value for a given name. A return value that is not a
+non-empty string is ignored.
 
 ```php
 add_filter( 'wpcv_required_capability', function ( $capability, $screen ) {
@@ -874,10 +880,16 @@ add_filter( 'wpcv_required_capability', function ( $capability, $screen ) {
 }, 10, 2 );
 ```
 
-Be careful when you loosen it: the Findings screen lets whoever can open it
-create suppression rules, which silence future alerts, so only give it to roles
-you trust with that. Loosening only one screen also leaves the rest of the
-workflow (for example the Suppressions list) at the default. The filter was
+The example above gives editors read-only access: `manage_suppressions` stays at
+the default, so they cannot create or revoke suppression rules (the buttons are
+hidden and the request is refused). Be careful when you loosen
+`manage_suppressions`: suppression rules silence future alerts, so only give it
+to roles you trust with that, and note that it also needs the screen's own
+capability to be usable. Before 0.9.1 the screen's capability alone allowed
+creating and revoking rules; if you loosened `findings` or `suppressions` and
+want that back, loosen `manage_suppressions` as well. Loosening only one screen
+also leaves the rest of the workflow (for example the Suppressions list) at the
+default. The filter was
 tested on a single site; on multisite the screens live in the Network Admin and
 the default is a super-administrator capability, and loosening it has not been
 tested there.
