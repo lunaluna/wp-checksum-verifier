@@ -436,4 +436,79 @@ class SettingsTest extends TestCase {
 			WPCV_Settings::get_github_mappings()
 		);
 	}
+
+	// ------------------------------------------------------------------
+	// v0.9 §Step2: 保持期間(`retention_months`).
+	// ------------------------------------------------------------------
+
+	/**
+	 * 未保存の状態では無期限(0)が返ることを確認する(プラン U5: 利用者が選ぶまで何も消さない).
+	 *
+	 * @return void
+	 */
+	public function test_retention_months_defaults_to_unlimited() {
+		$this->assertSame( 0, WPCV_Settings::get_retention_months() );
+		$this->assertSame( 0, WPCV_Settings::defaults()['retention_months'] );
+	}
+
+	/**
+	 * 選択肢の値は保存でき、読み戻せることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_update_retention_months_saves_each_choice() {
+		foreach ( WPCV_Settings::RETENTION_MONTHS_CHOICES as $months ) {
+			WPCV_Settings::update_retention_months( $months );
+
+			$this->assertSame( $months, WPCV_Settings::get_retention_months() );
+		}
+	}
+
+	/**
+	 * 選択肢以外の値(負数・選択肢に無い月数・数値でない文字列)を渡しても、無期限(0)として
+	 * 保存されることを確認する(汚れた値で意図せず履歴を消さない).
+	 *
+	 * @return void
+	 */
+	public function test_update_retention_months_falls_back_to_unlimited_for_invalid_value() {
+		foreach ( array( -1, 5, 999, 'abc', null ) as $invalid ) {
+			WPCV_Settings::update_retention_months( 12 );
+			WPCV_Settings::update_retention_months( $invalid );
+
+			$this->assertSame( 0, WPCV_Settings::get_retention_months() );
+		}
+	}
+
+	/**
+	 * 選択肢以外の値が保存されていた場合(option の手動書き換え等)、読み取りでも無期限(0)として
+	 * 扱うことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_get_retention_months_falls_back_to_unlimited_for_invalid_stored_value() {
+		foreach ( array( 5, -3, 'bogus', array( 3 ) ) as $invalid ) {
+			$GLOBALS['_wpcv_test_options'][ WPCV_Settings::OPTION_NAME ] = array( 'retention_months' => $invalid );
+
+			$this->assertSame( 0, WPCV_Settings::get_retention_months() );
+		}
+	}
+
+	/**
+	 * 保持期間を保存しても、他の設定値を壊さないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_update_retention_months_keeps_other_settings() {
+		WPCV_Settings::update_run_time( 5, 30 );
+		WPCV_Settings::update_retention_months( 6 );
+
+		$this->assertSame(
+			array(
+				'hour'   => 5,
+				'minute' => 30,
+			),
+			WPCV_Settings::get_run_time()
+		);
+		$this->assertSame( 6, WPCV_Settings::get_retention_months() );
+	}
 }

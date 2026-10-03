@@ -328,6 +328,13 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-update-e
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-manifest-cache-cleaner.php';
 
 /**
+ * Run の終端での保持期間の掃除(v0.9 §Step2). `wpcv_run_terminated` のハンドラを
+ * ファイル末尾で登録する. 設定 `retention_months` が 0(無期限. 既定)なら何もしない.
+ * `WPCV_Manifest_Cache_Cleaner` と同じ理由で、`WPCV_Plugin` 本体より前に読み込んでも問題ない.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-retention-cleaner.php';
+
+/**
  * Run開始時の「列挙(plan)→保存」を失敗時の後始末込みで行う共通処理
  * (v0.4.0 §Step5)。`WPCV_Run_Coordinator`・`WPCV_Runner_Async` の両方が使う.
  */

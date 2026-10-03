@@ -139,6 +139,7 @@ class WPCV_Page_Settings {
 		$stat_detection                    = WPCV_Settings::get_stat_detection_enabled();
 		$content_hash_stat_targets_enabled = WPCV_Settings::get_content_hash_stat_targets_enabled();
 		$alert_unrecorded_version_change   = WPCV_Settings::get_alert_unrecorded_version_change_enabled();
+		$retention_months                  = WPCV_Settings::get_retention_months();
 		$alert_to                          = WPCV_Settings::get_alert_to();
 		$github_mappings_text              = WPCV_GitHub_Mappings::format_text( WPCV_Settings::get_github_mappings() );
 		$github_resolved                   = WPCV_GitHub_Mappings::resolve();
@@ -267,6 +268,24 @@ class WPCV_Page_Settings {
 							</label>
 							<p class="description">
 								<?php echo esc_html__( 'Turn this off on sites that deploy via git, FTP, or Composer, where legitimate version changes never produce an update event.', 'wp-checksum-verifier' ); ?>
+							</p>
+						</td>
+					</tr>
+					<?php // v0.9 §Step2: 履歴の保持期間(プラン §3.1・U5). 既定は無期限(何も消さない). ?>
+					<tr>
+						<th scope="row">
+							<label for="wpcv_retention_months"><?php echo esc_html__( 'History retention', 'wp-checksum-verifier' ); ?></label>
+						</th>
+						<td>
+							<select name="wpcv_retention_months" id="wpcv_retention_months">
+								<?php foreach ( WPCV_Settings::RETENTION_MONTHS_CHOICES as $choice ) : ?>
+									<option value="<?php echo esc_attr( (string) $choice ); ?>" <?php selected( $retention_months, $choice ); ?>>
+										<?php echo esc_html( self::retention_choice_label( $choice ) ); ?>
+									</option>
+								<?php endforeach; ?>
+							</select>
+							<p class="description">
+								<?php echo esc_html__( 'Delete run history, per-target results and findings older than this period. The newest verified result of each target, results still being processed, and records needed to avoid repeating an alert are always kept. The default keeps everything. After you choose a period, older history is removed gradually at the end of the following runs.', 'wp-checksum-verifier' ); ?>
 							</p>
 						</td>
 					</tr>
@@ -555,6 +574,13 @@ class WPCV_Page_Settings {
 		// v0.6 §Step7: strict mode と同じく、未チェック時はキー自体が送られてこない.
 		WPCV_Settings::update_alert_unrecorded_version_change_enabled( isset( $_POST['wpcv_alert_unrecorded_version_change'] ) );
 
+		// v0.9 §Step2: 保持期間. セレクトボックスは常に値が送られるので、キーが無いとき
+		// (このフォーム以外からの POST)だけは既存の値を変えない. 選択肢以外の値は
+		// `update_retention_months()` が既定(0 = 無期限)に倒す.
+		if ( isset( $_POST['wpcv_retention_months'] ) ) {
+			WPCV_Settings::update_retention_months( absint( wp_unslash( $_POST['wpcv_retention_months'] ) ) );
+		}
+
 		// v0.5後半 §Step14: アラートの宛先. プラン §6 の順序(nonce → capability →
 		// `wp_unslash()` → 再サニタイズ)どおり. `sanitize_textarea_field()`は改行を残す
 		// ため区切りが保たれ、そのあと`parse_email_list()`がアドレス単位で検証し直す.
@@ -600,6 +626,24 @@ class WPCV_Page_Settings {
 				/* translators: %d: line number. */
 				return sprintf( __( 'Line %d: expected "target owner/repo" with an optional asset name. Skipped.', 'wp-checksum-verifier' ), (int) $line );
 		}
+	}
+
+	/**
+	 * 保持期間の選択肢の表示名を返す(v0.9 §Step2).
+	 *
+	 * @param int $months 月数(0 は無期限).
+	 * @return string
+	 */
+	private static function retention_choice_label( $months ) {
+		if ( 0 === (int) $months ) {
+			return __( 'Keep forever', 'wp-checksum-verifier' );
+		}
+
+		return sprintf(
+			/* translators: %d: number of months. */
+			_n( '%d month', '%d months', (int) $months, 'wp-checksum-verifier' ),
+			(int) $months
+		);
 	}
 
 	/**

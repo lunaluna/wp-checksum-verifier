@@ -190,6 +190,14 @@ class WPCV_Plugin {
 	private static $manifest_cache_cleaner = null;
 
 	/**
+	 * 組み立て済みの `WPCV_Retention_Cleaner`(1リクエスト内で使い回す.
+	 * v0.9 §Step2).
+	 *
+	 * @var WPCV_Retention_Cleaner|null
+	 */
+	private static $retention_cleaner = null;
+
+	/**
 	 * 本番用に配線された `WPCV_Run_Coordinator` を返す.
 	 *
 	 * @return WPCV_Run_Coordinator
@@ -518,6 +526,32 @@ class WPCV_Plugin {
 	 */
 	public static function handle_manifest_cache_run_terminated( $run_id, $status ) {
 		self::manifest_cache_cleaner()->handle_run_terminated( (int) $run_id, (string) $status );
+	}
+
+	/**
+	 * 本番用に配線された `WPCV_Retention_Cleaner` を返す(v0.9 §Step2).
+	 *
+	 * @return WPCV_Retention_Cleaner
+	 */
+	public static function retention_cleaner() {
+		if ( null === self::$retention_cleaner ) {
+			self::$retention_cleaner = new WPCV_Retention_Cleaner( self::run_repository(), self::target_run_repository(), self::finding_repository(), self::suppression_repository() );
+		}
+
+		return self::$retention_cleaner;
+	}
+
+	/**
+	 * `wpcv_run_terminated`フックのハンドラ(v0.9 §Step2. `WPCV_Retention_Cleaner`が
+	 * 保持期間を過ぎた履歴を消す. 設定 `retention_months` が 0〔無期限. 既定〕なら何もしない.
+	 * `includes/runners/class-wpcv-retention-cleaner.php`の末尾で登録する).
+	 *
+	 * @param int    $run_id 終端に達した run の id.
+	 * @param string $status 遷移後の `wpcv_runs.status`.
+	 * @return void
+	 */
+	public static function handle_retention_run_terminated( $run_id, $status ) {
+		self::retention_cleaner()->handle_run_terminated( (int) $run_id, (string) $status );
 	}
 
 	/**

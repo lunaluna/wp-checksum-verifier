@@ -620,9 +620,37 @@ class WPCV_Test_Fake_WPDB {
 			return $this->apply_insert_ignore( $matches[1], $matches[2], $matches[3] );
 		} elseif ( 1 === preg_match( '/^UPDATE\s+(\S+)\s+SET\s+(.+?)\s+WHERE\s+(.+)$/is', $query, $matches ) ) {
 			$this->apply_bulk_update( $matches[1], $matches[2], $matches[3] );
+		} elseif ( 1 === preg_match( '/^DELETE\s+FROM\s+(\S+)\s+WHERE\s+(.+)$/is', $query, $matches ) ) {
+			// v0.9 §Step2: 保持期間の掃除が `DELETE ... WHERE id IN (...)` を発行する.
+			$this->apply_bulk_delete( $matches[1], $matches[2] );
 		}
 
 		return true;
+	}
+
+	/**
+	 * `DELETE FROM {table} WHERE cond AND cond ...` を解釈し、`$this->rows` から該当行を
+	 * 取り除く(`query()` 専用のヘルパー. v0.9 §Step2).`apply_bulk_update()` と同じ
+	 * 「本プラグインが実際に発行する形だけを解釈する簡易パーサー」で、WHERE は
+	 * `column = literal` / `column IN (literal, ...)` / `column IS NULL` を `AND` で
+	 * 結んだものだけ.
+	 *
+	 * @param string $table     テーブル名.
+	 * @param string $where_str `WHERE` 直後の条件文字列.
+	 * @return void
+	 */
+	private function apply_bulk_delete( $table, $where_str ) {
+		if ( ! isset( $this->rows[ $table ] ) ) {
+			return;
+		}
+
+		$conditions = $this->parse_where_conditions( $where_str );
+
+		foreach ( $this->rows[ $table ] as $id => $row ) {
+			if ( $this->row_matches_conditions( $row, $conditions ) ) {
+				unset( $this->rows[ $table ][ $id ] );
+			}
+		}
 	}
 
 	/**

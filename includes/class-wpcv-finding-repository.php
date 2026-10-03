@@ -76,6 +76,16 @@ class WPCV_Finding_Repository {
 	const MARK_NOTIFIED_BATCH_SIZE = 500;
 
 	/**
+	 * `delete_by_target_run_id_except()` が1回のDELETEで扱うidの最大件数(v0.9 §Step2).
+	 *
+	 * 未実測: `MARK_NOTIFIED_BATCH_SIZE` と同じ値を流用した暫定値.1回のSQLを短く保つことが
+	 * 目的で、厳密な値は求めない.
+	 *
+	 * @var int
+	 */
+	const DELETE_BATCH_SIZE = 500;
+
+	/**
 	 * `$wpdb` 相当のオブジェクト(`insert()` / `delete()` / `get_results()` /
 	 * `prepare()` / `base_prefix` / `last_error` を持つもの).
 	 *
@@ -228,6 +238,77 @@ class WPCV_Finding_Repository {
 					)
 				)
 			);
+		}
+	}
+
+	/**
+	 * 指定 target_run の finding のうち、`notified_at` を持つ行(`id` と `finding_key`)を返す
+	 * (v0.9 §Step2: 保持期間の掃除が、通知の記録として残すべき行を探す.プラン §3.1.1 の I4).
+	 *
+	 * @param int $target_run_id 対象の target_run の id.
+	 * @return array<int, array{id: int, finding_key: string}> `finding_key` が NULL の行は含めない.
+	 */
+	public function find_notified_rows_for_target_run( $target_run_id ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_findings';
+		$sql   = "SELECT id, finding_key FROM {$table} WHERE target_run_id = %d AND notified_at IS NOT NULL";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; target_run_id is bound via prepare().
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (int) $target_run_id ), ARRAY_A );
+		$out  = array();
+
+		foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+			if ( null === $row['finding_key'] ) {
+				continue;
+			}
+
+			$out[] = array(
+				'id'          => (int) $row['id'],
+				'finding_key' => (string) $row['finding_key'],
+			);
+		}
+
+		return $out;
+	}
+
+	/**
+	 * 指定 target_run の finding を、`$keep_ids` に含まれる行を除いてすべて消す(v0.9 §Step2).
+	 *
+	 * `$keep_ids` が空なら `delete_by_target_run_id()` と同じ(1回のクエリ).残す行がある場合は、
+	 * その target_run の id を読んで差を取り、`id IN (...)` で `DELETE_BATCH_SIZE` 件ずつ消す
+	 * (`NOT IN` の長い一覧を SQL に載せない).
+	 *
+	 * @param int   $target_run_id 対象の target_run の id.
+	 * @param int[] $keep_ids      残す finding の id.
+	 * @return void
+	 *
+	 * @throws RuntimeException 削除に失敗した場合.
+	 */
+	public function delete_by_target_run_id_except( $target_run_id, array $keep_ids ) {
+		if ( empty( $keep_ids ) ) {
+			$this->delete_by_target_run_id( $target_run_id );
+
+			return;
+		}
+
+		$table = $this->wpdb->base_prefix . 'wpcv_findings';
+		$sql   = "SELECT id FROM {$table} WHERE target_run_id = %d";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; target_run_id is bound via prepare().
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (int) $target_run_id ), ARRAY_A );
+		$ids  = array_diff( array_map( 'intval', array_column( is_array( $rows ) ? $rows : array(), 'id' ) ), array_map( 'intval', $keep_ids ) );
+
+		foreach ( array_chunk( array_values( $ids ), self::DELETE_BATCH_SIZE ) as $batch ) {
+			$placeholders = implode( ', ', array_fill( 0, count( $batch ), '%d' ) );
+			$delete_sql   = "DELETE FROM {$table} WHERE id IN ( {$placeholders} )";
+
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $delete_sql is built from the table name and placeholders only; all values are bound via prepare().
+			$result = $this->wpdb->query( $this->wpdb->prepare( $delete_sql, $batch ) );
+
+			if ( false === $result ) {
+				throw new RuntimeException(
+					esc_html( sprintf( 'WPCV_Finding_Repository::delete_by_target_run_id_except() の query に失敗しました: %s', (string) $this->wpdb->last_error ) )
+				);
+			}
 		}
 	}
 
