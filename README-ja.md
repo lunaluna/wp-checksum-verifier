@@ -5,7 +5,7 @@ WordPress のコア・プラグイン・テーマ・MU プラグインの checks
 wp.org のテーマの zip から作るマニフェスト)と実ファイルを突き合わせ、どのマニフェスト
 にも存在しない未知のファイルも報告する。
 
-> **ステータス**: v0.9.1。検証エンジン、計画していた全ての実行モデル
+> **ステータス**: v0.9.2。検証エンジン、計画していた全ての実行モデル
 > (WP-CLI・WP-Cron・管理画面の「今すぐ実行」ボタン・REST API)、resume対応の
 > ファイル単位分割実行、抑制エンジン(`exclude_target`/`exclude_path`/
 > `allowlist_hash`とstrict mode)、公式checksumの無いプラグイン向けのstat
@@ -655,7 +655,8 @@ add_filter( 'wpcv_alert_channels', function ( $channels, $context ) {
 
 ## 設定
 
-設定画面(マルチサイトではネットワーク管理画面)は**状態パネル**から
+設定画面(マルチサイトではネットワーク管理画面. プラグイン一覧の本プラグインの行にある
+「設定」のリンクからも開ける)は**状態パネル**から
 始まる: 進行中のrunと直近完了run(それぞれのtarget集計・最終活動時刻・
 `diff: +5 / −0 / =1, alert: sent`のような差分・アラートの要約)、
 次回予定実行時刻、WP-Cronが有効かどうか、Action Schedulerが利用可能か

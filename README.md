@@ -5,7 +5,7 @@ tampering by comparing installed files against official checksum manifests
 (wp.org core/plugin checksums, and manifests built from wp.org theme zips)
 and reports unknown files not present in any manifest.
 
-> **Status**: v0.9.1. The verification engine, all planned execution model
+> **Status**: v0.9.2. The verification engine, all planned execution model
 > entry points (WP-CLI, WP-Cron, admin "Run now" button, REST API),
 > file-level chunked execution with resume, the suppression engine
 > (`exclude_target`/`exclude_path`/`allowlist_hash` plus strict mode),
@@ -741,7 +741,8 @@ menu on multisite):
 
 ## Settings
 
-The plugin's settings screen (network admin menu on multisite) opens with a
+The plugin's settings screen (network admin menu on multisite; also reachable
+from the "Settings" link in the plugin's row of the Plugins screen) opens with a
 **status panel**: the current run and last completed run (with their target
 tallies, last-activity timestamp, and a diff/alert summary, e.g. `diff: +5 /
 −0 / =1, alert: sent`), the next scheduled run time, whether WP-Cron is

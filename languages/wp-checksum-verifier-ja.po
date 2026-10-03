@@ -3,10 +3,10 @@
 # This file is distributed under the GPLv2 or later.
 msgid ""
 msgstr ""
-"Project-Id-Version: WP Checksum Verifier 0.9.1\n"
+"Project-Id-Version: WP Checksum Verifier 0.9.2\n"
 "Report-Msgid-Bugs-To: https://wordpress.org/support/plugin/wp-checksum-"
 "verifier\n"
-"POT-Creation-Date: 2026-10-03T07:56:48+00:00\n"
+"POT-Creation-Date: 2026-10-03T09:12:44+00:00\n"
 "PO-Revision-Date: 2026-10-03 00:00+0000\n"
 "Last-Translator: lunaluna_dev\n"
 "Language-Team: Japanese\n"
@@ -18,7 +18,7 @@ msgstr ""
 "X-Domain: wp-checksum-verifier\n"
 
 #. Plugin Name of the plugin
-#: wp-checksum-verifier.php includes/admin/class-wpcv-admin-menu.php:76
+#: wp-checksum-verifier.php includes/admin/class-wpcv-admin-menu.php:124
 #: includes/admin/class-wpcv-page-settings.php:153
 msgid "WP Checksum Verifier"
 msgstr "WP Checksum Verifier"
@@ -47,17 +47,21 @@ msgstr "lunaluna_dev"
 msgid "https://profiles.wordpress.org/lunaluna_dev/"
 msgstr "https://profiles.wordpress.org/lunaluna_dev/"
 
-#: includes/admin/class-wpcv-admin-menu.php:77
+#: includes/admin/class-wpcv-admin-menu.php:85
+msgid "Settings"
+msgstr "設定"
+
+#: includes/admin/class-wpcv-admin-menu.php:125
 msgid "Checksum Verifier"
 msgstr "Checksum Verifier"
 
-#: includes/admin/class-wpcv-admin-menu.php:106
-#: includes/admin/class-wpcv-admin-menu.php:107
+#: includes/admin/class-wpcv-admin-menu.php:154
+#: includes/admin/class-wpcv-admin-menu.php:155
 msgid "Run History"
 msgstr "実行履歴"
 
-#: includes/admin/class-wpcv-admin-menu.php:124
-#: includes/admin/class-wpcv-admin-menu.php:125
+#: includes/admin/class-wpcv-admin-menu.php:172
+#: includes/admin/class-wpcv-admin-menu.php:173
 #: includes/admin/class-wpcv-page-findings.php:101
 #: includes/admin/class-wpcv-page-run-history.php:89
 #: includes/admin/class-wpcv-page-run-history.php:245
@@ -65,8 +69,8 @@ msgstr "実行履歴"
 msgid "Findings"
 msgstr "検出結果"
 
-#: includes/admin/class-wpcv-admin-menu.php:142
-#: includes/admin/class-wpcv-admin-menu.php:143
+#: includes/admin/class-wpcv-admin-menu.php:190
+#: includes/admin/class-wpcv-admin-menu.php:191
 #: includes/admin/class-wpcv-page-suppressions.php:64
 msgid "Suppressions"
 msgstr "抑制"
@@ -219,7 +223,9 @@ msgstr "操作"
 msgid ""
 "Active on shows where each plugin or theme is active now, not when the run "
 "took place."
-msgstr "「有効なサイト」列は、各プラグイン・テーマを今どこで有効にしているかを示します(run を実行した時点の状態ではありません)。"
+msgstr ""
+"「有効なサイト」列は、各プラグイン・テーマを今どこで有効にしているかを示しま"
+"す(run を実行した時点の状態ではありません)。"
 
 #: includes/admin/class-wpcv-page-findings.php:325
 msgid "Network-wide (all sites)"
@@ -1266,6 +1272,6 @@ msgstr ""
 "これは WP Checksum Verifier からのテストアラートです。このメッセージが届いて"
 "いれば、アラートの宛先の設定は正しく動作しています。"
 
-#: wp-checksum-verifier.php:465
+#: wp-checksum-verifier.php:467
 msgid "GitHub"
 msgstr "GitHub"

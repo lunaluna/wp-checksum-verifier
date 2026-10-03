@@ -42,6 +42,54 @@ class WPCV_Admin_Menu {
 	}
 
 	/**
+	 * プラグイン一覧の操作リンク(「無効化」など)に「設定」のリンクを足すフックを登録する.
+	 *
+	 * メニューと同じく、マルチサイトではネットワーク管理画面のプラグイン一覧だけに出す
+	 * (設定画面がネットワーク管理画面にしか無いため). コアは画面に応じて
+	 * `network_admin_plugin_action_links_{$plugin_file}` と `plugin_action_links_{$plugin_file}` の
+	 * どちらか一方だけを呼ぶ(`WP_Plugins_List_Table::single_row()`. WordPress 7.1.2 で確認).
+	 *
+	 * @param string $plugin_basename `plugin_basename()` の値(例: `wp-checksum-verifier/wp-checksum-verifier.php`).
+	 * @return void
+	 */
+	public static function register_action_links( $plugin_basename ) {
+		$hook = is_multisite()
+			? 'network_admin_plugin_action_links_' . $plugin_basename
+			: 'plugin_action_links_' . $plugin_basename;
+
+		add_filter( $hook, array( __CLASS__, 'add_settings_action_link' ) );
+	}
+
+	/**
+	 * 操作リンクの先頭に「設定」のリンクを足す.
+	 *
+	 * 設定画面を開けない利用者にはリンクを出さない. 権限はメニューの登録と同じ
+	 * `WPCV_Capability::required()` で引くので、フィルター `wpcv_required_capability` で
+	 * 権限を変えても食い違わない.
+	 *
+	 * @param string[] $actions 既存の操作リンク.
+	 * @return string[] 先頭に「設定」を足した操作リンク.
+	 */
+	public static function add_settings_action_link( $actions ) {
+		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_SETTINGS ) ) ) {
+			return $actions;
+		}
+
+		$url = is_multisite()
+			? network_admin_url( 'admin.php?page=wpcv-settings' )
+			: admin_url( 'admin.php?page=wpcv-settings' );
+
+		$settings_link = sprintf(
+			'<a href="%s">%s</a>',
+			esc_url( $url ),
+			esc_html__( 'Settings', 'wp-checksum-verifier' )
+		);
+
+		// WPMAR と同じく、「無効化」より前(一番左)に置く.
+		return array_merge( array( 'settings' => $settings_link ), $actions );
+	}
+
+	/**
 	 * 単一サイトの管理画面にメニューを追加する.
 	 *
 	 * @return void
