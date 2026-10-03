@@ -22,9 +22,10 @@ if ( ! defined( 'ABSPATH' ) ) {
  * - I3: 実行中・差分処理が終わっていない run と、その run が基準にする target_run
  *   (その run より前の、各 target の直近の success).`wpcv_run_terminated` は差分処理の
  *   *前* に発火するので、今終わった run 自身も「差分処理前」として扱う.
- * - I4: `notified_at` を持つ finding のうち、同じ `finding_key` が I1 の世代にまだある行
- *   (再送抑制が `finding_key` 単位で全期間の `MAX(notified_at)` を見るため. 消すと、続いている
- *   検出が期間の経過後に1回だけ再通知される).
+ * - I4: `notified_at` を持つ finding のうち、同じ `finding_key` が I1 の世代にまだあり、かつ
+ *   他の run に同じか新しい通知が無い行(= そのキーの最新の通知1行).再送抑制が `finding_key`
+ *   単位で全期間の `MAX(notified_at)` を見るため、これを消すと、続いている検出が期間の経過後に
+ *   1回だけ再通知される.最新より古い通知は判定に効かないので残さない(v0.9.1).
  * - I5: 有効な suppression(失効してから期限を過ぎたものだけ消す).
  *
  * 期限の判定: 期限切れの run は `started_at` が「今 - N か月」より前のもの. 日時の列を持たない
@@ -35,7 +36,9 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 親だけが残る状態になり、読み手は壊れない.
  *
  * 1回の呼び出しで消す target_run の数には上限を置く(`MAX_TARGET_RUNS_PER_CALL`)。上限に達したら
- * 続きは次の run の終端で行う.
+ * 続きは次の run の終端で行う.上限に数えるのは、target_run を消したときと、finding を1件以上
+ * 消したときだけ(何も消さずに残した target_run は数えない. 数えると、残す行が上限の件数以上
+ * 先頭に並んだとき、毎回同じ先頭で止まり、後ろの期限切れに届かなくなる).
  *
  * `WPCV_Manifest_Cache_Cleaner` と同じく、掃除の失敗で他のリスナーや run の確定を妨げないよう
  * try/catch で包む.消せなかった行は次の run の終端でまた消そうとするだけで、照合の結果には
@@ -270,11 +273,16 @@ class WPCV_Retention_Cleaner {
 
 				$keep_finding_ids = $this->notified_finding_ids_to_keep( $target_run, $latest_id_by_target );
 
-				$this->finding_repository->delete_by_target_run_id_except( $target_run['id'], $keep_finding_ids );
+				$deleted_findings = $this->finding_repository->delete_by_target_run_id_except( $target_run['id'], $keep_finding_ids );
 
 				// 通知の記録として残す finding がある間は、その target_run も残す(finding が親を指すため).
 				if ( empty( $keep_finding_ids ) ) {
 					$this->target_run_repository->delete_by_id( $target_run['id'] );
+				} elseif ( $deleted_findings < 1 ) {
+					// 何も消さずに残しただけの target_run は、上限に数えない. 数えると、残す行が
+					// 上限の件数以上 id の小さい側に並んだとき、毎回その先頭から数え直して
+					// 後ろの消せる行へ永久に届かなくなる(v0.9.1).
+					continue;
 				}
 
 				++$handled;
@@ -296,6 +304,12 @@ class WPCV_Retention_Cleaner {
 	 * `notified_at` があり、同じ `finding_key` が、その target の直近の success の target_run に
 	 * まだ存在する行だけ残す.その target に success の target_run が無ければ(`latest_id_by_target`
 	 * に無い)、続いている検出が無いので残さない.
+	 *
+	 * さらに、同じ `finding_key` で、他の run に同じか新しい `notified_at` の行があるなら残さない
+	 * (v0.9.1). 再送抑制が読むのは `find_last_notified_at_by_keys()` の `MAX(notified_at)` だけで、
+	 * 古い通知は新しい通知が残る限り判定に効かない. 同じ日時が2行ある場合は、走査が id 順なので
+	 * 先に見た方が消え、後に見た方は比べる相手が無くなって残る(どちらも消えることはない).
+	 * stat 監視で毎回変わるファイルは同じキーで毎回通知されるため、これが無いと残す行が run の数だけ増える.
 	 *
 	 * @param array{id: int, run_id: int, target_id: string} $target_run          消す候補の target_run.
 	 * @param array<string, int>                             $latest_id_by_target target_id => 直近の success の target_run の id.
@@ -320,12 +334,33 @@ class WPCV_Retention_Cleaner {
 			)
 		);
 
-		$keep = array();
+		$live_rows = array();
 
 		foreach ( $notified as $row ) {
 			if ( isset( $live_keys[ $row['finding_key'] ] ) ) {
-				$keep[] = $row['id'];
+				$live_rows[] = $row;
 			}
+		}
+
+		if ( empty( $live_rows ) ) {
+			return array();
+		}
+
+		// 他の run での、同じキーの直近の通知日時(この target_run が属する run は除く).
+		$others = $this->finding_repository->find_last_notified_at_by_keys(
+			array_values( array_unique( array_column( $live_rows, 'finding_key' ) ) ),
+			$target_run['run_id']
+		);
+
+		$keep = array();
+
+		foreach ( $live_rows as $row ) {
+			// 他の run に、同じか新しい通知がある行は、残さなくても MAX(notified_at) が変わらない.
+			if ( isset( $others[ $row['finding_key'] ] ) && $others[ $row['finding_key'] ] >= $row['notified_at'] ) {
+				continue;
+			}
+
+			$keep[] = $row['id'];
 		}
 
 		return $keep;

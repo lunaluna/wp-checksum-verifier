@@ -133,10 +133,13 @@ class WPCV_Alert_Composer {
 	/**
 	 * `access_denied` のうち、初めて現れたもの(`is_new`)の数(v0.9 §Step7).
 	 *
+	 * 件名の組み立てと、`WPCV_Alert_Sender` の送信可否の判定が同じ数を使うよう、public にして
+	 * 1か所に集約している(v0.9.1. 以前は Sender にも同じ実装があった).
+	 *
 	 * @param array<int, array{target_id: string, is_new: bool}> $access_denied `compose()` の入力の `access_denied`.
 	 * @return int
 	 */
-	private static function count_new_access_denied( array $access_denied ) {
+	public static function count_new_access_denied( array $access_denied ) {
 		return count(
 			array_filter(
 				$access_denied,

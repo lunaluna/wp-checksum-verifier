@@ -133,7 +133,7 @@ class WPCV_Alert_Sender {
 		$unrecorded_version_changes = $this->gather_unrecorded_version_changes( $target_runs, $run_id );
 		$access_denied              = $this->gather_access_denied( $target_runs, $run_id );
 
-		if ( ! WPCV_Generation_Differ::should_send_alert( $candidates['notify_count'], $resolved_count, ! empty( $unverifiable_streaks ), count( $unrecorded_version_changes ), self::count_new_access_denied( $access_denied ) ) ) {
+		if ( ! WPCV_Generation_Differ::should_send_alert( $candidates['notify_count'], $resolved_count, ! empty( $unverifiable_streaks ), count( $unrecorded_version_changes ), WPCV_Alert_Composer::count_new_access_denied( $access_denied ) ) ) {
 			$this->run_repository->record_alert_result( $run_id, $owner, 'not_needed', null, null, false );
 
 			return array( 'action' => 'not_needed' );
@@ -500,23 +500,6 @@ class WPCV_Alert_Sender {
 		}
 
 		return $items;
-	}
-
-	/**
-	 * `gather_access_denied()` の結果のうち、初めて現れたものの数.
-	 *
-	 * @param array<int, array{target_id: string, is_new: bool}> $access_denied `gather_access_denied()` の結果.
-	 * @return int
-	 */
-	private static function count_new_access_denied( array $access_denied ) {
-		return count(
-			array_filter(
-				$access_denied,
-				static function ( $item ) {
-					return ! empty( $item['is_new'] );
-				}
-			)
-		);
 	}
 
 	/**

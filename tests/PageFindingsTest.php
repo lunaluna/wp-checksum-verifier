@@ -349,4 +349,25 @@ class PageFindingsTest extends TestCase {
 
 		$this->assertSame( 'S1, S2, S3, S4, S5, and 2 more', WPCV_Page_Findings::format_affected_sites( $info ) );
 	}
+
+	/**
+	 * 「Active on」の説明文は、列が出るマルチサイトのときだけ返し、単一サイトでは空文字を返す(v0.9.1).
+	 *
+	 * @return void
+	 */
+	public function test_active_on_note_is_shown_only_on_multisite() {
+		unset( $GLOBALS['_wpcv_test_is_multisite'] );
+		$this->assertSame( '', WPCV_Page_Findings::active_on_note() );
+
+		$GLOBALS['_wpcv_test_is_multisite'] = true;
+
+		try {
+			$this->assertSame(
+				'Active on shows where each plugin or theme is active now, not when the run took place.',
+				WPCV_Page_Findings::active_on_note()
+			);
+		} finally {
+			unset( $GLOBALS['_wpcv_test_is_multisite'] );
+		}
+	}
 }

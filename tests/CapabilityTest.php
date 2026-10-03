@@ -331,4 +331,43 @@ class CapabilityTest extends TestCase {
 			$this->assertSame( array( 'manage_options' ), $GLOBALS['_wpcv_test_capability_checks'], $handler[1] );
 		}
 	}
+
+	/**
+	 * 抑制ルールの作成・失効は、画面の閲覧とは別の操作名(manage_suppressions)の権限で判定する(v0.9.1).
+	 * 画面の権限だけを持つ人は POST を拒否され、操作の権限も持つ人は(理由の検証まで)進める.
+	 *
+	 * @return void
+	 */
+	public function test_suppression_posts_need_the_manage_suppressions_capability() {
+		self::add_capability_filter(
+			static function ( $capability, $screen ) {
+				return WPCV_Capability::ACTION_MANAGE_SUPPRESSIONS === $screen ? 'cap_manage' : 'cap_view';
+			}
+		);
+
+		$_POST[ WPCV_Page_Suppressions::NONCE_NAME ] = '1';
+		$_POST[ WPCV_Page_Findings::NONCE_NAME ]     = '1';
+
+		$handlers = array(
+			array( 'WPCV_Page_Suppressions', 'maybe_handle_revoke' ),
+			array( 'WPCV_Page_Findings', 'maybe_handle_action' ),
+		);
+
+		foreach ( $handlers as $handler ) {
+			$reflection = new ReflectionMethod( $handler[0], $handler[1] );
+			$reflection->setAccessible( true );
+
+			// 閲覧の権限だけ: 拒否(null). 判定に使ったのは操作の権限.
+			$GLOBALS['_wpcv_test_user_capabilities'] = array( 'cap_view' );
+			$GLOBALS['_wpcv_test_capability_checks'] = array();
+
+			$this->assertNull( $reflection->invoke( null ), "{$handler[1]}: 閲覧だけでは拒否" );
+			$this->assertSame( array( 'cap_manage' ), $GLOBALS['_wpcv_test_capability_checks'], "{$handler[1]}: 判定に使った権限" );
+
+			// 操作の権限あり: 権限の判定を通り、理由が空なので理由の検証で止まる(DB には触れない).
+			$GLOBALS['_wpcv_test_user_capabilities'] = array( 'cap_view', 'cap_manage' );
+
+			$this->assertInstanceOf( WP_Error::class, $reflection->invoke( null ), "{$handler[1]}: 権限ありなら理由の検証へ進む" );
+		}
+	}
 }

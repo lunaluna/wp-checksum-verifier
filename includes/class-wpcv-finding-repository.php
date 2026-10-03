@@ -211,7 +211,7 @@ class WPCV_Finding_Repository {
 	 * (レビュー指摘の実害).
 	 *
 	 * @param int $target_run_id 対象の target_run の id.
-	 * @return void
+	 * @return int 消した行数(v0.9.1: `delete_by_target_run_id_except()` が件数を返すために追加).
 	 *
 	 * @throws RuntimeException `$wpdb->delete()` が失敗した場合(v0.4.0コード
 	 *                          レビューCR-03是正と同じ理由。ここを確認せずに
@@ -239,18 +239,21 @@ class WPCV_Finding_Repository {
 				)
 			);
 		}
+
+		return (int) $deleted;
 	}
 
 	/**
-	 * 指定 target_run の finding のうち、`notified_at` を持つ行(`id` と `finding_key`)を返す
-	 * (v0.9 §Step2: 保持期間の掃除が、通知の記録として残すべき行を探す.プラン §3.1.1 の I4).
+	 * 指定 target_run の finding のうち、`notified_at` を持つ行(`id`・`finding_key`・`notified_at`)を返す
+	 * (v0.9 §Step2: 保持期間の掃除が、通知の記録として残すべき行を探す.プラン §3.1.1 の I4.
+	 * v0.9.1: 他の run の通知と新旧を比べるため `notified_at` も返す).
 	 *
 	 * @param int $target_run_id 対象の target_run の id.
-	 * @return array<int, array{id: int, finding_key: string}> `finding_key` が NULL の行は含めない.
+	 * @return array<int, array{id: int, finding_key: string, notified_at: string}> `finding_key` が NULL の行は含めない.
 	 */
 	public function find_notified_rows_for_target_run( $target_run_id ) {
 		$table = $this->wpdb->base_prefix . 'wpcv_findings';
-		$sql   = "SELECT id, finding_key FROM {$table} WHERE target_run_id = %d AND notified_at IS NOT NULL";
+		$sql   = "SELECT id, finding_key, notified_at FROM {$table} WHERE target_run_id = %d AND notified_at IS NOT NULL";
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; target_run_id is bound via prepare().
 		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (int) $target_run_id ), ARRAY_A );
@@ -264,6 +267,7 @@ class WPCV_Finding_Repository {
 			$out[] = array(
 				'id'          => (int) $row['id'],
 				'finding_key' => (string) $row['finding_key'],
+				'notified_at' => (string) $row['notified_at'],
 			);
 		}
 
@@ -277,17 +281,18 @@ class WPCV_Finding_Repository {
 	 * その target_run の id を読んで差を取り、`id IN (...)` で `DELETE_BATCH_SIZE` 件ずつ消す
 	 * (`NOT IN` の長い一覧を SQL に載せない).
 	 *
+	 * v0.9.1: 消した行数を返す.保持期間の掃除が「何も消せなかった target_run」を1回の上限に
+	 * 数えないために使う(数えると、残す target_run が上限の件数並んだとき、その後ろへ届かなくなる).
+	 *
 	 * @param int   $target_run_id 対象の target_run の id.
 	 * @param int[] $keep_ids      残す finding の id.
-	 * @return void
+	 * @return int 消した finding の行数.
 	 *
 	 * @throws RuntimeException 削除に失敗した場合.
 	 */
 	public function delete_by_target_run_id_except( $target_run_id, array $keep_ids ) {
 		if ( empty( $keep_ids ) ) {
-			$this->delete_by_target_run_id( $target_run_id );
-
-			return;
+			return $this->delete_by_target_run_id( $target_run_id );
 		}
 
 		$table = $this->wpdb->base_prefix . 'wpcv_findings';
@@ -296,6 +301,8 @@ class WPCV_Finding_Repository {
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; target_run_id is bound via prepare().
 		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (int) $target_run_id ), ARRAY_A );
 		$ids  = array_diff( array_map( 'intval', array_column( is_array( $rows ) ? $rows : array(), 'id' ) ), array_map( 'intval', $keep_ids ) );
+
+		$total = 0;
 
 		foreach ( array_chunk( array_values( $ids ), self::DELETE_BATCH_SIZE ) as $batch ) {
 			$placeholders = implode( ', ', array_fill( 0, count( $batch ), '%d' ) );
@@ -309,7 +316,11 @@ class WPCV_Finding_Repository {
 					esc_html( sprintf( 'WPCV_Finding_Repository::delete_by_target_run_id_except() の query に失敗しました: %s', (string) $this->wpdb->last_error ) )
 				);
 			}
+
+			$total += (int) $result;
 		}
+
+		return $total;
 	}
 
 	/**

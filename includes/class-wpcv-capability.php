@@ -36,12 +36,12 @@ class WPCV_Capability {
 	const SCREEN_RUNS = 'runs';
 
 	/**
-	 * 画面名: 検出結果(抑制ルールの作成〔POST〕を含む).
+	 * 画面名: 検出結果(表示のみ. 抑制ルールの作成は `ACTION_MANAGE_SUPPRESSIONS`).
 	 */
 	const SCREEN_FINDINGS = 'findings';
 
 	/**
-	 * 画面名: 抑制ルールの一覧(失効〔POST〕を含む).
+	 * 画面名: 抑制ルールの一覧(表示のみ. 失効は `ACTION_MANAGE_SUPPRESSIONS`).
 	 */
 	const SCREEN_SUPPRESSIONS = 'suppressions';
 
@@ -51,7 +51,16 @@ class WPCV_Capability {
 	const SCREEN_NOTICES = 'notices';
 
 	/**
-	 * 画面名の一覧.
+	 * 操作名: 抑制ルールの作成(検出結果の各行)と失効(抑制一覧)(v0.9.1).
+	 *
+	 * 抑制ルールは検出の通知を止められるので、画面の閲覧とは別の権限にした(以前は閲覧と同じ権限で、
+	 * 検出結果の閲覧だけを緩めたつもりでも抑制ルールを作れた). 既定は他の画面と同じ.
+	 * この操作の画面(検出結果・抑制一覧)に入れる権限も別に必要.
+	 */
+	const ACTION_MANAGE_SUPPRESSIONS = 'manage_suppressions';
+
+	/**
+	 * 画面名・操作名の一覧(フィルターの `$screen` に渡る値).
 	 *
 	 * @var string[]
 	 */
@@ -61,6 +70,7 @@ class WPCV_Capability {
 		self::SCREEN_FINDINGS,
 		self::SCREEN_SUPPRESSIONS,
 		self::SCREEN_NOTICES,
+		self::ACTION_MANAGE_SUPPRESSIONS,
 	);
 
 	/**
@@ -77,12 +87,12 @@ class WPCV_Capability {
 	}
 
 	/**
-	 * 指定した画面に必要な権限を返す.
+	 * 指定した画面・操作に必要な権限を返す.
 	 *
 	 * 画面名が `SCREENS` に無い場合(呼び出し側の綴り間違い)は、フィルターを通さず既定の権限を返す
 	 * (誤って権限を緩めない).
 	 *
-	 * @param string $screen `SCREEN_*` のいずれか.
+	 * @param string $screen `SCREEN_*` または `ACTION_*` のいずれか.
 	 * @return string capability.
 	 */
 	public static function required( $screen ) {
@@ -96,16 +106,19 @@ class WPCV_Capability {
 		 * 管理画面に必要な権限(capability)を変える(v0.9 §Step5).
 		 *
 		 * 既定は、単一サイトで `manage_options`、マルチサイトで `manage_network_options`.
-		 * **権限を緩めると、その権限を持つ人が検出結果の確認と抑制ルールの作成・失効をできる**.
-		 * 抑制ルールは検出の通知を止められるので、信頼できるロールにだけ渡すこと.
-		 * 同じ画面名のメニュー・表示・POST の処理・通知は、すべてこの値を使う. 画面ごとに別の値を
-		 * 返すこともできるが、たとえば `findings` だけを緩めても、検出結果から作る抑制ルールの
-		 * 一覧(`suppressions`)は別の権限のままになる点に注意.
+		 * 同じ画面名のメニュー・表示・通知は、すべてこの値を使う. 画面ごとに別の値を返すこともできる.
+		 * `findings` だけを緩めた場合は、検出結果を見られるだけで、抑制ルールの一覧(`suppressions`)
+		 * は別の権限のままになる.
+		 *
+		 * **抑制ルールの作成(検出結果の各行)と失効(抑制一覧)は、画面とは別の操作名
+		 * `manage_suppressions` の権限で判定する**(v0.9.1. 0.9.0 までは画面の権限と同じだった).
+		 * 抑制ルールは検出の通知を止められるので、信頼できるロールにだけ渡すこと. 操作するには、
+		 * その画面(`findings`・`suppressions`)に入れる権限も必要.
 		 *
 		 * 文字列以外・空文字を返した場合は、既定の権限として扱う.
 		 *
 		 * @param string $capability 既定の権限.
-		 * @param string $screen     画面名(`settings`・`runs`・`findings`・`suppressions`・`notices`).
+		 * @param string $screen     画面名・操作名(`settings`・`runs`・`findings`・`suppressions`・`notices`・`manage_suppressions`).
 		 */
 		return self::sanitize_filtered( apply_filters( 'wpcv_required_capability', $default, $screen ), $default );
 	}

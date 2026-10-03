@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.1] - 2026-10-03
+
+### Fixed
+
+- **History retention could stall.** Cleanup stopped after 500 per-target
+  results *examined*, and results kept only because of an already-emailed
+  finding counted toward that limit. With 500 or more such results at the
+  oldest end, every run end re-examined the same ones and never reached the
+  expired history behind them. Results kept without deleting anything no
+  longer count toward the limit. Also, of the already-emailed findings that
+  still exist in the baseline, only the newest one per finding is kept now
+  (the re-send suppression reads only the latest email time, so older ones
+  changed nothing); a file that changes every run under stat-based tracking
+  used to keep one result per run. On a real site, 65 emailed rows in 9
+  results became 46 rows in 7 results (read-only count; nothing was old enough
+  to be deleted there).
+
+### Changed
+
+- **Creating and revoking suppression rules has its own capability.** The
+  `wpcv_required_capability` filter now also receives the name
+  `manage_suppressions`, used for creating a rule (Findings screen) and
+  revoking one (Suppressions screen); the "Actions" column is hidden from
+  people without it. The default is the same as every other screen. Before,
+  these used the screen's own capability, so loosening `findings` alone also
+  let people create rules. **If you loosened `findings` or `suppressions` and
+  want people to keep creating or revoking rules, loosen `manage_suppressions`
+  too.** Opening the screen still needs the screen's capability as well.
+- The Findings screen explains, above the table on multisite, that "Active on"
+  shows the current state, not the state when the run took place.
+- Internal: the duplicated `count_new_access_denied()` is now one method
+  (`WPCV_Alert_Composer`); a test checks that the status / severity / diff
+  state allowlists of the Findings screen and the REST API stay identical.
+
 ## [0.9.0] - 2026-10-03
 
 ### Added
