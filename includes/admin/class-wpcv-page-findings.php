@@ -23,7 +23,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 各行から「パス除外」(`exclude_path`)・「このhashを承認」(`allowlist_hash`)・
  * 「targetごと除外」(`exclude_target`)の3操作をワンクリックで実行できる
  * (§Step9プラン「target除外はtarget単位の操作として明示する」)。3つとも
- * 理由(reason)入力を必須にし、nonce・capabilityを検証する.
+ * 理由(reason)入力を必須にし、nonce・capability(`manage_suppressions`. 画面の閲覧とは別. v0.9.1)を検証する.
  *
  * ユーザー確認済みの設計判断: これらの操作は`wpcv_suppressions`へルールを
  * 作成するのみで、画面に表示中の既存findingへ即座に反映(`suppressed_by`の
@@ -193,6 +193,15 @@ class WPCV_Page_Findings {
 	}
 
 	/**
+	 * 現在のユーザーが抑制ルールを作れるかを返す(v0.9.1).
+	 *
+	 * @return bool
+	 */
+	private static function can_manage_suppressions() {
+		return current_user_can( WPCV_Capability::required( WPCV_Capability::ACTION_MANAGE_SUPPRESSIONS ) );
+	}
+
+	/**
 	 * Findings一覧テーブルを描画する.
 	 *
 	 * @param int $run_id 対象runのid.
@@ -227,6 +236,9 @@ class WPCV_Page_Findings {
 		$show_affected_sites = is_multisite();
 		$affected_sites      = new WPCV_Affected_Sites();
 
+		// 抑制ルールを作る権限が無い人には、操作の列を出さない(v0.9.1).
+		$can_manage = self::can_manage_suppressions();
+
 		?>
 		<table class="wp-list-table widefat fixed striped">
 			<thead>
@@ -242,7 +254,9 @@ class WPCV_Page_Findings {
 					<th><?php echo esc_html__( 'Version', 'wp-checksum-verifier' ); ?></th>
 					<th><?php echo esc_html__( 'Diff', 'wp-checksum-verifier' ); ?></th>
 					<th><?php echo esc_html__( 'Suppressed', 'wp-checksum-verifier' ); ?></th>
-					<th><?php echo esc_html__( 'Actions', 'wp-checksum-verifier' ); ?></th>
+					<?php if ( $can_manage ) : ?>
+						<th><?php echo esc_html__( 'Actions', 'wp-checksum-verifier' ); ?></th>
+					<?php endif; ?>
 				</tr>
 			</thead>
 			<tbody>
@@ -259,7 +273,9 @@ class WPCV_Page_Findings {
 						<td><?php echo esc_html( (string) $finding['version'] ); ?></td>
 						<td><?php echo esc_html( self::format_diff_state( $finding ) ); ?></td>
 						<td><?php echo esc_html( self::suppressed_label( $finding ) ); ?></td>
-						<td><?php self::render_finding_actions( $finding ); ?></td>
+						<?php if ( $can_manage ) : ?>
+							<td><?php self::render_finding_actions( $finding ); ?></td>
+						<?php endif; ?>
 					</tr>
 				<?php endforeach; ?>
 			</tbody>
@@ -605,7 +621,8 @@ class WPCV_Page_Findings {
 
 		check_admin_referer( self::NONCE_ACTION, self::NONCE_NAME );
 
-		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_FINDINGS ) ) ) {
+		// 抑制ルールの作成は、画面の閲覧とは別の権限(v0.9.1. WPCV_Capability::ACTION_MANAGE_SUPPRESSIONS).
+		if ( ! self::can_manage_suppressions() ) {
 			return null;
 		}
 

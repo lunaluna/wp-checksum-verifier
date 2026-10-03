@@ -49,6 +49,9 @@ class WPCV_Page_Suppressions {
 
 		$action_result = self::maybe_handle_revoke();
 
+		// 失効の権限が無い人には、操作の列を出さない(v0.9.1).
+		$can_manage = self::can_manage_suppressions();
+
 		$rows = WPCV_Plugin::suppression_repository()->find_all();
 		usort(
 			$rows,
@@ -82,7 +85,9 @@ class WPCV_Page_Suppressions {
 							<th><?php echo esc_html__( 'Created by', 'wp-checksum-verifier' ); ?></th>
 							<th><?php echo esc_html__( 'Created at', 'wp-checksum-verifier' ); ?></th>
 							<th><?php echo esc_html__( 'Status', 'wp-checksum-verifier' ); ?></th>
-							<th><?php echo esc_html__( 'Actions', 'wp-checksum-verifier' ); ?></th>
+							<?php if ( $can_manage ) : ?>
+								<th><?php echo esc_html__( 'Actions', 'wp-checksum-verifier' ); ?></th>
+							<?php endif; ?>
 						</tr>
 					</thead>
 					<tbody>
@@ -94,11 +99,13 @@ class WPCV_Page_Suppressions {
 								<td><?php echo esc_html( self::format_created_by( (int) $row['created_by'] ) ); ?></td>
 								<td><?php echo esc_html( (string) $row['created_at'] ); ?></td>
 								<td><?php echo esc_html( self::status_label( $row ) ); ?></td>
-								<td>
-									<?php if ( null === $row['expired_at'] ) : ?>
-										<?php self::render_revoke_form( (int) $row['id'] ); ?>
-									<?php endif; ?>
-								</td>
+								<?php if ( $can_manage ) : ?>
+									<td>
+										<?php if ( null === $row['expired_at'] ) : ?>
+											<?php self::render_revoke_form( (int) $row['id'] ); ?>
+										<?php endif; ?>
+									</td>
+								<?php endif; ?>
 							</tr>
 						<?php endforeach; ?>
 					</tbody>
@@ -106,6 +113,15 @@ class WPCV_Page_Suppressions {
 			<?php endif; ?>
 		</div>
 		<?php
+	}
+
+	/**
+	 * 現在のユーザーが抑制ルールを失効できるかを返す(v0.9.1).
+	 *
+	 * @return bool
+	 */
+	private static function can_manage_suppressions() {
+		return current_user_can( WPCV_Capability::required( WPCV_Capability::ACTION_MANAGE_SUPPRESSIONS ) );
 	}
 
 	/**
@@ -245,7 +261,8 @@ class WPCV_Page_Suppressions {
 
 		check_admin_referer( self::NONCE_ACTION, self::NONCE_NAME );
 
-		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_SUPPRESSIONS ) ) ) {
+		// 失効は、画面の閲覧とは別の権限(v0.9.1. WPCV_Capability::ACTION_MANAGE_SUPPRESSIONS).
+		if ( ! self::can_manage_suppressions() ) {
 			return null;
 		}
 
