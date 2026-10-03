@@ -78,4 +78,7 @@ jobs:
         composer.json:"version":
       notes_source: CHANGELOG.md
       php_version: '8.2'
-      draft: true
+      # タグを push したら、Draft にせずそのまま公開する(2026-10-03 にユーザーの指示で変更.
+      # 0.9.2 までは true で、公開は手動の `gh release edit <tag> --draft=false` だった).
+      # 公開すると各サイトの自己更新に届くので、タグを打つ前に CI とバージョン表記を確認しておくこと.
+      draft: false
