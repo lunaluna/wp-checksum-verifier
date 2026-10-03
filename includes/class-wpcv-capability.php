@@ -116,11 +116,11 @@ class WPCV_Capability {
 	 * フィルターのコールバックは何でも返せるので、型の違う値や空文字をそのまま権限として使わない
 	 * (空文字は、スーパー管理者以外を一律に拒否する意図しない結果になりうる).
 	 *
-	 * @param mixed  $value   フィルターが返した値.
-	 * @param string $default 既定の権限.
+	 * @param mixed  $value    フィルターが返した値.
+	 * @param string $fallback 既定の権限.
 	 * @return string
 	 */
-	private static function sanitize_filtered( $value, $default ) {
-		return is_string( $value ) && '' !== $value ? $value : $default;
+	private static function sanitize_filtered( $value, $fallback ) {
+		return is_string( $value ) && '' !== $value ? $value : $fallback;
 	}
 }

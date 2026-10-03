@@ -728,6 +728,101 @@ if ( ! function_exists( 'delete_site_option' ) ) {
 	}
 }
 
+if ( ! function_exists( 'delete_site_transient' ) ) {
+	/**
+	 * Stub delete_site_transient() — 呼び出しを `$GLOBALS['_wpcv_test_delete_site_transient_calls'][]` に
+	 * 記録する(v0.9 §Step6: uninstall の transient の削除).
+	 *
+	 * @param string $transient Transient 名.
+	 * @return true
+	 */
+	function delete_site_transient( $transient ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_delete_site_transient_calls'][] = $transient;
+
+		return true;
+	}
+}
+
+if ( ! function_exists( 'get_current_blog_id' ) ) {
+	/**
+	 * Stub get_current_blog_id() — `$GLOBALS['_wpcv_test_current_blog_id']`(既定 1)を返す.
+	 *
+	 * @return int
+	 */
+	function get_current_blog_id() { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return isset( $GLOBALS['_wpcv_test_current_blog_id'] ) ? (int) $GLOBALS['_wpcv_test_current_blog_id'] : 1;
+	}
+}
+
+if ( ! function_exists( 'get_sites' ) ) {
+	/**
+	 * Stub get_sites() — `$GLOBALS['_wpcv_test_site_ids']`(整数の配列)を、`offset`・`number` で
+	 * 切り出して返す(`fields => ids` の形だけ. v0.9 §Step6).
+	 *
+	 * @param array $args 検索条件.
+	 * @return int[]
+	 */
+	function get_sites( $args = array() ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$ids    = isset( $GLOBALS['_wpcv_test_site_ids'] ) ? $GLOBALS['_wpcv_test_site_ids'] : array();
+		$offset = isset( $args['offset'] ) ? (int) $args['offset'] : 0;
+		$number = isset( $args['number'] ) ? (int) $args['number'] : count( $ids );
+
+		return array_slice( $ids, $offset, $number );
+	}
+}
+
+if ( ! function_exists( 'switch_to_blog' ) ) {
+	/**
+	 * Stub switch_to_blog() — 切り替え先を `$GLOBALS['_wpcv_test_blog_switches'][]` に記録し、
+	 * フェイク wpdb があれば `prefix`・`options` を `wp_{id}_` に切り替える(メインサイト〔id 1〕は `wp_`).
+	 *
+	 * @param int $new_blog_id 切り替え先のサイト id.
+	 * @return true
+	 */
+	function switch_to_blog( $new_blog_id ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_blog_switches'][]  = (int) $new_blog_id;
+		$GLOBALS['_wpcv_test_current_blog_id'] = (int) $new_blog_id;
+
+		if ( isset( $GLOBALS['wpdb'] ) && property_exists( $GLOBALS['wpdb'], 'prefix' ) ) {
+			$GLOBALS['wpdb']->prefix  = 1 === (int) $new_blog_id ? 'wp_' : 'wp_' . (int) $new_blog_id . '_';
+			$GLOBALS['wpdb']->options = $GLOBALS['wpdb']->prefix . 'options';
+		}
+
+		return true;
+	}
+}
+
+if ( ! function_exists( 'restore_current_blog' ) ) {
+	/**
+	 * Stub restore_current_blog() — メインサイト(id 1)に戻す(スタックは持たない.
+	 * このテストのメインサイトは常に 1).
+	 *
+	 * @return true
+	 */
+	function restore_current_blog() { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_current_blog_id'] = 1;
+
+		if ( isset( $GLOBALS['wpdb'] ) && property_exists( $GLOBALS['wpdb'], 'prefix' ) ) {
+			$GLOBALS['wpdb']->prefix  = 'wp_';
+			$GLOBALS['wpdb']->options = 'wp_options';
+		}
+
+		return true;
+	}
+}
+
+if ( ! function_exists( 'wp_is_large_network' ) ) {
+	/**
+	 * Stub wp_is_large_network() — `$GLOBALS['_wpcv_test_large_network']` を返す(既定 false).
+	 *
+	 * @param string $using 無視する.
+	 * @return bool
+	 */
+	function wp_is_large_network( $using = 'sites' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound, Generic.CodeAnalysis.UnusedFunctionParameter.Found
+		return ! empty( $GLOBALS['_wpcv_test_large_network'] );
+	}
+}
+
 if ( ! function_exists( 'get_main_site_id' ) ) {
 	/**
 	 * Stub get_main_site_id() — $GLOBALS['_wpcv_test_main_site_id'](既定 1)を返す.

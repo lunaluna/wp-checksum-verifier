@@ -94,6 +94,28 @@ class WPCV_Test_Fake_WPDB {
 	public $base_prefix = 'wp_';
 
 	/**
+	 * 現在のサイトのテーブル接頭辞(`$wpdb->prefix`. v0.9 §Step6: uninstall のサイト単位の掃除.
+	 * `switch_to_blog()` のスタブが切り替える).
+	 *
+	 * @var string
+	 */
+	public $prefix = 'wp_';
+
+	/**
+	 * 現在のサイトの `options` テーブル名(`$wpdb->options`. `prefix` と同じく切り替わる).
+	 *
+	 * @var string
+	 */
+	public $options = 'wp_options';
+
+	/**
+	 * `SHOW TABLES LIKE` に「ある」と答えるテーブル名の一覧(v0.9 §Step6).
+	 *
+	 * @var string[]
+	 */
+	public $existing_tables = array();
+
+	/**
 	 * 直近の `insert()` が採番した id(本番の `$wpdb->insert_id` に相当).
 	 *
 	 * @var int
@@ -447,6 +469,14 @@ class WPCV_Test_Fake_WPDB {
 	 */
 	public function get_var( $query ) {
 		$this->get_var_calls[] = $query;
+
+		// v0.9 §Step6: `SHOW TABLES LIKE '...'`(テーブルの存在確認). `esc_like()` のエスケープを戻して、
+		// `$existing_tables` にあればその名前を、無ければ null を返す.
+		if ( 1 === preg_match( "/^\s*SHOW TABLES LIKE '(.*)'\s*$/s", $query, $show_matches ) ) {
+			$table = str_replace( array( '\\_', '\\%' ), array( '_', '%' ), stripslashes( $show_matches[1] ) );
+
+			return in_array( $table, $this->existing_tables, true ) ? $table : null;
+		}
 
 		if ( 1 === preg_match( '/^\s*SELECT\s+COUNT\(\s*\*\s*\)\s+FROM\s+(\S+)(?:\s+WHERE\s+(.+?))?\s*$/is', $query, $matches ) ) {
 			$conditions = isset( $matches[2] ) ? $this->parse_where_conditions_strict( $matches[2] ) : array();
@@ -998,6 +1028,17 @@ class WPCV_Test_Fake_WPDB {
 	 */
 	public function get_charset_collate() {
 		return '';
+	}
+
+	/**
+	 * `LIKE` の値のワイルドカード(`_`・`%`・`\\`)をバックスラッシュでエスケープする(実 `$wpdb->esc_like()` の
+	 * 簡易フェイク. v0.9 §Step6: uninstall の掃除が使う).
+	 *
+	 * @param string $text エスケープ前の文字列.
+	 * @return string
+	 */
+	public function esc_like( $text ) {
+		return addcslashes( (string) $text, '_%\\' );
 	}
 
 	/**
