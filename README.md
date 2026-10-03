@@ -5,7 +5,7 @@ tampering by comparing installed files against official checksum manifests
 (wp.org core/plugin checksums, and manifests built from wp.org theme zips)
 and reports unknown files not present in any manifest.
 
-> **Status**: v0.8.0. The verification engine, all planned execution model
+> **Status**: v0.9.0. The verification engine, all planned execution model
 > entry points (WP-CLI, WP-Cron, admin "Run now" button, REST API),
 > file-level chunked execution with resume, the suppression engine
 > (`exclude_target`/`exclude_path`/`allowlist_hash` plus strict mode),
@@ -774,8 +774,9 @@ following runs.
 
 The age of a record is the start time of its run. At the end of each run, up to
 500 per-target results and up to 500 run records past the limit are deleted
-(provisional limits that keep one run from holding the database for long), so a
-site with a large existing history needs several runs to catch up. Findings are
+(about a quarter of a second on a local test database holding a year of history;
+not measured on shared hosting), so a site with a large existing history needs
+several runs to catch up. Findings are
 deleted first, then per-target results, then run records; stopping in the
 middle leaves nothing that the plugin reads in a broken state.
 

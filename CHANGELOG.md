@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.9.0] - Unreleased
+## [0.9.0] - 2026-10-03
 
 ### Added
 
@@ -10,7 +10,9 @@ All notable changes to this project will be documented in this file.
   the default —, 3, 6, 12 or 24 months). At the end of each run, runs,
   per-target results, findings and expired suppression rules older than the
   period are deleted (up to 500 per-target results and 500 run records per
-  run; both limits are provisional and unmeasured). Always kept: each
+  run: about 0.26 s per run end on a local MySQL 8.4 test database holding a
+  year of history, and 7 ms when there is nothing to delete; not measured on
+  shared hosting). Always kept: each
   target's most recent successfully verified result with its findings and run
   record (the diff baseline), runs still being processed and the result they
   compare against, already-emailed findings that still exist in the baseline
