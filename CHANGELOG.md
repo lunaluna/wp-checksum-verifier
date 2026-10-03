@@ -2,6 +2,79 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.0] - Unreleased
+
+### Added
+
+- **History retention.** A new "History retention" setting (Keep forever —
+  the default —, 3, 6, 12 or 24 months). At the end of each run, runs,
+  per-target results, findings and expired suppression rules older than the
+  period are deleted (up to 500 per-target results and 500 run records per
+  run; both limits are provisional and unmeasured). Always kept: each
+  target's most recent successfully verified result with its findings and run
+  record (the diff baseline), runs still being processed and the result they
+  compare against, already-emailed findings that still exist in the baseline
+  (so they are not emailed again), and active suppression rules. An open
+  ("unended") finding does not by itself keep an old record: on a real site
+  only 14 of 1,065 such findings were in a target's latest verified result,
+  because stat-based findings are never closed and a continuing finding leaves
+  its older copies open. With a finite period, a failure streak that outlasts
+  it can make the repeated-unverifiable / run-failure alert fire again about
+  once per period. See README ("History retention").
+- **Multisite: "Active on" column** in the Findings screen — where a plugin or
+  theme is in use (network-wide, the sites that have it active, or the sites
+  using a theme as the parent of a child theme). Computed when the screen is
+  shown, with `switch_to_blog()` (about 1 ms per site, measured on a 20-site
+  network); not stored and not computed during a run, no schema change. Above
+  500 sites (provisional, unmeasured) it says "Not shown"; change the limit
+  with the new `wpcv_affected_sites_scan_limit` filter.
+- **Multisite warning.** When the plugin is active only on a sub-site (not
+  network-wide and not on the main site) no scheduled run is ever started, so
+  that sub-site's Dashboard and Plugins screens show a warning to users who can
+  activate plugins. Activation is not blocked. README now says to activate it
+  network-wide.
+- **`wpcv_required_capability` filter** (capability, screen name) to change
+  who can use the admin screens, forms and notices. The defaults are unchanged
+  (`manage_options` on a single site, `manage_network_options` on multisite).
+  A value that is not a non-empty string is ignored. See README
+  ("Permissions") for the warning about suppression rules.
+- **`source_access_denied`** error code: a GitHub token that is rejected (401,
+  or a 403 without rate-limit signs). Such a target is no longer counted toward
+  the repeated-unverifiable alert, goes to stat-based change detection, shows an
+  admin notice with the number of affected targets, and triggers one email the
+  first time it appears (not while it continues; other alert emails list the
+  affected targets). The reason column of the run history now also says when a
+  target that cannot be compared with its source is monitored by file-change
+  tracking instead.
+
+### Changed
+
+- **GitHub response classification** (based on GitHub's documentation): a 429
+  is always `rate_limited` (before, a 429 without a numeric `retry-after` was
+  `http_error`); a 403 whose message mentions a rate limit is `rate_limited` too
+  (secondary rate limits can come without `retry-after`; the wording is matched
+  loosely and has not been verified against a real secondary limit); the
+  `x-ratelimit-reset` time is used only when the remaining count is 0, otherwise
+  60 seconds. A 401, or a 403 without any of those signs, is
+  `source_access_denied` (before, `http_error`). A private repository the token
+  cannot access is still a 404 (`manifest_not_found`).
+- The required capability is decided in one place (`WPCV_Capability`) instead
+  of being repeated in four screen classes and the menu registration, so the
+  menu, the screen, every form it posts and the notice always agree.
+
+### Fixed
+
+- **Uninstall left data behind**: the GitHub rate-limit transient, the REST
+  token failure counters, the self-update check cache, and the plugin's rows in
+  the Action Scheduler tables (actions whose hook starts with `wpcv_`, their
+  logs and the `wpcv` group — 224 rows after three runs on a test site; the
+  deactivation hook only cancels pending actions, and the bundled Action
+  Scheduler goes away with the plugin so nothing cleans finished ones) are now
+  removed. The Action Scheduler tables themselves are shared and stay. The
+  self-update cache is removed by exact name so other plugins using the same
+  library keep theirs. On multisite every site is cleaned (not on a large
+  network, `wp_is_large_network()`).
+
 ## [0.8.0] - 2026-10-01
 
 ### Added

@@ -15,7 +15,11 @@ and reports unknown files not present in any manifest.
 > below), official theme verification, and the Findings/Suppressions/Run
 > History admin screens are implemented, as is verification of plugins and
 > themes mapped to a GitHub repository (see "GitHub Releases verification"
-> below). See `CHANGELOG.md` for details.
+> below). v0.9 adds a history retention setting, an "Active on" column for
+> multisite findings, a filter for the required capability, a more complete
+> uninstall, and separate handling of a rejected GitHub token (see "History
+> retention", "Multisite", "Permissions" and "Uninstall" below). See
+> `CHANGELOG.md` for details.
 
 ## Verification targets
 
@@ -174,7 +178,8 @@ after the saved mappings, and a target already mapped on the screen wins.
   | Result | Stat-based change detection |
   | --- | --- |
   | Compared (`success`) | skipped (`checksum_covered`) |
-  | `manifest_not_found` (no such tag, draft, or a private repository without a token), `unknown_source` (`.git`), `version_unknown`, `no_release_asset`, `asset_ambiguous` | runs, so a wrong mapping never leaves the target unchecked |
+  | `manifest_not_found` (no such tag, draft, a private repository without a token, or one the token cannot access — GitHub answers 404 so as not to confirm that a private repository exists), `unknown_source` (`.git`), `version_unknown`, `no_release_asset`, `asset_ambiguous` | runs, so a wrong mapping never leaves the target unchecked |
+  | `source_access_denied` (the token is rejected: 401, or a 403 without rate-limit signs) | runs, so a revoked token does not leave the target unchecked (see "Token problems" below) |
   | `rate_limited`, `http_error`, `archive_invalid`, `archive_rejected`, `ziparchive_missing` | skipped for that run (no baseline is created by accident) |
 
 - **Token and private repositories**: define `WPCV_GITHUB_TOKEN` in
@@ -194,11 +199,30 @@ after the saved mappings, and a target already mapped on the screen wins.
   public asset through `browser_download_url` does not). Because manifests are
   cached, a run only calls the API after a mapped plugin or theme changes
   version. When GitHub answers 403/429 with `x-ratelimit-remaining: 0` or a
-  `retry-after` header, the target is `rate_limited` and GitHub is not
-  contacted again until the time GitHub gave (`retry-after`, otherwise
-  `x-ratelimit-reset`, otherwise 60 seconds as the GitHub documentation
-  advises); the next run tries again. `rate_limited` counts toward the
-  repeated-unverifiable alert like `http_error`.
+  `retry-after` header — or with any 429, or a 403 whose message mentions a
+  rate limit (secondary rate limits can arrive without `retry-after`; the
+  message is matched loosely, on the words "rate limit") — the target is
+  `rate_limited` and GitHub is not contacted again until the time GitHub gave
+  (`retry-after`, otherwise `x-ratelimit-reset` when the remaining count is 0,
+  otherwise 60 seconds as the GitHub documentation advises); the next run
+  tries again. `rate_limited` counts toward the repeated-unverifiable alert
+  like `http_error`.
+- **Token problems**: GitHub answers a rejected token with 401, and — after
+  several bad requests in a short time — with a 403 that has no rate-limit
+  signs (a token without the needed permission also gets a 403). These become
+  `source_access_denied` instead of `http_error`, because a revoked token is a
+  lasting condition rather than a passing network problem. Such a target is
+  not counted toward the repeated-unverifiable alert; it goes to stat-based
+  change detection so it is still watched; the Dashboard, Plugins and this
+  plugin's screens show a notice with the number of affected targets; and the
+  first time it appears one email is sent (when nothing else triggered it, the
+  subject reads `N target(s) cannot be compared with the source`). While it continues no further email is sent for
+  it alone, but any other alert email lists the affected targets under
+  "Cannot compare with the source" (new ones are marked). If the token works
+  again and then fails again, the first-time email is sent again. The token
+  value is never shown. A repository the token cannot access is a 404, not
+  this case, so a wrong repository name or missing repository access shows up
+  as `manifest_not_found`.
 - **Themes bundled with WordPress core** (e.g. twentytwentyfive) ignore a
   mapping and are verified against wordpress.org and the core checksums; the
   Settings screen warns about this once the core manifest is cached (after the
@@ -606,6 +630,12 @@ Both streak alerts fire once per streak (not on every run while the streak
 continues) and are evaluated purely from run history, so there is nothing
 to reset if the streak breaks and starts again later.
 
+A third situation also triggers an email even with no ordinary findings: a
+target's GitHub token is rejected for the first time (`source_access_denied`;
+see "GitHub Releases verification" above). It is sent once, not on every run
+while the problem continues, and such a target does not count toward the
+repeated-unverifiable alert.
+
 **Recipients and testing**: set one or more addresses in **Alert
 recipients** on the Settings screen (one per line). If it is left empty, no
 email is sent and a warning notice is shown instead of silently doing
@@ -676,7 +706,9 @@ menu on multisite):
   entirely from the next run onward). None of these retroactively change
   the findings currently on screen — the rule takes effect starting with
   the next run. A **Details** column shows what changed for stat-based
-  findings (old → new size and timestamps, or the rolled-up count).
+  findings (old → new size and timestamps, or the rolled-up count). On
+  multisite an **Active on** column shows where a plugin or theme is in use
+  (see "Multisite" below).
 - **Suppressions** — every suppression rule ever created (all three types),
   with its target, reason, creator, creation time, and (for `allowlist_hash`
   rules) the approved version and hash prefix. Active rules can be revoked
@@ -693,7 +725,9 @@ menu on multisite):
   `failed`) columns. The detail view per run shows each target's status,
   `error_code` (translated to a human-readable reason for
   `unverifiable`/`retry`/`aborted`/`skipped` targets, including
-  `version_changed_unrecorded` — see Alerts above), file counts, attempt
+  `version_changed_unrecorded` — see Alerts above; an `unverifiable` target that
+  stat-based change detection watched instead says so: "cannot be compared with
+  the source; monitored by file-change tracking instead"), file counts, attempt
   count, and a **Diff mode** column (see Alerts above); the run-level detail
   also shows the diff/alert state, the alert error and any failed alert
   channels when present (admin-only — never exposed over REST), and a link
@@ -726,9 +760,150 @@ always content-hashed regardless of this setting), whether to alert on
 version changes that did not go through the WordPress updater (on by
 default; see Alerts above), alert recipients and the "Send test alert"
 button (see Alerts above), the GitHub repository mappings and whether a
-GitHub token is configured (see "GitHub Releases verification" above), and
-REST token issuance. Hours and minutes of the run time are always shown with
-two digits.
+GitHub token is configured (see "GitHub Releases verification" above), how
+long to keep history (see "History retention" below), and REST token
+issuance. Hours and minutes of the run time are always shown with two digits.
+
+## History retention
+
+By default the plugin keeps the history of every run forever. **History
+retention** on the Settings screen (**Keep forever** — the default — or 3, 6,
+12 or 24 months) deletes older history. Nothing is deleted until you choose a
+period; after you do, older history is removed gradually at the end of the
+following runs.
+
+The age of a record is the start time of its run. At the end of each run, up to
+500 per-target results and up to 500 run records past the limit are deleted
+(provisional limits that keep one run from holding the database for long), so a
+site with a large existing history needs several runs to catch up. Findings are
+deleted first, then per-target results, then run records; stopping in the
+middle leaves nothing that the plugin reads in a broken state.
+
+Always kept, whatever their age:
+
+- the most recent successfully verified result of each target, with its
+  findings, and the run record it belongs to — it is the baseline the next run
+  is compared against, and deleting it would make the next run report
+  everything as new;
+- runs that are still being processed (including their diff and alert step) and
+  the result each of them is compared against;
+- findings that were already emailed and still exist in that baseline (and the
+  result they belong to) — the re-send suppression looks them up, so deleting
+  them would email the same finding again;
+- active suppression rules (revoked or expired rules are deleted once they have
+  been expired for longer than the period).
+
+Not affected: update events (90 days, `wpcv_update_events_retention_days`), the
+manifest cache (cleaned separately) and the stat baselines (only the latest
+generation is kept anyway).
+
+A finding being unresolved does not keep an old record: old generations of a
+long-lasting finding, and stat-based findings (which are never "resolved"), are
+deleted with the rest. On multisite the history is shared by the whole
+network, so one setting covers it.
+
+One side effect: the repeated-unverifiable and repeated-run-failure alerts look
+back through history until the streak breaks. If a failure lasts longer than the
+retention period, the record of the earlier alert can age out, and the alert
+is sent again — roughly once per retention period while the failure goes on,
+which works as a reminder.
+
+## Multisite
+
+The plugin treats a multisite network as one installation. Its tables are
+created once with the network's base prefix, the settings are network settings,
+the screens are in the Network Admin menu, and a verification covers every
+plugin and theme on disk, whether or not any site has it active.
+
+**Activate it network-wide.** Network activation is the supported setup.
+Activating it only on the main site also works (the Network Admin loads the
+plugins of the main site, so the menu and the scheduled run are available), but
+activating it only on a sub-site does not: the daily run is scheduled from the
+main site, so **no scheduled run ever starts**, and the Network Admin menu is not
+shown. In that case the plugin shows a warning on that sub-site's Dashboard and
+Plugins screens (to users who can activate plugins; super administrators get a
+link to the Network Admin plugins screen). Activation is not blocked.
+`wp wpcv run` and the REST API still work on a sub-site (WP-CLI with `--url`).
+
+**Active on column.** In the Findings screen the plugin and theme findings show
+where the plugin or theme is in use:
+
+- a plugin that is network-activated: "Network-wide (all sites)"; otherwise the
+  sites that have it active;
+- a theme: the sites where it is the active theme, and the sites that use it as
+  the parent of an active child theme ("(parent theme)"); a theme that is
+  enabled for the network but not used anywhere says so;
+- not active anywhere: "Not active on any site" (the files are still checked);
+- core, must-use plugins and drop-ins show a dash.
+
+At most five site names are listed, followed by "and N more". The column is
+computed when the screen is shown, by reading the active plugins and theme of
+every site (deleted and spam sites are skipped; archived sites are included);
+nothing is stored or cached, and nothing is computed during a run. Reading a
+site costs about 1 ms (measured on a 20-site network); this has not been
+measured on a large network. When the network has more than 500 sites the column
+is not computed and says "Not shown (the network has N sites)". Change the
+limit with the `wpcv_affected_sites_scan_limit` filter (default 500):
+
+```php
+add_filter( 'wpcv_affected_sites_scan_limit', function () {
+    return 2000;
+} );
+```
+
+## Permissions
+
+Who can use the screens (and issue tokens, run now, create and revoke
+suppression rules) is decided in one place. By default it is the same as
+before: administrators (`manage_options`) on a single site, and super
+administrators (`manage_network_options`) on multisite. The REST API uses its
+own bearer tokens and WP-CLI is run by someone with access to the server, so
+neither is affected.
+
+The `wpcv_required_capability` filter receives the capability and the name of
+the screen (`settings`, `runs`, `findings`, `suppressions` or `notices` — the
+alert notices) and returns the capability to require. The menu, the screen
+itself, every form it posts and the notice use the same value for a given name.
+A return value that is not a non-empty string is ignored.
+
+```php
+add_filter( 'wpcv_required_capability', function ( $capability, $screen ) {
+    // Let editors read the findings and run history, but nothing else.
+    return in_array( $screen, array( 'runs', 'findings' ), true ) ? 'edit_pages' : $capability;
+}, 10, 2 );
+```
+
+Be careful when you loosen it: the Findings screen lets whoever can open it
+create suppression rules, which silence future alerts, so only give it to roles
+you trust with that. Loosening only one screen also leaves the rest of the
+workflow (for example the Suppressions list) at the default. The filter was
+tested on a single site; on multisite the screens live in the Network Admin and
+the default is a super-administrator capability, and loosening it has not been
+tested there.
+
+## Uninstall
+
+Deleting the plugin (after deactivating it) removes what it created:
+
+- the seven tables (runs, per-target results, findings, suppression rules, the
+  stat baselines, update events and the manifest cache);
+- the options `wpcv_db_version`, `wpcv_settings`, `wpcv_rest_token_hash`,
+  `wpcv_rest_token_hash_read` and `wpcv_update_events_since` (site options on
+  multisite);
+- the transients: the GitHub rate-limit marker, the REST token failure counters
+  and the self-update check cache (removed by exact name, so other plugins that
+  use the same self-update library keep theirs);
+- the plugin's rows in the Action Scheduler tables: the actions whose hook
+  starts with `wpcv_` (finished and cancelled ones included), their logs and the
+  `wpcv` group. Action Scheduler's own tables are shared with other plugins and
+  are left in place.
+
+Scheduled events are removed when the plugin is deactivated, not by uninstall.
+On multisite the failure counters and the Action Scheduler rows are removed from
+every site; on a large network (`wp_is_large_network()`, 10,000 sites by default)
+only the main site is cleaned, because the time needed is not known. Rows kept
+in an external object cache expire by themselves (the failure counters after 5
+minutes).
 
 ## Distribution
 
