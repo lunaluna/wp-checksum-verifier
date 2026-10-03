@@ -123,7 +123,7 @@ class WPCV_Page_Settings {
 	 * @return void
 	 */
 	public static function render() {
-		if ( ! current_user_can( self::required_capability() ) ) {
+		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_SETTINGS ) ) ) {
 			return;
 		}
 
@@ -535,7 +535,7 @@ class WPCV_Page_Settings {
 
 		check_admin_referer( self::NONCE_ACTION, self::NONCE_NAME );
 
-		if ( ! current_user_can( self::required_capability() ) ) {
+		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_SETTINGS ) ) ) {
 			return false;
 		}
 
@@ -761,7 +761,7 @@ class WPCV_Page_Settings {
 
 		check_admin_referer( self::RUN_NOW_NONCE_ACTION, self::RUN_NOW_NONCE_NAME );
 
-		if ( ! current_user_can( self::required_capability() ) ) {
+		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_SETTINGS ) ) ) {
 			return null;
 		}
 
@@ -816,7 +816,7 @@ class WPCV_Page_Settings {
 
 		check_admin_referer( self::SEND_TEST_ALERT_NONCE_ACTION, self::SEND_TEST_ALERT_NONCE_NAME );
 
-		if ( ! current_user_can( self::required_capability() ) ) {
+		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_SETTINGS ) ) ) {
 			return null;
 		}
 
@@ -855,7 +855,7 @@ class WPCV_Page_Settings {
 
 		check_admin_referer( $nonce_action, $nonce_name );
 
-		if ( ! current_user_can( self::required_capability() ) ) {
+		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_SETTINGS ) ) ) {
 			return null;
 		}
 
@@ -974,18 +974,5 @@ class WPCV_Page_Settings {
 		return function_exists( 'as_enqueue_async_action' )
 			&& class_exists( 'ActionScheduler' )
 			&& ActionScheduler::is_initialized();
-	}
-
-	/**
-	 * この画面に必要な capability を返す.
-	 *
-	 * `WPCV_Admin_Notices`(v0.5後半 §Step14d)からも同じ判定を使うため
-	 * publicにしてある(WPCVの各画面と同じcapabilityでアラート通知の表示可否を
-	 * 揃えるため. 重複を避ける).
-	 *
-	 * @return string
-	 */
-	public static function required_capability() {
-		return is_multisite() ? 'manage_network_options' : 'manage_options';
 	}
 }

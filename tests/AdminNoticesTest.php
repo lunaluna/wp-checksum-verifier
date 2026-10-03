@@ -8,6 +8,7 @@
 require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-capability.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-settings.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-admin-notices.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
@@ -56,6 +57,7 @@ class AdminNoticesTest extends TestCase {
 			$GLOBALS['_wpcv_test_current_screen_id'],
 			$GLOBALS['_wpcv_test_is_multisite'],
 			$GLOBALS['_wpcv_test_user_capabilities'],
+			$GLOBALS['_wpcv_test_filters']['wpcv_required_capability'],
 			$GLOBALS['_wpcv_test_do_action_calls']['admin_notices'],
 			$GLOBALS['_wpcv_test_do_action_calls']['network_admin_notices'],
 			$GLOBALS['_wpcv_test_added_actions']['admin_notices'],
@@ -289,5 +291,35 @@ class AdminNoticesTest extends TestCase {
 		ob_start();
 		do_action( 'admin_notices' );
 		$this->assertSame( '', ob_get_clean() );
+	}
+
+	/**
+	 * フィルター `wpcv_required_capability` で権限を変えると、通知もその権限で出し分けることを
+	 * 確認する(v0.9 §Step5. 画面名は `notices`).既定の権限(manage_options)だけを持つ人には
+	 * 出さず、変えた権限を持つ人には出す.
+	 *
+	 * @return void
+	 */
+	public function test_notice_follows_the_required_capability_filter() {
+		$this->seed_terminal_run( array( 'alert_status' => 'no_recipient' ) );
+
+		$GLOBALS['_wpcv_test_filters']['wpcv_required_capability'][] = static function ( $capability, $screen ) {
+			return 'notices' === $screen ? 'wpcv_custom_cap' : $capability;
+		};
+		$GLOBALS['_wpcv_test_current_screen_id']                     = 'toplevel_page_wpcv-settings';
+
+		WPCV_Admin_Notices::register( array( 'toplevel_page_wpcv-settings' ) );
+
+		$GLOBALS['_wpcv_test_user_capabilities'] = array( 'manage_options' );
+
+		ob_start();
+		do_action( 'admin_notices' );
+		$this->assertSame( '', ob_get_clean(), '既定の権限だけでは出ない.' );
+
+		$GLOBALS['_wpcv_test_user_capabilities'] = array( 'wpcv_custom_cap' );
+
+		ob_start();
+		do_action( 'admin_notices' );
+		$this->assertStringContainsString( 'notice-warning', ob_get_clean(), '変えた権限があれば出る.' );
 	}
 }

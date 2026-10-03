@@ -975,7 +975,63 @@ if ( ! function_exists( 'current_user_can' ) ) {
 	function current_user_can( $capability ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
 		$allowed = isset( $GLOBALS['_wpcv_test_user_capabilities'] ) ? $GLOBALS['_wpcv_test_user_capabilities'] : array();
 
+		// v0.9 §Step5: どの capability で判定したかをテストが確かめられるよう、問い合わせを記録する.
+		$GLOBALS['_wpcv_test_capability_checks'][] = $capability;
+
 		return in_array( $capability, $allowed, true );
+	}
+}
+
+if ( ! function_exists( 'add_menu_page' ) ) {
+	/**
+	 * Stub add_menu_page() — 呼び出しを `$GLOBALS['_wpcv_test_menu_pages']` に記録し、
+	 * hook_suffix 相当の文字列を返す(v0.9 §Step5. メニューの権限をテストで確かめる).
+	 *
+	 * @param string   $page_title Page title.
+	 * @param string   $menu_title Menu title.
+	 * @param string   $capability Capability.
+	 * @param string   $menu_slug  Menu slug.
+	 * @param callable $callback   Callback.
+	 * @param string   $icon_url   Icon.
+	 * @return string
+	 */
+	function add_menu_page( $page_title, $menu_title, $capability, $menu_slug, $callback = '', $icon_url = '' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound, Generic.CodeAnalysis.UnusedFunctionParameter.Found
+		$GLOBALS['_wpcv_test_menu_pages'][ $menu_slug ] = $capability;
+
+		return 'toplevel_page_' . $menu_slug;
+	}
+}
+
+if ( ! function_exists( 'add_submenu_page' ) ) {
+	/**
+	 * Stub add_submenu_page() — `add_menu_page()` のスタブと同じ記録先に残す.
+	 *
+	 * @param string   $parent_slug Parent slug.
+	 * @param string   $page_title  Page title.
+	 * @param string   $menu_title  Menu title.
+	 * @param string   $capability  Capability.
+	 * @param string   $menu_slug   Menu slug.
+	 * @param callable $callback    Callback.
+	 * @return string
+	 */
+	function add_submenu_page( $parent_slug, $page_title, $menu_title, $capability, $menu_slug, $callback = '' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound, Generic.CodeAnalysis.UnusedFunctionParameter.Found
+		$GLOBALS['_wpcv_test_menu_pages'][ $menu_slug ] = $capability;
+
+		return $parent_slug . '_page_' . $menu_slug;
+	}
+}
+
+if ( ! function_exists( 'check_admin_referer' ) ) {
+	/**
+	 * Stub check_admin_referer() — 何もしない(nonce 検証に成功した扱い. POST 処理の権限の
+	 * 判定だけをテストするため. v0.9 §Step5).
+	 *
+	 * @param string $action    Action.
+	 * @param string $query_arg Query arg.
+	 * @return int
+	 */
+	function check_admin_referer( $action = -1, $query_arg = '_wpnonce' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound, Generic.CodeAnalysis.UnusedFunctionParameter.Found
+		return 1;
 	}
 }
 

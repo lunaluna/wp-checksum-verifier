@@ -78,7 +78,7 @@ class WPCV_Admin_Notices {
 			return;
 		}
 
-		if ( ! current_user_can( WPCV_Page_Settings::required_capability() ) ) {
+		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_NOTICES ) ) ) {
 			return;
 		}
 

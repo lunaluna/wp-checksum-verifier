@@ -35,7 +35,7 @@ class WPCV_Page_Run_History {
 	 * @return void
 	 */
 	public static function render() {
-		if ( ! current_user_can( self::required_capability() ) ) {
+		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_RUNS ) ) ) {
 			return;
 		}
 
@@ -599,16 +599,5 @@ class WPCV_Page_Run_History {
 	 */
 	private static function page_url() {
 		return menu_page_url( 'wpcv-runs', false );
-	}
-
-	/**
-	 * この画面に必要なcapabilityを返す(`WPCV_Page_Settings::required_capability()`と
-	 * 同じ判定。installation-levelのデータであるためマルチサイトではネットワーク
-	 * 管理者権限を要求する).
-	 *
-	 * @return string
-	 */
-	private static function required_capability() {
-		return is_multisite() ? 'manage_network_options' : 'manage_options';
 	}
 }

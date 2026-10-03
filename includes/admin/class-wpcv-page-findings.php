@@ -86,7 +86,7 @@ class WPCV_Page_Findings {
 	 * @return void
 	 */
 	public static function render() {
-		if ( ! current_user_can( self::required_capability() ) ) {
+		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_FINDINGS ) ) ) {
 			return;
 		}
 
@@ -605,7 +605,7 @@ class WPCV_Page_Findings {
 
 		check_admin_referer( self::NONCE_ACTION, self::NONCE_NAME );
 
-		if ( ! current_user_can( self::required_capability() ) ) {
+		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_FINDINGS ) ) ) {
 			return null;
 		}
 
@@ -645,15 +645,5 @@ class WPCV_Page_Findings {
 		$latest = WPCV_Plugin::run_repository()->find_most_recent_run();
 
 		return null === $latest ? null : (int) $latest['id'];
-	}
-
-	/**
-	 * この画面に必要なcapabilityを返す(`WPCV_Page_Settings::required_capability()`と
-	 * 同じ判定).
-	 *
-	 * @return string
-	 */
-	private static function required_capability() {
-		return is_multisite() ? 'manage_network_options' : 'manage_options';
 	}
 }

@@ -27,7 +27,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 検出結果等(§5.6)と同様 installation-level のデータであるため、マルチサイトでは
  * ネットワーク全体で1つの設定を `wp_sitemeta`(`get_site_option`/`update_site_option`)
  * に、単一サイトでは `wp_options`(`get_option`/`update_option`)に保存する。この
- * 分岐は `WPCV_Page_Settings::required_capability()` の `is_multisite()` 分岐と
+ * 分岐は `WPCV_Capability::default_capability()` の `is_multisite()` 分岐と
  * 同じ方針(§11).
  */
 class WPCV_Settings {

@@ -368,6 +368,11 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-runner-a
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-settings.php';
 
 /**
+ * 管理画面に必要な権限の判定(v0.9 §Step5). メニュー・各画面・通知が同じ判定を使う.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-capability.php';
+
+/**
  * マルチサイトで、plugin / theme を有効にしているサイトを求める(v0.9 §Step4). 検出結果の画面が使う.
  * `WPCV_Run_Planner`・`WPCV_Target_Resolver` に依存する(いずれも上で読み込み済み).
  */

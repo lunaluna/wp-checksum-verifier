@@ -16,9 +16,10 @@ if ( ! defined( 'ABSPATH' ) ) {
  * ネットワーク管理画面に配置する(§5.6/§11)。単一サイトはサイト1つの
  * installation として通常の管理画面に配置する.
  *
- * 単一サイトでの必要 capability は manage_options を仮採用している
- * (§17-9 未決事項)。設定画面に実項目(§11: 実行モード・GitHub PAT 等)を
- * 実装する際に見直すこと.
+ * 必要な capability は `WPCV_Capability::required()` が返す(v0.9 §Step5・U4で
+ * 確定。単一サイトは manage_options、マルチサイトは manage_network_options を
+ * 既定とし、フィルター `wpcv_required_capability` で変えられる. 以前は
+ * manage_options を仮採用としていた〔§17-9 未決事項〕).
  *
  * v0.5後半 §Step14dで、各画面の`add_menu_page()`/`add_submenu_page()`の
  * 戻り値(hook_suffix)を集めて`WPCV_Admin_Notices::register()`に渡すように
@@ -46,21 +47,7 @@ class WPCV_Admin_Menu {
 	 * @return void
 	 */
 	public static function add_site_menu() {
-		$hook_suffixes   = array();
-		$hook_suffixes[] = add_menu_page(
-			__( 'WP Checksum Verifier', 'wp-checksum-verifier' ),
-			__( 'Checksum Verifier', 'wp-checksum-verifier' ),
-			'manage_options',
-			'wpcv-settings',
-			array( 'WPCV_Page_Settings', 'render' ),
-			'dashicons-shield'
-		);
-
-		$hook_suffixes[] = self::add_run_history_submenu( 'manage_options' );
-		$hook_suffixes[] = self::add_findings_submenu( 'manage_options' );
-		$hook_suffixes[] = self::add_suppressions_submenu( 'manage_options' );
-
-		WPCV_Admin_Notices::register( $hook_suffixes );
+		self::add_pages();
 	}
 
 	/**
@@ -69,19 +56,34 @@ class WPCV_Admin_Menu {
 	 * @return void
 	 */
 	public static function add_network_menu() {
+		self::add_pages();
+	}
+
+	/**
+	 * トップレベルのメニューと3つのサブメニューを登録し、通知の対象画面を登録する(v0.9 §Step5).
+	 *
+	 * 単一サイト(`admin_menu`)とネットワーク管理画面(`network_admin_menu`)で内容は同じ.
+	 * 違いは必要な権限(単一サイトは `manage_options`、マルチサイトは `manage_network_options`)
+	 * だけで、これは以前ここに固定値で書いていたが、`WPCV_Capability` に集約した. 画面の表示・POST の
+	 * 処理・通知と同じ画面名で引くので、フィルター `wpcv_required_capability` で権限を変えても、
+	 * メニューだけが食い違うことはない.
+	 *
+	 * @return void
+	 */
+	private static function add_pages() {
 		$hook_suffixes   = array();
 		$hook_suffixes[] = add_menu_page(
 			__( 'WP Checksum Verifier', 'wp-checksum-verifier' ),
 			__( 'Checksum Verifier', 'wp-checksum-verifier' ),
-			'manage_network_options',
+			WPCV_Capability::required( WPCV_Capability::SCREEN_SETTINGS ),
 			'wpcv-settings',
 			array( 'WPCV_Page_Settings', 'render' ),
 			'dashicons-shield'
 		);
 
-		$hook_suffixes[] = self::add_run_history_submenu( 'manage_network_options' );
-		$hook_suffixes[] = self::add_findings_submenu( 'manage_network_options' );
-		$hook_suffixes[] = self::add_suppressions_submenu( 'manage_network_options' );
+		$hook_suffixes[] = self::add_run_history_submenu( WPCV_Capability::required( WPCV_Capability::SCREEN_RUNS ) );
+		$hook_suffixes[] = self::add_findings_submenu( WPCV_Capability::required( WPCV_Capability::SCREEN_FINDINGS ) );
+		$hook_suffixes[] = self::add_suppressions_submenu( WPCV_Capability::required( WPCV_Capability::SCREEN_SUPPRESSIONS ) );
 
 		WPCV_Admin_Notices::register( $hook_suffixes );
 	}
