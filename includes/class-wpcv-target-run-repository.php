@@ -863,6 +863,159 @@ class WPCV_Target_Run_Repository {
 	}
 
 	/**
+	 * 各 target の直近の `status = success` の target_run を返す(v0.9 §Step2: 保持期間の
+	 * 掃除が消してはいけない行. プラン §3.1.1 の I1.`find_baseline_target_run()` が差分検出の
+	 * 基準として選ぶ行と同じ条件).
+	 *
+	 * @param int|null $before_run_id 指定すると、この run より前(`run_id < $before_run_id`)の
+	 *                                success だけから選ぶ.進行中の run が基準にする行
+	 *                                〔その run より前の最新の success〕を求めるときに使う.
+	 * @return array<string, array{id: int, run_id: int}> target_id => 行.
+	 */
+	public function find_latest_success_map( $before_run_id = null ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
+		$sql   = "SELECT target_id, MAX(id) AS id FROM {$table} WHERE status = %s";
+		$args  = array( WPCV_Target_Status::SUCCESS );
+
+		if ( null !== $before_run_id ) {
+			$sql   .= ' AND run_id < %d';
+			$args[] = (int) $before_run_id;
+		}
+
+		$sql .= ' GROUP BY target_id';
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is built from the table name and fixed fragments only; all values are bound via prepare().
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, $args ), ARRAY_A );
+		$rows = is_array( $rows ) ? $rows : array();
+
+		// 集計を解釈しないテストダブルは全行を返すので、条件を PHP でも見直して target ごとの最大 id を取り直す.
+		$latest_id = array();
+
+		foreach ( $rows as $row ) {
+			if ( isset( $row['status'] ) && WPCV_Target_Status::SUCCESS !== $row['status'] ) {
+				continue;
+			}
+
+			if ( null !== $before_run_id && isset( $row['run_id'] ) && (int) $row['run_id'] >= (int) $before_run_id ) {
+				continue;
+			}
+
+			$target_id = (string) $row['target_id'];
+
+			if ( ! isset( $latest_id[ $target_id ] ) || (int) $row['id'] > $latest_id[ $target_id ] ) {
+				$latest_id[ $target_id ] = (int) $row['id'];
+			}
+		}
+
+		return $this->attach_run_ids( $latest_id );
+	}
+
+	/**
+	 * `target_id => target_run の id` の配列に、各行の `run_id` を付ける(`find_latest_success_map()` 用.
+	 * 集計のクエリは `run_id` を返さないので、`id IN (...)` で別に引く).
+	 *
+	 * @param array<string, int> $ids target_id => target_run の id.
+	 * @return array<string, array{id: int, run_id: int}>
+	 */
+	private function attach_run_ids( array $ids ) {
+		if ( empty( $ids ) ) {
+			return array();
+		}
+
+		$table      = $this->wpdb->base_prefix . 'wpcv_target_runs';
+		$run_id_of  = array();
+		$id_batches = array_chunk( array_values( $ids ), 500 );
+
+		foreach ( $id_batches as $batch ) {
+			$placeholders = implode( ', ', array_fill( 0, count( $batch ), '%d' ) );
+			$sql          = "SELECT id, run_id FROM {$table} WHERE id IN ( {$placeholders} )";
+
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is built from the table name and placeholders only; all values are bound via prepare().
+			$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, $batch ), ARRAY_A );
+
+			foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+				$run_id_of[ (int) $row['id'] ] = (int) $row['run_id'];
+			}
+		}
+
+		$map = array();
+
+		foreach ( $ids as $target_id => $id ) {
+			if ( isset( $run_id_of[ $id ] ) ) {
+				$map[ $target_id ] = array(
+					'id'     => $id,
+					'run_id' => $run_id_of[ $id ],
+				);
+			}
+		}
+
+		return $map;
+	}
+
+	/**
+	 * `run_id` が `$max_run_id` 以下の target_run(期限切れの候補)を、`$after_id` より大きい
+	 * ものから id 昇順で `$limit` 件返す(v0.9 §Step2).
+	 *
+	 * @param int $max_run_id この run_id 以下だけ(`WPCV_Run_Repository::find_last_started_before()` の値).
+	 * @param int $after_id   この id より大きいものだけ(初回は 0).
+	 * @param int $limit      最大件数.
+	 * @return array<int, array{id: int, run_id: int, target_id: string}>
+	 */
+	public function find_ids_up_to_run( $max_run_id, $after_id, $limit ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
+		$sql   = "SELECT id, run_id, target_id FROM {$table} WHERE run_id <= %d AND id > %d ORDER BY id ASC LIMIT %d";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all values are bound via prepare().
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (int) $max_run_id, (int) $after_id, (int) $limit ), ARRAY_A );
+		$out  = array();
+
+		foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+			$out[] = array(
+				'id'        => (int) $row['id'],
+				'run_id'    => (int) $row['run_id'],
+				'target_id' => (string) $row['target_id'],
+			);
+		}
+
+		return $out;
+	}
+
+	/**
+	 * 指定した run に属する target_run の件数を返す(v0.9 §Step2: run を消してよいかの判定).
+	 *
+	 * @param int $run_id 対象の run の id.
+	 * @return int
+	 */
+	public function count_by_run( $run_id ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_target_runs';
+
+		$sql = "SELECT COUNT(*) FROM {$table} WHERE run_id = %d";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; run_id is bound via prepare().
+		return (int) $this->wpdb->get_var( $this->wpdb->prepare( $sql, (int) $run_id ) );
+	}
+
+	/**
+	 * Target_run の行を1件消す(v0.9 §Step2: 保持期間の掃除. 載っている findings は
+	 * 呼び出し元が先に消す).
+	 *
+	 * @param int $target_run_id 対象の target_run の id.
+	 * @return void
+	 *
+	 * @throws RuntimeException `$wpdb->delete()` がSQLエラーで `false` を返した場合.
+	 */
+	public function delete_by_id( $target_run_id ) {
+		$table   = $this->wpdb->base_prefix . 'wpcv_target_runs';
+		$deleted = $this->wpdb->delete( $table, array( 'id' => (int) $target_run_id ), array( '%d' ) );
+
+		if ( false === $deleted ) {
+			throw new RuntimeException(
+				esc_html( sprintf( 'WPCV_Target_Run_Repository::delete_by_id() の delete に失敗しました: %s', (string) $this->wpdb->last_error ) )
+			);
+		}
+	}
+
+	/**
 	 * 指定 target の「基準」target_run を探す(v0.5後半プラン §2.1: その target の
 	 * 直近の `status = success` の target_run〔今回の run より前〕.Step12の
 	 * 差分処理〔`WPCV_Diff_Dispatcher`〕が呼び出し元).
@@ -908,6 +1061,43 @@ class WPCV_Target_Run_Repository {
 			// v0.6 §Step3: D5の突き合わせ(基準target_runのrun開始時刻が必要)のため追加.
 			'run_id'  => (int) $rows[0]['run_id'],
 		);
+	}
+
+	/**
+	 * 指定 target の、`$before_run_id` より前の run での target_run を1件返す(v0.9 §Step7・R8:
+	 * `source_access_denied` が「初めて現れたか」を、前回の結果から判定する).
+	 *
+	 * 結果が確定している状態(success・unverifiable・skipped・failed)だけを見る. aborted や
+	 * 未完了の行は「前回の結果」とみなさない(中断された run を挟んで「また初めて」にならないため).
+	 *
+	 * @param string $target_id     対象の target_id.
+	 * @param int    $before_run_id この run より前だけを対象にする.
+	 * @return array{id: int, run_id: int, status: string, error_code: string|null}|null 無ければ `null`.
+	 */
+	public function find_previous_target_run( $target_id, $before_run_id ) {
+		$table    = $this->wpdb->base_prefix . 'wpcv_target_runs';
+		$statuses = array( WPCV_Target_Status::SUCCESS, WPCV_Target_Status::UNVERIFIABLE, WPCV_Target_Status::SKIPPED, WPCV_Target_Status::FAILED );
+		$sql      = "SELECT * FROM {$table} WHERE target_id = %s AND run_id < %d ORDER BY run_id DESC LIMIT 20";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via prepare() below.
+		$rows = $this->select_rows( $this->wpdb->prepare( $sql, (string) $target_id, (int) $before_run_id ) );
+
+		// 状態の絞り込みは PHP で行う(`ORDER BY run_id DESC` の直近 20 件の中から). aborted が連続して
+		// 20 件を超えることは通常無く、20 件に無ければ「前回の結果なし」(= 初めて)に倒れる.
+		foreach ( $rows as $row ) {
+			if ( (int) $row['run_id'] >= (int) $before_run_id || ! in_array( $row['status'], $statuses, true ) ) {
+				continue;
+			}
+
+			return array(
+				'id'         => (int) $row['id'],
+				'run_id'     => (int) $row['run_id'],
+				'status'     => (string) $row['status'],
+				'error_code' => isset( $row['error_code'] ) ? (string) $row['error_code'] : null,
+			);
+		}
+
+		return null;
 	}
 
 	/**

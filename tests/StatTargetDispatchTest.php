@@ -1010,4 +1010,40 @@ class StatTargetDispatchTest extends TestCase {
 
 		$this->assertCount( $count, $this->stat_findings( $made, $second['run_id'] ) );
 	}
+
+	/**
+	 * 本体が `source_access_denied`(GitHub のトークンの失効・権限不足. v0.9 §Step7・E3)で照合できないときは、
+	 * 一時障害の `http_error` と違い、stat 差分検知に回る(ベースラインを作り、何も見られない状態にしない).
+	 *
+	 * @return void
+	 */
+	public function test_stat_target_runs_when_body_source_access_denied() {
+		$this->put_fixture_file( 'wp-content/plugins/custom-plugin/custom-plugin.php', 'main' );
+
+		$plugin_source = new WPCV_Test_Fake_Manifest_Source(
+			array(
+				'manifest_status' => 'error',
+				'error_code'      => WPCV_Error_Code::SOURCE_ACCESS_DENIED,
+				'files'           => array(),
+			)
+		);
+
+		$made = wpcv_test_make_fake_environment( null, $plugin_source );
+		$this->reserve_and_run(
+			$made,
+			array(
+				'version'    => '6.8',
+				'plugins'    => array( 'custom-plugin/custom-plugin.php' => array( 'Version' => '1.0.0' ) ),
+				'plugin_dir' => ABSPATH . 'wp-content/plugins',
+			)
+		);
+
+		$body = $this->find_target_run( $made, 'plugin:custom-plugin' );
+		$stat = $this->find_target_run( $made, 'plugin:custom-plugin:_stat' );
+
+		$this->assertSame( WPCV_Target_Status::UNVERIFIABLE, $body['status'] );
+		$this->assertSame( WPCV_Error_Code::SOURCE_ACCESS_DENIED, $body['error_code'] );
+		$this->assertSame( WPCV_Target_Status::SUCCESS, $stat['status'], 'stat で監視される.' );
+		$this->assertCount( 1, $this->file_states_by_path( $made ), 'ベースラインが作られる.' );
+	}
 }

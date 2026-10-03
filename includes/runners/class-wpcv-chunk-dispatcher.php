@@ -324,6 +324,10 @@ class WPCV_Chunk_Dispatcher {
 		// 障害なので含めない(このリストの方針は上の docblock のとおり).
 		WPCV_Error_Code::NO_RELEASE_ASSET,
 		WPCV_Error_Code::ASSET_AMBIGUOUS,
+		// v0.9 §Step7(U9・E3): GitHub のトークンの失効・権限不足. 恒常的な状態なので(一時的な
+		// `http_error` と違い)、直るまでの間もその target が何も見られなくならないよう stat に回す.
+		// 連続 unverifiable の数えない側にもなる(`WPCV_Generation_Differ::is_unverifiable_streak_member()`).
+		WPCV_Error_Code::SOURCE_ACCESS_DENIED,
 	);
 
 	/**

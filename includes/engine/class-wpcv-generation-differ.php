@@ -296,10 +296,14 @@ class WPCV_Generation_Differ {
 	 *                                             なったtarget_runの件数(v0.6
 	 *                                             プラン §3.1・U3. Step3まで
 	 *                                             実装されないため既定0).
+	 * @param int  $new_access_denied_count        今回のrunで**初めて**
+	 *                                             `error_code = source_access_denied`に
+	 *                                             なったtargetの件数(v0.9 §Step7・R8.
+	 *                                             続いているものは数えない. 既定0).
 	 * @return bool
 	 */
-	public static function should_send_alert( $notify_count, $resolved_count, $unverifiable_streak_triggered = false, $unrecorded_version_change_count = 0 ) {
-		return $notify_count > 0 || $resolved_count > 0 || $unverifiable_streak_triggered || $unrecorded_version_change_count > 0;
+	public static function should_send_alert( $notify_count, $resolved_count, $unverifiable_streak_triggered = false, $unrecorded_version_change_count = 0, $new_access_denied_count = 0 ) {
+		return $notify_count > 0 || $resolved_count > 0 || $unverifiable_streak_triggered || $unrecorded_version_change_count > 0 || $new_access_denied_count > 0;
 	}
 
 	/**
@@ -338,7 +342,8 @@ class WPCV_Generation_Differ {
 			return 'core' === (string) ( $target_run['target_id'] ?? '' );
 		}
 
-		// unknown_source/target_missing/その他: 一時障害ではない.
+		// unknown_source/target_missing/source_access_denied(v0.9 §Step7. トークンの失効・権限不足.
+		// 恒常的な状態で、stat 差分検知に回り、管理通知・初回のメールで知らせる)/その他: 一時障害ではない.
 		return false;
 	}
 

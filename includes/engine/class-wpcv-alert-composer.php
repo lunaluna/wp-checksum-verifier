@@ -80,6 +80,9 @@ class WPCV_Alert_Composer {
 	 *                                          見つからなかった version 変更(チェックサム
 	 *                                          target。`target_id`/`from_version`/
 	 *                                          `to_version`. v0.6プラン §3.1・U3).
+	 *     @type array  $access_denied          GitHub のトークンの失効・権限不足で照合元と比較できなかった
+	 *                                          target(`target_id`/`is_new`. v0.9 §Step7・U9. 続いている
+	 *                                          ものも載せる. 初めて現れたものには「(new)」を付ける).
 	 *     @type array  $unverifiable_streaks   連続 unverifiable の閾値に達した target
 	 *                                          (`target_id`/`error_code`. Step15で使う).
 	 *     @type int    $unverifiable_threshold 連続 unverifiable の閾値(見出しの回数).
@@ -101,6 +104,7 @@ class WPCV_Alert_Composer {
 				'resolved_items'             => array(),
 				'baseline_rebuilt'           => array(),
 				'unrecorded_version_changes' => array(),
+				'access_denied'              => array(),
 				'unverifiable_streaks'       => array(),
 				'unverifiable_threshold'     => 0,
 				'removed_targets'            => 0,
@@ -121,8 +125,25 @@ class WPCV_Alert_Composer {
 		);
 
 		return array(
-			'subject' => self::build_subject( (string) $input['site_name'], (int) $counts['new'], (int) $counts['resolved'], count( (array) $input['unrecorded_version_changes'] ) ),
+			'subject' => self::build_subject( (string) $input['site_name'], (int) $counts['new'], (int) $counts['resolved'], count( (array) $input['unrecorded_version_changes'] ), self::count_new_access_denied( (array) $input['access_denied'] ) ),
 			'body'    => self::build_body( $input, $counts, $max_items ),
+		);
+	}
+
+	/**
+	 * `access_denied` のうち、初めて現れたもの(`is_new`)の数(v0.9 §Step7).
+	 *
+	 * @param array<int, array{target_id: string, is_new: bool}> $access_denied `compose()` の入力の `access_denied`.
+	 * @return int
+	 */
+	private static function count_new_access_denied( array $access_denied ) {
+		return count(
+			array_filter(
+				$access_denied,
+				static function ( $item ) {
+					return ! empty( $item['is_new'] );
+				}
+			)
 		);
 	}
 
@@ -138,9 +159,22 @@ class WPCV_Alert_Composer {
 	 * @param int    $new_count                       新規件数.
 	 * @param int    $resolved_count                  解消件数.
 	 * @param int    $unrecorded_version_change_count 記録なしのversion変更の件数(v0.6 §3.1).
+	 * @param int    $new_access_denied_count         初めて照合元にアクセスできなくなった target の件数
+	 *                                                (v0.9 §Step7. 他の理由が無いときだけ件名に使う).
 	 * @return string
 	 */
-	private static function build_subject( $site_name, $new_count, $resolved_count, $unrecorded_version_change_count = 0 ) {
+	private static function build_subject( $site_name, $new_count, $resolved_count, $unrecorded_version_change_count = 0, $new_access_denied_count = 0 ) {
+		if ( 0 === $new_count && 0 === $resolved_count && 0 === $unrecorded_version_change_count && $new_access_denied_count > 0 ) {
+			$subject = sprintf(
+				/* translators: 1: site name, 2: number of targets that can no longer be compared with their source. */
+				__( '[WPCV] %1$s: %2$s target(s) cannot be compared with the source', 'wp-checksum-verifier' ),
+				self::clean_site_name( $site_name ),
+				number_format( $new_access_denied_count )
+			);
+
+			return self::strip_control_chars( $subject );
+		}
+
 		if ( 0 === $new_count && 0 === $resolved_count && $unrecorded_version_change_count > 0 ) {
 			$subject = sprintf(
 				/* translators: 1: site name, 2: number of version changes without a recorded WordPress update. */
@@ -279,6 +313,17 @@ class WPCV_Alert_Composer {
 					self::clean( $item['to_version'] ?? '' )
 				);
 			}
+		}
+
+		if ( ! empty( $input['access_denied'] ) ) {
+			$lines[] = '';
+			$lines[] = __( 'Cannot compare with the source (the GitHub token is invalid, expired or lacks permission). These targets are monitored by file-change tracking meanwhile:', 'wp-checksum-verifier' );
+
+			foreach ( (array) $input['access_denied'] as $item ) {
+				$lines[] = '  ' . self::clean( $item['target_id'] ?? '' ) . ( ! empty( $item['is_new'] ) ? '  ' . __( '(new)', 'wp-checksum-verifier' ) : '' );
+			}
+
+			$lines[] = __( 'Check the GitHub token (the WPCV_GITHUB_TOKEN constant or the wpcv_github_token filter).', 'wp-checksum-verifier' );
 		}
 
 		if ( ! empty( $input['unverifiable_streaks'] ) ) {

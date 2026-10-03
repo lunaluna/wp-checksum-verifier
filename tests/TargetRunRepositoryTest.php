@@ -1377,4 +1377,75 @@ class TargetRunRepositoryTest extends TestCase {
 		$this->assertFalse( $repository->set_source( $target_run_id, 'worker-a', 'wporg' ) );
 		$this->assertSame( 'github', $wpdb->rows['wp_wpcv_target_runs'][ $target_run_id ]['source'] );
 	}
+
+	// ------------------------------------------------------------------
+	// v0.9 §Step7: find_previous_target_run()(source_access_denied が「初めて」かの判定).
+	// ------------------------------------------------------------------
+
+	/**
+	 * 今回より前の run のうち、直近のもの(run_id が最大)を返す. 状態・error_code も返す.
+	 *
+	 * @return void
+	 */
+	public function test_find_previous_target_run_returns_the_nearest_earlier_row() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$repository->save_target_runs( 10, array( wpcv_test_make_target_run( array( 'target_id' => 'plugin:a', 'status' => WPCV_Target_Status::SUCCESS ) ) ) );
+		$repository->save_target_runs(
+			20,
+			array(
+				wpcv_test_make_target_run(
+					array(
+						'target_id'  => 'plugin:a',
+						'status'     => WPCV_Target_Status::UNVERIFIABLE,
+						'error_code' => WPCV_Error_Code::SOURCE_ACCESS_DENIED,
+					)
+				),
+			)
+		);
+
+		$previous = $repository->find_previous_target_run( 'plugin:a', 30 );
+
+		$this->assertSame( 20, $previous['run_id'] );
+		$this->assertSame( WPCV_Target_Status::UNVERIFIABLE, $previous['status'] );
+		$this->assertSame( WPCV_Error_Code::SOURCE_ACCESS_DENIED, $previous['error_code'] );
+	}
+
+	/**
+	 * 今回の run 以降・別の target の行は対象にしない. 無ければ `null`.
+	 *
+	 * @return void
+	 */
+	public function test_find_previous_target_run_excludes_current_future_and_other_targets() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$repository->save_target_runs( 10, array( wpcv_test_make_target_run( array( 'target_id' => 'plugin:a' ) ) ) );
+		$repository->save_target_runs( 20, array( wpcv_test_make_target_run( array( 'target_id' => 'plugin:b' ) ) ) );
+		$repository->save_target_runs( 30, array( wpcv_test_make_target_run( array( 'target_id' => 'plugin:a' ) ) ) );
+
+		$this->assertNull( $repository->find_previous_target_run( 'plugin:a', 10 ), '今回の run 自身は含めない.' );
+		$this->assertSame( 10, $repository->find_previous_target_run( 'plugin:a', 30 )['run_id'], '未来の run・他の target を飛ばす.' );
+		$this->assertNull( $repository->find_previous_target_run( 'plugin:zzz', 99 ) );
+	}
+
+	/**
+	 * 結果が確定していない行(aborted・running 等)は「前回の結果」とみなさず、その前の確定した行を返す.
+	 *
+	 * @return void
+	 */
+	public function test_find_previous_target_run_skips_aborted_and_unfinished_rows() {
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$repository = new WPCV_Target_Run_Repository( $wpdb );
+
+		$repository->save_target_runs( 10, array( wpcv_test_make_target_run( array( 'target_id' => 'plugin:a', 'status' => WPCV_Target_Status::SKIPPED ) ) ) );
+		$repository->save_target_runs( 20, array( wpcv_test_make_target_run( array( 'target_id' => 'plugin:a', 'status' => WPCV_Target_Status::ABORTED ) ) ) );
+		$repository->save_target_runs( 25, array( wpcv_test_make_target_run( array( 'target_id' => 'plugin:a', 'status' => 'running' ) ) ) );
+
+		$previous = $repository->find_previous_target_run( 'plugin:a', 30 );
+
+		$this->assertSame( 10, $previous['run_id'] );
+		$this->assertSame( WPCV_Target_Status::SKIPPED, $previous['status'] );
+	}
 }

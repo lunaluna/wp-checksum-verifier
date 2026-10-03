@@ -272,6 +272,42 @@ class WPCV_Suppression_Repository {
 	}
 
 	/**
+	 * `expired_at` が `$cutoff` より前の(失効してから期間が過ぎた)ルールを消す(v0.9 §Step2:
+	 * 保持期間の掃除.プラン §3.1.1 の I5).有効なルール(`expired_at` が NULL)は消さない.
+	 *
+	 * 消したルールを `suppression_id` で指している finding が残ることがあるが、画面は id を
+	 * 「Rule #N」と表示するだけで、ルールの行を引かない(`WPCV_Page_Findings::suppressed_label()`).
+	 * 失効したルールは新しい照合に使われないので、読み手への影響は無い.
+	 *
+	 * @param string $cutoff MySQL DATETIME(UTC).
+	 * @return int 消した件数.
+	 *
+	 * @throws RuntimeException `$wpdb->delete()` がSQLエラーで `false` を返した場合.
+	 */
+	public function delete_expired_before( $cutoff ) {
+		$table   = $this->wpdb->base_prefix . 'wpcv_suppressions';
+		$deleted = 0;
+
+		foreach ( $this->all_rows() as $row ) {
+			if ( empty( $row['expired_at'] ) || (string) $row['expired_at'] >= (string) $cutoff ) {
+				continue;
+			}
+
+			$result = $this->wpdb->delete( $table, array( 'id' => (int) $row['id'] ), array( '%d' ) );
+
+			if ( false === $result ) {
+				throw new RuntimeException(
+					esc_html( sprintf( 'WPCV_Suppression_Repository::delete_expired_before() の delete に失敗しました: %s', (string) $this->wpdb->last_error ) )
+				);
+			}
+
+			++$deleted;
+		}
+
+		return $deleted;
+	}
+
+	/**
 	 * `wpcv_suppressions` の全行を読み取る(`WPCV_Target_Run_Repository::all_rows()` と
 	 * 同じ理由でテーブル全体を取得しPHP側で絞り込む).
 	 *

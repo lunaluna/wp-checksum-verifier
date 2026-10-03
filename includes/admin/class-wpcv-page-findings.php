@@ -86,7 +86,7 @@ class WPCV_Page_Findings {
 	 * @return void
 	 */
 	public static function render() {
-		if ( ! current_user_can( self::required_capability() ) ) {
+		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_FINDINGS ) ) ) {
 			return;
 		}
 
@@ -222,11 +222,19 @@ class WPCV_Page_Findings {
 			return;
 		}
 
+		// v0.9 §Step4: マルチサイトでは、plugin / theme の finding に「有効にしているサイト」を添える
+		// (表示時に計算する. 走査は1リクエストにつき1回で、plugin / theme の行が出たときに初めて行う).
+		$show_affected_sites = is_multisite();
+		$affected_sites      = new WPCV_Affected_Sites();
+
 		?>
 		<table class="wp-list-table widefat fixed striped">
 			<thead>
 				<tr>
 					<th><?php echo esc_html__( 'Target', 'wp-checksum-verifier' ); ?></th>
+					<?php if ( $show_affected_sites ) : ?>
+						<th><?php echo esc_html__( 'Active on', 'wp-checksum-verifier' ); ?></th>
+					<?php endif; ?>
 					<th><?php echo esc_html__( 'Path', 'wp-checksum-verifier' ); ?></th>
 					<th><?php echo esc_html__( 'Status', 'wp-checksum-verifier' ); ?></th>
 					<th><?php echo esc_html__( 'Details', 'wp-checksum-verifier' ); ?></th>
@@ -241,6 +249,9 @@ class WPCV_Page_Findings {
 				<?php foreach ( $result['rows'] as $finding ) : ?>
 					<tr>
 						<td><?php echo esc_html( $finding['dimension'] . ':' . $finding['slug'] ); ?></td>
+						<?php if ( $show_affected_sites ) : ?>
+							<td><?php echo esc_html( self::format_affected_sites( $affected_sites->describe( (string) $finding['dimension'], (string) $finding['slug'] ) ) ); ?></td>
+						<?php endif; ?>
 						<td><?php echo esc_html( $finding['path'] ); ?></td>
 						<td><?php echo esc_html( $finding['status'] ); ?></td>
 						<td><?php echo esc_html( self::format_detail( $finding ) ); ?></td>
@@ -254,6 +265,80 @@ class WPCV_Page_Findings {
 			</tbody>
 		</table>
 		<?php
+	}
+
+	/**
+	 * 表示するサイト名の最大数(それ以降は「ほか N サイト」にまとめる. 画面の幅のための値で、性能とは関係しない).
+	 *
+	 * @var int
+	 */
+	const AFFECTED_SITES_DISPLAY_LIMIT = 5;
+
+	/**
+	 * `WPCV_Affected_Sites::describe()` の結果を、一覧の1セルに収まる短い文にする(v0.9 §Step4).
+	 *
+	 * @param array $info `WPCV_Affected_Sites::describe()` の戻り値.
+	 * @return string 表示用の文(エスケープ前).
+	 */
+	public static function format_affected_sites( array $info ) {
+		switch ( $info['state'] ) {
+			case WPCV_Affected_Sites::STATE_NETWORK:
+				return __( 'Network-wide (all sites)', 'wp-checksum-verifier' );
+
+			case WPCV_Affected_Sites::STATE_SITES:
+				return self::format_site_list( (array) $info['sites'] );
+
+			case WPCV_Affected_Sites::STATE_NONE:
+				return ! empty( $info['network_enabled'] )
+					? __( 'Network-enabled, but not active on any site', 'wp-checksum-verifier' )
+					: __( 'Not active on any site', 'wp-checksum-verifier' );
+
+			case WPCV_Affected_Sites::STATE_UNAVAILABLE:
+				return sprintf(
+					/* translators: %d: number of sites in the network. */
+					__( 'Not shown (the network has %d sites)', 'wp-checksum-verifier' ),
+					(int) $info['total_sites']
+				);
+
+			default:
+				return '—';
+		}
+	}
+
+	/**
+	 * サイトの一覧を「名前, 名前 (parent theme), …, and N more」の形にする.
+	 *
+	 * @param array<int, array{blog_id: int, name: string, url: string, relation: string}> $sites `WPCV_Affected_Sites::describe()` の `sites`.
+	 * @return string 表示用の文(エスケープ前).
+	 */
+	private static function format_site_list( array $sites ) {
+		$labels = array();
+
+		foreach ( array_slice( $sites, 0, self::AFFECTED_SITES_DISPLAY_LIMIT ) as $site ) {
+			$name = '' !== $site['name'] ? $site['name'] : $site['url'];
+
+			if ( WPCV_Affected_Sites::RELATION_PARENT === $site['relation'] ) {
+				$name = sprintf(
+					/* translators: %s: site name. The theme is the parent theme of the site's active child theme. */
+					__( '%s (parent theme)', 'wp-checksum-verifier' ),
+					$name
+				);
+			}
+
+			$labels[] = $name;
+		}
+
+		$rest = count( $sites ) - count( $labels );
+
+		if ( $rest > 0 ) {
+			$labels[] = sprintf(
+				/* translators: %d: number of sites not listed. */
+				__( 'and %d more', 'wp-checksum-verifier' ),
+				$rest
+			);
+		}
+
+		return implode( ', ', $labels );
 	}
 
 	/**
@@ -520,7 +605,7 @@ class WPCV_Page_Findings {
 
 		check_admin_referer( self::NONCE_ACTION, self::NONCE_NAME );
 
-		if ( ! current_user_can( self::required_capability() ) ) {
+		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_FINDINGS ) ) ) {
 			return null;
 		}
 
@@ -560,15 +645,5 @@ class WPCV_Page_Findings {
 		$latest = WPCV_Plugin::run_repository()->find_most_recent_run();
 
 		return null === $latest ? null : (int) $latest['id'];
-	}
-
-	/**
-	 * この画面に必要なcapabilityを返す(`WPCV_Page_Settings::required_capability()`と
-	 * 同じ判定).
-	 *
-	 * @return string
-	 */
-	private static function required_capability() {
-		return is_multisite() ? 'manage_network_options' : 'manage_options';
 	}
 }

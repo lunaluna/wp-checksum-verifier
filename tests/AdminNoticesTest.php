@@ -7,7 +7,11 @@
 
 require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-error-code.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-capability.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-settings.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-admin-notices.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
@@ -44,6 +48,7 @@ class AdminNoticesTest extends TestCase {
 	 */
 	protected function tearDown(): void {
 		wpcv_test_inject_run_repository( null );
+		wpcv_test_inject_target_run_repository( null );
 		$this->resetGlobals();
 		parent::tearDown();
 	}
@@ -56,6 +61,7 @@ class AdminNoticesTest extends TestCase {
 			$GLOBALS['_wpcv_test_current_screen_id'],
 			$GLOBALS['_wpcv_test_is_multisite'],
 			$GLOBALS['_wpcv_test_user_capabilities'],
+			$GLOBALS['_wpcv_test_filters']['wpcv_required_capability'],
 			$GLOBALS['_wpcv_test_do_action_calls']['admin_notices'],
 			$GLOBALS['_wpcv_test_do_action_calls']['network_admin_notices'],
 			$GLOBALS['_wpcv_test_added_actions']['admin_notices'],
@@ -67,10 +73,14 @@ class AdminNoticesTest extends TestCase {
 	 * `wp_wpcv_runs`に1行作り、`WPCV_Plugin::run_repository()`を差し替える.
 	 *
 	 * @param array $overrides 上書きするフィールド.
-	 * @return void
+	 * @return WPCV_Test_Fake_WPDB run と同じ wpdb(target_run を足すときに使う).
 	 */
 	private function seed_terminal_run( array $overrides = array() ) {
 		$wpdb = new WPCV_Test_Fake_WPDB();
+
+		// v0.9 §Step7: 通知が同じ run の target_run も読むので、同じ wpdb を使う repository を差し替える.
+		wpcv_test_inject_target_run_repository( new WPCV_Target_Run_Repository( $wpdb ) );
+
 		$wpdb->insert(
 			'wp_wpcv_runs',
 			array_merge(
@@ -84,6 +94,8 @@ class AdminNoticesTest extends TestCase {
 		);
 
 		wpcv_test_inject_run_repository( new WPCV_Run_Repository( $wpdb ) );
+
+		return $wpdb;
 	}
 
 	/**
@@ -288,6 +300,119 @@ class AdminNoticesTest extends TestCase {
 		// 単一サイト向けの`admin_notices`には登録されないことも確認する.
 		ob_start();
 		do_action( 'admin_notices' );
+		$this->assertSame( '', ob_get_clean() );
+	}
+
+	/**
+	 * フィルター `wpcv_required_capability` で権限を変えると、通知もその権限で出し分けることを
+	 * 確認する(v0.9 §Step5. 画面名は `notices`).既定の権限(manage_options)だけを持つ人には
+	 * 出さず、変えた権限を持つ人には出す.
+	 *
+	 * @return void
+	 */
+	public function test_notice_follows_the_required_capability_filter() {
+		$this->seed_terminal_run( array( 'alert_status' => 'no_recipient' ) );
+
+		$GLOBALS['_wpcv_test_filters']['wpcv_required_capability'][] = static function ( $capability, $screen ) {
+			return 'notices' === $screen ? 'wpcv_custom_cap' : $capability;
+		};
+		$GLOBALS['_wpcv_test_current_screen_id']                     = 'toplevel_page_wpcv-settings';
+
+		WPCV_Admin_Notices::register( array( 'toplevel_page_wpcv-settings' ) );
+
+		$GLOBALS['_wpcv_test_user_capabilities'] = array( 'manage_options' );
+
+		ob_start();
+		do_action( 'admin_notices' );
+		$this->assertSame( '', ob_get_clean(), '既定の権限だけでは出ない.' );
+
+		$GLOBALS['_wpcv_test_user_capabilities'] = array( 'wpcv_custom_cap' );
+
+		ob_start();
+		do_action( 'admin_notices' );
+		$this->assertStringContainsString( 'notice-warning', ob_get_clean(), '変えた権限があれば出る.' );
+	}
+
+	/**
+	 * `source_access_denied` の本体 target が直近の run に1件以上あれば、件数付きの警告を出す
+	 * (v0.9 §Step7・E4). アラートの送信結果(`alert_status`)とは独立に出る.
+	 *
+	 * @return void
+	 */
+	public function test_shows_access_denied_notice_with_count() {
+		$wpdb = $this->seed_terminal_run( array( 'alert_status' => 'sent' ) );
+
+		foreach ( array( 'plugin:a', 'plugin:b' ) as $target_id ) {
+			$wpdb->insert(
+				'wp_wpcv_target_runs',
+				array(
+					'run_id'     => 1,
+					'target_id'  => $target_id,
+					'status'     => 'unverifiable',
+					'error_code' => 'source_access_denied',
+				)
+			);
+		}
+
+		// 同じ run の別の target(対象外)と、`:_stat` の行も入れておく.
+		$wpdb->insert( 'wp_wpcv_target_runs', array( 'run_id' => 1, 'target_id' => 'plugin:c', 'status' => 'unverifiable', 'error_code' => 'manifest_not_found' ) );
+		$wpdb->insert( 'wp_wpcv_target_runs', array( 'run_id' => 1, 'target_id' => 'plugin:a:_stat', 'status' => 'success', 'error_code' => null ) );
+
+		$GLOBALS['_wpcv_test_current_screen_id'] = 'toplevel_page_wpcv-settings';
+		$GLOBALS['_wpcv_test_user_capabilities'] = array( 'manage_options' );
+
+		WPCV_Admin_Notices::register( array( 'toplevel_page_wpcv-settings' ) );
+
+		ob_start();
+		do_action( 'admin_notices' );
+		$output = ob_get_clean();
+
+		$this->assertStringContainsString( 'notice-warning', $output );
+		$this->assertStringContainsString( '2 target(s) cannot be compared with their source', $output );
+		$this->assertStringNotContainsString( 'no alert recipients', $output );
+	}
+
+	/**
+	 * アラート宛先の警告と access denied の警告は、両方出る(片方が他方を隠さない).
+	 *
+	 * @return void
+	 */
+	public function test_shows_both_no_recipient_and_access_denied_notices() {
+		$wpdb = $this->seed_terminal_run( array( 'alert_status' => 'no_recipient' ) );
+
+		$wpdb->insert( 'wp_wpcv_target_runs', array( 'run_id' => 1, 'target_id' => 'plugin:a', 'status' => 'unverifiable', 'error_code' => 'source_access_denied' ) );
+
+		$GLOBALS['_wpcv_test_current_screen_id'] = 'toplevel_page_wpcv-settings';
+		$GLOBALS['_wpcv_test_user_capabilities'] = array( 'manage_options' );
+
+		WPCV_Admin_Notices::register( array( 'toplevel_page_wpcv-settings' ) );
+
+		ob_start();
+		do_action( 'admin_notices' );
+		$output = ob_get_clean();
+
+		$this->assertStringContainsString( 'no alert recipients', $output );
+		$this->assertStringContainsString( '1 target(s) cannot be compared', $output );
+	}
+
+	/**
+	 * `source_access_denied` の target が無ければ、access denied の警告は出ない. トークンの値は出さない.
+	 *
+	 * @return void
+	 */
+	public function test_no_access_denied_notice_without_such_targets() {
+		$wpdb = $this->seed_terminal_run( array( 'alert_status' => 'sent' ) );
+
+		$wpdb->insert( 'wp_wpcv_target_runs', array( 'run_id' => 1, 'target_id' => 'plugin:c', 'status' => 'unverifiable', 'error_code' => 'http_error' ) );
+
+		$GLOBALS['_wpcv_test_current_screen_id'] = 'toplevel_page_wpcv-settings';
+		$GLOBALS['_wpcv_test_user_capabilities'] = array( 'manage_options' );
+
+		WPCV_Admin_Notices::register( array( 'toplevel_page_wpcv-settings' ) );
+
+		ob_start();
+		do_action( 'admin_notices' );
+
 		$this->assertSame( '', ob_get_clean() );
 	}
 }

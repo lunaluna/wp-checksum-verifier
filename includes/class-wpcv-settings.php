@@ -27,7 +27,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 検出結果等(§5.6)と同様 installation-level のデータであるため、マルチサイトでは
  * ネットワーク全体で1つの設定を `wp_sitemeta`(`get_site_option`/`update_site_option`)
  * に、単一サイトでは `wp_options`(`get_option`/`update_option`)に保存する。この
- * 分岐は `WPCV_Page_Settings::required_capability()` の `is_multisite()` 分岐と
+ * 分岐は `WPCV_Capability::default_capability()` の `is_multisite()` 分岐と
  * 同じ方針(§11).
  */
 class WPCV_Settings {
@@ -138,13 +138,31 @@ class WPCV_Settings {
 	const DEFAULT_CONTENT_HASH_MODE = self::CONTENT_HASH_MODE_OFF;
 
 	/**
+	 * 保持期間(月)の選択肢(v0.9 §Step2). 0 は無期限(何も消さない).
+	 *
+	 * 3・6・12・24 は暫定の選択肢(未実測). 本番の増加量は 2026-10-29 ごろに測れる(v0.9 プラン §2).
+	 * 選択肢以外の値は保存・読み取りのどちらでも既定(0)に倒す: 汚れた値で意図せず履歴を消さないため.
+	 *
+	 * @var int[]
+	 */
+	const RETENTION_MONTHS_CHOICES = array( 0, 3, 6, 12, 24 );
+
+	/**
+	 * 保持期間(月)の既定値(v0.9 プラン U5). 0 = 無期限. 利用者が選ぶまで何も削除しない
+	 * (既定を有限にすると、今ある履歴が利用者に黙って消えるため).
+	 *
+	 * @var int
+	 */
+	const DEFAULT_RETENTION_MONTHS = 0;
+
+	/**
 	 * 既定値.
 	 *
 	 * `alert_to`(v0.5後半 §Step14)の既定は空の配列. 空のときはアラートを送らず、
 	 * 管理画面に「宛先未設定」の警告を出す(プラン U1. admin_email へのフォールバックは
 	 * しない. WPMAR と同じ扱い).
 	 *
-	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool,stat_detection:bool,alert_to:string[],alert_unrecorded_version_change:bool,content_hash_mode:string}
+	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool,stat_detection:bool,alert_to:string[],alert_unrecorded_version_change:bool,content_hash_mode:string,retention_months:int}
 	 */
 	public static function defaults() {
 		return array(
@@ -157,13 +175,14 @@ class WPCV_Settings {
 			'alert_unrecorded_version_change'   => self::DEFAULT_ALERT_UNRECORDED_VERSION_CHANGE,
 			'content_hash_mode'                 => self::DEFAULT_CONTENT_HASH_MODE,
 			'github_mappings'                   => array(),
+			'retention_months'                  => self::DEFAULT_RETENTION_MONTHS,
 		);
 	}
 
 	/**
 	 * 保存済みの設定値を既定値とマージして返す.
 	 *
-	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool,stat_detection:bool,alert_to:string[],alert_unrecorded_version_change:bool,content_hash_mode:string}
+	 * @return array{run_hour:int,run_minute:int,external_http_time_budget_seconds:int,strict_mode:bool,stat_detection:bool,alert_to:string[],alert_unrecorded_version_change:bool,content_hash_mode:string,retention_months:int}
 	 */
 	public static function get_all() {
 		$stored = self::read_option();
@@ -434,6 +453,39 @@ class WPCV_Settings {
 		$settings = self::get_all();
 
 		$settings['alert_unrecorded_version_change'] = (bool) $enabled;
+
+		return self::write_option( $settings );
+	}
+
+	/**
+	 * 保持期間(月)を返す(v0.9 §Step2). 0 は無期限.
+	 *
+	 * 保存済みの値が選択肢(`RETENTION_MONTHS_CHOICES`)以外(手動での書き換え等)なら、
+	 * 既定(0 = 無期限)として扱う.
+	 *
+	 * @return int
+	 */
+	public static function get_retention_months() {
+		$settings = self::get_all();
+		$months   = $settings['retention_months'];
+
+		return in_array( (int) $months, self::RETENTION_MONTHS_CHOICES, true )
+			? (int) $months
+			: self::DEFAULT_RETENTION_MONTHS;
+	}
+
+	/**
+	 * 保持期間(月)を保存する.
+	 *
+	 * @param int $months `RETENTION_MONTHS_CHOICES` のいずれか. それ以外は既定(0 = 無期限)として保存する.
+	 * @return bool `update_option()`/`update_site_option()` の戻り値.
+	 */
+	public static function update_retention_months( $months ) {
+		$settings = self::get_all();
+
+		$settings['retention_months'] = in_array( (int) $months, self::RETENTION_MONTHS_CHOICES, true )
+			? (int) $months
+			: self::DEFAULT_RETENTION_MONTHS;
 
 		return self::write_option( $settings );
 	}

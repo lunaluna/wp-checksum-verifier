@@ -1315,6 +1315,102 @@ class WPCV_Run_Repository {
 	}
 
 	/**
+	 * `started_at` が `$cutoff` より前の run のうち、id が最大のものを返す(v0.9 §Step2:
+	 * 保持期間の掃除が「この id 以下は期限切れ」という境界を1回のクエリで求めるために使う).
+	 *
+	 * Run の id は採番順で、`started_at` も同じ順に付く(`insert_run_row()`)ので、
+	 * 「期限切れの run」は「id がこの値以下の run」と同じ集合とみなせる(掃除は
+	 * target_runs を `run_id` の範囲で引くため、日時の列を持たない target_runs にも
+	 * 同じ境界を使える).`started_at` が NULL の run(開始前に止まったもの)は対象外.
+	 *
+	 * @param string $cutoff MySQL DATETIME(UTC).
+	 * @return int|null 該当する run が無ければ `null`.
+	 */
+	public function find_last_started_before( $cutoff ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+		$row   = $this->first_row( $this->wpdb->prepare( "SELECT id FROM {$table} WHERE started_at < %s ORDER BY id DESC LIMIT 1", (string) $cutoff ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name only.
+
+		return null === $row ? null : (int) $row['id'];
+	}
+
+	/**
+	 * 実行中、または差分処理が終わっていない run の id 一覧を返す(v0.9 §Step2:
+	 * 保持期間の掃除が消してはいけない run. プラン §3.1.1 の I3).
+	 *
+	 * 実行中 = `status` が `WPCV_Run_Status::ACTIVE`(queued/planning/running)、
+	 * 差分処理が終わっていない = `diff_status` が `WPCV_Diff_Status::CLAIMABLE`
+	 * (pending/processing/alerting). `diff_status` が NULL(v5 より前の run)や
+	 * done/failed/skipped は含めない.
+	 *
+	 * @return int[] 重複なし.
+	 */
+	public function find_unfinished_run_ids() {
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+		$ids   = array();
+
+		foreach ( array(
+			'status'      => WPCV_Run_Status::ACTIVE,
+			'diff_status' => WPCV_Diff_Status::CLAIMABLE,
+		) as $column => $values ) {
+			$placeholders = implode( ', ', array_fill( 0, count( $values ), '%s' ) );
+			$sql          = "SELECT id FROM {$table} WHERE {$column} IN ( {$placeholders} )";
+
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is built from the table name, a fixed column name and placeholders only; all values are bound via prepare().
+			$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, $values ), ARRAY_A );
+
+			foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+				// テストダブルは `IN` を解釈しない形のクエリでは全行を返すので、値を見直す.
+				if ( isset( $row[ $column ] ) && ! in_array( $row[ $column ], $values, true ) ) {
+					continue;
+				}
+
+				$ids[ (int) $row['id'] ] = true;
+			}
+		}
+
+		return array_keys( $ids );
+	}
+
+	/**
+	 * `started_at` が `$cutoff` より前の run の id を、`$after_id` より大きいものから
+	 * id 昇順で `$limit` 件返す(v0.9 §Step2: 期限切れの run を消す候補の走査).
+	 *
+	 * @param string $cutoff   MySQL DATETIME(UTC).
+	 * @param int    $after_id この id より大きいものだけ(初回は 0).
+	 * @param int    $limit    最大件数.
+	 * @return int[]
+	 */
+	public function find_ids_started_before( $cutoff, $after_id, $limit ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_runs';
+		$sql   = "SELECT id FROM {$table} WHERE started_at < %s AND id > %d ORDER BY id ASC LIMIT %d";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all values are bound via prepare().
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (string) $cutoff, (int) $after_id, (int) $limit ), ARRAY_A );
+
+		return array_map( 'intval', array_column( is_array( $rows ) ? $rows : array(), 'id' ) );
+	}
+
+	/**
+	 * Run の行を1件消す(v0.9 §Step2: 保持期間の掃除. 子の target_runs が1件も無いことを
+	 * 呼び出し元が確認してから呼ぶ).
+	 *
+	 * @param int $run_id 対象の run の id.
+	 * @return void
+	 *
+	 * @throws RuntimeException `$wpdb->delete()` がSQLエラーで `false` を返した場合.
+	 */
+	public function delete_by_id( $run_id ) {
+		$table   = $this->wpdb->base_prefix . 'wpcv_runs';
+		$deleted = $this->wpdb->delete( $table, array( 'id' => (int) $run_id ), array( '%d' ) );
+
+		if ( false === $deleted ) {
+			throw new RuntimeException(
+				esc_html( sprintf( 'WPCV_Run_Repository::delete_by_id() の delete に失敗しました: %s', (string) $this->wpdb->last_error ) )
+			);
+		}
+	}
+
+	/**
 	 * SELECT文を実行し、最初の1行を返す(`find_by_id()`・`find_most_recent_*()`で
 	 * 共有する.コードレビュー指摘5で、全runを読んでPHPで絞り込む`all_rows()`を
 	 * やめたときに追加した).

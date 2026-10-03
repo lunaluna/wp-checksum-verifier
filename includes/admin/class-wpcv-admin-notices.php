@@ -78,7 +78,7 @@ class WPCV_Admin_Notices {
 			return;
 		}
 
-		if ( ! current_user_can( WPCV_Page_Settings::required_capability() ) ) {
+		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_NOTICES ) ) ) {
 			return;
 		}
 
@@ -88,6 +88,17 @@ class WPCV_Admin_Notices {
 			return;
 		}
 
+		self::render_alert_status_notice( $run );
+		self::render_access_denied_notice( $run );
+	}
+
+	/**
+	 * アラートの送信結果(宛先未設定・メールの失敗)の通知を出す.
+	 *
+	 * @param array $run 直近の終端 run の行.
+	 * @return void
+	 */
+	private static function render_alert_status_notice( array $run ) {
 		$alert_status = $run['alert_status'] ?? null;
 
 		if ( 'no_recipient' === $alert_status ) {
@@ -113,6 +124,39 @@ class WPCV_Admin_Notices {
 					)
 			);
 		}
+	}
+
+	/**
+	 * GitHub のトークンの失効・権限不足で、照合元と比較できていない target があるときの通知を出す
+	 * (v0.9 §Step7・U9・E4). 直近の終端 run に `source_access_denied` の本体 target が1件以上あれば出す.
+	 *
+	 * 連続 unverifiable のアラートの対象外にした代わりに、直るまで常に見える場所で知らせる.
+	 * その target は stat 差分検知(ファイルの変化)で監視している. トークンの値は出さない.
+	 *
+	 * @param array $run 直近の終端 run の行.
+	 * @return void
+	 */
+	private static function render_access_denied_notice( array $run ) {
+		$count = 0;
+
+		foreach ( WPCV_Plugin::target_run_repository()->find_all_by_run( (int) ( $run['id'] ?? 0 ) ) as $target_run ) {
+			if ( WPCV_Target_Status::UNVERIFIABLE === ( $target_run['status'] ?? null ) && WPCV_Error_Code::SOURCE_ACCESS_DENIED === ( $target_run['error_code'] ?? null ) ) {
+				++$count;
+			}
+		}
+
+		if ( $count < 1 ) {
+			return;
+		}
+
+		self::render_notice(
+			'notice-warning',
+			sprintf(
+				/* translators: %d: number of targets that cannot be compared with their source. */
+				__( 'WP Checksum Verifier: %d target(s) cannot be compared with their source because the GitHub token is invalid, expired or lacks permission. They are monitored by file-change tracking meanwhile. Check the GitHub token (the WPCV_GITHUB_TOKEN constant or the wpcv_github_token filter).', 'wp-checksum-verifier' ),
+				$count
+			)
+		);
 	}
 
 	/**

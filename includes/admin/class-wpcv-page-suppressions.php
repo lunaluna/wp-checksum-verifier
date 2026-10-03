@@ -43,7 +43,7 @@ class WPCV_Page_Suppressions {
 	 * @return void
 	 */
 	public static function render() {
-		if ( ! current_user_can( self::required_capability() ) ) {
+		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_SUPPRESSIONS ) ) ) {
 			return;
 		}
 
@@ -245,7 +245,7 @@ class WPCV_Page_Suppressions {
 
 		check_admin_referer( self::NONCE_ACTION, self::NONCE_NAME );
 
-		if ( ! current_user_can( self::required_capability() ) ) {
+		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_SUPPRESSIONS ) ) ) {
 			return null;
 		}
 
@@ -268,15 +268,5 @@ class WPCV_Page_Suppressions {
 		}
 
 		return true;
-	}
-
-	/**
-	 * この画面に必要なcapabilityを返す(`WPCV_Page_Settings::required_capability()`と
-	 * 同じ判定).
-	 *
-	 * @return string
-	 */
-	private static function required_capability() {
-		return is_multisite() ? 'manage_network_options' : 'manage_options';
 	}
 }

@@ -3,7 +3,7 @@
  * Plugin Name:       WP Checksum Verifier
  * Plugin URI:        https://github.com/lunaluna/wp-checksum-verifier
  * Description:       WordPress コア・プラグイン・テーマ・MU プラグインの checksum を日次で検証し、改ざんを検出するプラグイン.
- * Version:           0.8.0
+ * Version:           0.9.0
  * Requires at least: 6.8
  * Tested up to:      7.1
  * Requires PHP:      7.4
@@ -328,6 +328,13 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-update-e
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-manifest-cache-cleaner.php';
 
 /**
+ * Run の終端での保持期間の掃除(v0.9 §Step2). `wpcv_run_terminated` のハンドラを
+ * ファイル末尾で登録する. 設定 `retention_months` が 0(無期限. 既定)なら何もしない.
+ * `WPCV_Manifest_Cache_Cleaner` と同じ理由で、`WPCV_Plugin` 本体より前に読み込んでも問題ない.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-retention-cleaner.php';
+
+/**
  * Run開始時の「列挙(plan)→保存」を失敗時の後始末込みで行う共通処理
  * (v0.4.0 §Step5)。`WPCV_Run_Coordinator`・`WPCV_Runner_Async` の両方が使う.
  */
@@ -359,6 +366,17 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-runner-a
  * 自己連鎖(v0.3 §Step6).
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-settings.php';
+
+/**
+ * 管理画面に必要な権限の判定(v0.9 §Step5). メニュー・各画面・通知が同じ判定を使う.
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-capability.php';
+
+/**
+ * マルチサイトで、plugin / theme を有効にしているサイトを求める(v0.9 §Step4). 検出結果の画面が使う.
+ * `WPCV_Run_Planner`・`WPCV_Target_Resolver` に依存する(いずれも上で読み込み済み).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-affected-sites.php';
 
 /**
  * プラグイン・テーマと GitHub リポジトリの対応付け(v0.8 §Step6. 設定とフィルターから集める).
@@ -413,6 +431,9 @@ if ( is_admin() ) {
 	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-admin-notices.php';
 	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-admin-menu.php';
 	WPCV_Admin_Menu::register();
+	// v0.9 §Step4(M1): サブサイトだけで有効化されたときの警告(自動実行が走らないため).
+	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-multisite-notice.php';
+	WPCV_Multisite_Notice::register();
 }
 
 /**

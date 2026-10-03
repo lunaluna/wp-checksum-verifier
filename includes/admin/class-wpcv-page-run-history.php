@@ -35,7 +35,7 @@ class WPCV_Page_Run_History {
 	 * @return void
 	 */
 	public static function render() {
-		if ( ! current_user_can( self::required_capability() ) ) {
+		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_RUNS ) ) ) {
 			return;
 		}
 
@@ -270,12 +270,13 @@ class WPCV_Page_Run_History {
 						</tr>
 					</thead>
 					<tbody>
+						<?php $stat_monitored = self::stat_monitored_target_ids( $target_runs ); ?>
 						<?php foreach ( $target_runs as $target_run ) : ?>
 							<tr>
 								<td><?php echo esc_html( (string) $target_run['target_id'] ); ?></td>
 								<td><?php echo esc_html( (string) ( $target_run['version'] ?? '' ) ); ?></td>
 								<td><?php echo esc_html( (string) $target_run['status'] ); ?></td>
-								<td><?php echo esc_html( self::target_run_reason_label( $target_run ) ); ?></td>
+								<td><?php echo esc_html( self::target_run_reason_label( $target_run, isset( $stat_monitored[ (string) $target_run['target_id'] ] ) ) ); ?></td>
 								<td>
 									<?php
 									echo esc_html(
@@ -465,10 +466,16 @@ class WPCV_Page_Run_History {
 	 * error_codeであればコードそのものを、設定されていなければ空文字を返す
 	 * (success等、理由を説明する必要がない状態のtarget_runでは空欄表示にする).
 	 *
-	 * @param array $target_run `WPCV_Target_Run_Repository::find_all_by_run()`の1行.
+	 * `$stat_monitored` が true(照合元と比較できず、代わりに stat 差分検知で監視した本体 target.
+	 * v0.9 §Step7・E5)のときは、その旨を添える. 有料・独自のプラグイン(wordpress.org に無い)や、
+	 * 非公開のリポジトリ(トークン無しでは GitHub が存在の有無を隠す)でも、理由だけでは「何も見て
+	 * いない」ように読めるため.
+	 *
+	 * @param array $target_run     `WPCV_Target_Run_Repository::find_all_by_run()`の1行.
+	 * @param bool  $stat_monitored 同じ run の `:_stat` target が走査した(stat で監視した)本体か.
 	 * @return string
 	 */
-	public static function target_run_reason_label( array $target_run ) {
+	public static function target_run_reason_label( array $target_run, $stat_monitored = false ) {
 		$error_code = isset( $target_run['error_code'] ) ? (string) $target_run['error_code'] : '';
 
 		if ( '' === $error_code ) {
@@ -476,8 +483,42 @@ class WPCV_Page_Run_History {
 		}
 
 		$labels = WPCV_Error_Code::all();
+		$label  = isset( $labels[ $error_code ] ) ? $labels[ $error_code ] : $error_code;
 
-		return isset( $labels[ $error_code ] ) ? $labels[ $error_code ] : $error_code;
+		if ( $stat_monitored && WPCV_Target_Status::UNVERIFIABLE === ( $target_run['status'] ?? null ) ) {
+			return sprintf(
+				/* translators: %s: the reason the target cannot be compared with its source. */
+				__( '%s — cannot be compared with the source; monitored by file-change tracking instead', 'wp-checksum-verifier' ),
+				$label
+			);
+		}
+
+		return $label;
+	}
+
+	/**
+	 * 同じ run で stat 差分検知が走査した(`success`)target の、本体の target_id を返す(v0.9 §Step7・E5).
+	 *
+	 * `{body}:_stat` の行が `success` なら、本体は照合元と比較できず stat で監視された(照合できた本体の
+	 * stat は `checksum_covered` で skipped になり、`success` にならない).
+	 *
+	 * @param array<int, array> $target_runs その run の target_run 行一覧.
+	 * @return array<string, true> 本体の target_id => true.
+	 */
+	public static function stat_monitored_target_ids( array $target_runs ) {
+		$ids = array();
+
+		foreach ( $target_runs as $target_run ) {
+			$target_id = (string) ( $target_run['target_id'] ?? '' );
+
+			if ( WPCV_Target_Status::SUCCESS !== ( $target_run['status'] ?? null ) || ! WPCV_Target_Resolver::is_stat_id( $target_id ) ) {
+				continue;
+			}
+
+			$ids[ WPCV_Target_Resolver::body_id_of_stat( $target_id ) ] = true;
+		}
+
+		return $ids;
 	}
 
 	/**
@@ -599,16 +640,5 @@ class WPCV_Page_Run_History {
 	 */
 	private static function page_url() {
 		return menu_page_url( 'wpcv-runs', false );
-	}
-
-	/**
-	 * この画面に必要なcapabilityを返す(`WPCV_Page_Settings::required_capability()`と
-	 * 同じ判定。installation-levelのデータであるためマルチサイトではネットワーク
-	 * 管理者権限を要求する).
-	 *
-	 * @return string
-	 */
-	private static function required_capability() {
-		return is_multisite() ? 'manage_network_options' : 'manage_options';
 	}
 }

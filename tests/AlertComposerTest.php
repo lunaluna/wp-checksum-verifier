@@ -474,4 +474,79 @@ class AlertComposerTest extends TestCase {
 		$this->assertStringNotContainsString( "\n", $result['subject'] );
 		$this->assertStringContainsString( 'EvilSite', $result['subject'] );
 	}
+
+	// ------------------------------------------------------------------
+	// v0.9 §Step7: source_access_denied の節と件名.
+	// ------------------------------------------------------------------
+
+	/**
+	 * 節には、初めて現れた target に「(new)」を付け、続いている target は付けず、トークンを確認する案内を載せる.
+	 *
+	 * @return void
+	 */
+	public function test_body_lists_access_denied_targets_with_new_marker() {
+		$result = WPCV_Alert_Composer::compose(
+			array(
+				'counts'        => array( 'new' => 1 ),
+				'access_denied' => array(
+					array(
+						'target_id' => 'plugin:fresh',
+						'is_new'    => true,
+					),
+					array(
+						'target_id' => 'plugin:old',
+						'is_new'    => false,
+					),
+				),
+			)
+		);
+
+		$this->assertStringContainsString( 'Cannot compare with the source', $result['body'] );
+		$this->assertStringContainsString( "  plugin:fresh  (new)\n", $result['body'] );
+		$this->assertStringContainsString( "  plugin:old\n", $result['body'] );
+		$this->assertStringContainsString( 'WPCV_GITHUB_TOKEN', $result['body'] );
+		// 他の理由(new finding)があるときの件名は通常のまま.
+		$this->assertStringContainsString( '1 new findings', $result['subject'] );
+	}
+
+	/**
+	 * 他に理由が無く、初めて現れた target だけが理由のときは、件名が専用の文言になる.
+	 * 続いているだけの target は件名の理由にならない(`access_denied` 節だけが本文に出る).
+	 *
+	 * @return void
+	 */
+	public function test_subject_for_new_access_denied_only() {
+		$result = WPCV_Alert_Composer::compose(
+			array(
+				'site_name'     => 'Example',
+				'access_denied' => array(
+					array(
+						'target_id' => 'plugin:a',
+						'is_new'    => true,
+					),
+					array(
+						'target_id' => 'plugin:b',
+						'is_new'    => true,
+					),
+					array(
+						'target_id' => 'plugin:c',
+						'is_new'    => false,
+					),
+				),
+			)
+		);
+
+		$this->assertSame( '[WPCV] Example: 2 target(s) cannot be compared with the source', $result['subject'] );
+	}
+
+	/**
+	 * `access_denied` が空なら、節は出ない(既存の本文は変わらない).
+	 *
+	 * @return void
+	 */
+	public function test_body_has_no_access_denied_section_when_empty() {
+		$result = WPCV_Alert_Composer::compose( array( 'counts' => array( 'new' => 1 ) ) );
+
+		$this->assertStringNotContainsString( 'Cannot compare with the source', $result['body'] );
+	}
 }

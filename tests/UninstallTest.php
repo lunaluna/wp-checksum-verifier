@@ -34,6 +34,11 @@ class UninstallTest extends TestCase {
 			$GLOBALS['_wpcv_test_site_options'],
 			$GLOBALS['_wpcv_test_delete_option_calls'],
 			$GLOBALS['_wpcv_test_delete_site_option_calls'],
+			$GLOBALS['_wpcv_test_delete_site_transient_calls'],
+			$GLOBALS['_wpcv_test_site_ids'],
+			$GLOBALS['_wpcv_test_blog_switches'],
+			$GLOBALS['_wpcv_test_current_blog_id'],
+			$GLOBALS['_wpcv_test_large_network'],
 			$GLOBALS['wpdb']
 		);
 	}
@@ -160,5 +165,183 @@ class UninstallTest extends TestCase {
 		$this->assertContains( 'wpcv_settings', $GLOBALS['_wpcv_test_delete_option_calls'] );
 		$this->assertContains( 'wpcv_rest_token_hash', $GLOBALS['_wpcv_test_delete_option_calls'] );
 		$this->assertContains( 'wpcv_rest_token_hash_read', $GLOBALS['_wpcv_test_delete_option_calls'] );
+	}
+
+	// ------------------------------------------------------------------
+	// v0.9 §Step6: transient・Action Scheduler の行の掃除.
+	// ------------------------------------------------------------------
+
+	/**
+	 * 発行された SQL(`query()` の記録)のうち、指定した文字列を含むものを返す.
+	 *
+	 * @param WPCV_Test_Fake_WPDB $wpdb   フェイク wpdb.
+	 * @param string              $needle 含まれる文字列.
+	 * @return string[]
+	 */
+	private static function queries_containing( WPCV_Test_Fake_WPDB $wpdb, $needle ) {
+		return array_values(
+			array_filter(
+				$wpdb->query_calls,
+				static function ( $query ) use ( $needle ) {
+					return false !== strpos( $query, $needle );
+				}
+			)
+		);
+	}
+
+	/**
+	 * Site transient 2つを、名前の完全一致で消すことを確認する. 同梱ライブラリのキャッシュは
+	 * `l2dwpghul_updater_` + md5( repo ). 前方一致で消すと、同じライブラリを使う他のプラグインの
+	 * キャッシュも消してしまうので、前方一致の SQL は発行しない.
+	 *
+	 * @return void
+	 */
+	public function test_deletes_site_transients_by_exact_name() {
+		$wpdb = $this->run_uninstall();
+
+		$this->assertSame(
+			array(
+				'wpcv_github_rate_limited_until',
+				'l2dwpghul_updater_' . md5( 'lunaluna/wp-checksum-verifier' ),
+			),
+			$GLOBALS['_wpcv_test_delete_site_transient_calls']
+		);
+		$this->assertSame( array(), self::queries_containing( $wpdb, 'l2dwpghul' ), '他のプラグインのキャッシュを巻き込む前方一致の削除はしない.' );
+	}
+
+	/**
+	 * Updater のキーは、本体ファイルが登録する GitHub のリポジトリ名(`github_repo`)と一致していること
+	 * (どちらかを変えたとき、uninstall が別のキーを消す不一致を防ぐ).
+	 *
+	 * @return void
+	 */
+	public function test_updater_cache_key_matches_the_registered_repository() {
+		$main = (string) file_get_contents( dirname( __DIR__ ) . '/wp-checksum-verifier.php' );
+
+		$this->assertMatchesRegularExpression( "/'github_repo'\\s*=>\\s*'lunaluna\\/wp-checksum-verifier'/", $main );
+	}
+
+	/**
+	 * REST トークンの失敗回数(transient と、その期限の行)を前方一致で消すことを確認する.
+	 * 識別子(IP 等)ごとに名前が変わり列挙できないため. `_` は LIKE のワイルドカードなので
+	 * `esc_like()` でエスケープされていること.
+	 *
+	 * @return void
+	 */
+	public function test_deletes_rest_token_failure_transients_with_escaped_like() {
+		$wpdb = $this->run_uninstall();
+
+		$queries = self::queries_containing( $wpdb, 'DELETE FROM wp_options' );
+
+		$this->assertCount( 1, $queries );
+		$this->assertStringContainsString( "option_name LIKE '\\\\_transient\\\\_wpcv\\\\_rest\\\\_token\\\\_fail\\\\_%'", $queries[0] );
+		$this->assertStringContainsString( "OR option_name LIKE '\\\\_transient\\\\_timeout\\\\_wpcv\\\\_rest\\\\_token\\\\_fail\\\\_%'", $queries[0] );
+	}
+
+	/**
+	 * Action Scheduler のテーブルが無いサイトでは、そのテーブルへの DELETE を一切発行しない.
+	 *
+	 * @return void
+	 */
+	public function test_skips_action_scheduler_cleanup_when_the_table_is_missing() {
+		$wpdb = $this->run_uninstall();
+
+		$this->assertSame( array(), self::queries_containing( $wpdb, 'actionscheduler' ) );
+	}
+
+	/**
+	 * Action Scheduler のテーブルがあるとき、WPCV のアクション(フックが `wpcv_` で始まる)・そのログ・
+	 * グループだけを消し、テーブルは消さない(他のプラグインと共有のため).
+	 *
+	 * @return void
+	 */
+	public function test_deletes_only_wpcv_rows_from_action_scheduler_tables() {
+		if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
+			define( 'WP_UNINSTALL_PLUGIN', true );
+		}
+
+		$wpdb                  = new WPCV_Test_Fake_WPDB();
+		$wpdb->existing_tables = array( 'wp_actionscheduler_actions' );
+		$GLOBALS['wpdb']       = $wpdb;
+
+		require dirname( __DIR__ ) . '/uninstall.php';
+
+		$logs    = self::queries_containing( $wpdb, 'DELETE l FROM wp_actionscheduler_logs' );
+		$actions = self::queries_containing( $wpdb, 'DELETE FROM wp_actionscheduler_actions' );
+		$groups  = self::queries_containing( $wpdb, 'DELETE FROM wp_actionscheduler_groups' );
+
+		$this->assertCount( 1, $logs );
+		$this->assertCount( 1, $actions );
+		$this->assertCount( 1, $groups );
+
+		// どの DELETE も、WPCV のフック(`wpcv_` で始まる)かグループ `wpcv` に絞られている.
+		$this->assertStringContainsString( "a.hook LIKE 'wpcv\\\\_%'", $logs[0] );
+		$this->assertStringContainsString( "hook LIKE 'wpcv\\\\_%'", $actions[0] );
+		$this->assertStringContainsString( "slug = 'wpcv'", $groups[0] );
+		$this->assertStringContainsString( 'NOT EXISTS', $groups[0] );
+
+		// テーブル自体は消さない(`DROP TABLE` は WPCV の7テーブルだけ).
+		$this->assertSame( array(), self::queries_containing( $wpdb, 'DROP TABLE IF EXISTS wp_actionscheduler' ) );
+	}
+
+	/**
+	 * 単一サイトでは、サイトの切り替えをしない.
+	 *
+	 * @return void
+	 */
+	public function test_single_site_does_not_switch_blogs() {
+		$this->run_uninstall();
+
+		$this->assertArrayNotHasKey( '_wpcv_test_blog_switches', $GLOBALS );
+	}
+
+	/**
+	 * マルチサイトでは、メインサイト以外の全サイトを順に切り替えて、サイトごとの行(REST の失敗回数)を
+	 * 消す(サイトごとに自分の `options` テーブルへ). メインサイトは切り替えずに済ませる.
+	 *
+	 * @return void
+	 */
+	public function test_multisite_cleans_every_other_site() {
+		$GLOBALS['_wpcv_test_is_multisite'] = true;
+		$GLOBALS['_wpcv_test_site_ids']     = array( 1, 3, 4, 7 );
+
+		$wpdb = $this->run_uninstall();
+
+		$this->assertSame( array( 3, 4, 7 ), $GLOBALS['_wpcv_test_blog_switches'] );
+
+		foreach ( array( 'wp_options', 'wp_3_options', 'wp_4_options', 'wp_7_options' ) as $table ) {
+			$this->assertCount( 1, self::queries_containing( $wpdb, "DELETE FROM {$table} WHERE" ), $table );
+		}
+	}
+
+	/**
+	 * 巨大なネットワーク(`wp_is_large_network()`)では、他のサイトを順に切り替えない
+	 * (アンインストールの所要時間が読めないため). メインサイトの掃除だけ行う.
+	 *
+	 * @return void
+	 */
+	public function test_large_network_cleans_only_the_main_site() {
+		$GLOBALS['_wpcv_test_is_multisite']   = true;
+		$GLOBALS['_wpcv_test_site_ids']       = array( 1, 3, 4 );
+		$GLOBALS['_wpcv_test_large_network']  = true;
+
+		$wpdb = $this->run_uninstall();
+
+		$this->assertArrayNotHasKey( '_wpcv_test_blog_switches', $GLOBALS );
+		$this->assertCount( 1, self::queries_containing( $wpdb, 'DELETE FROM wp_options WHERE' ) );
+	}
+
+	/**
+	 * 100 サイトを超えるネットワークでも、全サイトを取りこぼさず切り替える(100 件ずつの取得).
+	 *
+	 * @return void
+	 */
+	public function test_multisite_pages_through_more_than_one_hundred_sites() {
+		$GLOBALS['_wpcv_test_is_multisite'] = true;
+		$GLOBALS['_wpcv_test_site_ids']     = range( 1, 250 );
+
+		$this->run_uninstall();
+
+		$this->assertSame( range( 2, 250 ), $GLOBALS['_wpcv_test_blog_switches'] );
 	}
 }

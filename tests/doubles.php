@@ -94,6 +94,28 @@ class WPCV_Test_Fake_WPDB {
 	public $base_prefix = 'wp_';
 
 	/**
+	 * 現在のサイトのテーブル接頭辞(`$wpdb->prefix`. v0.9 §Step6: uninstall のサイト単位の掃除.
+	 * `switch_to_blog()` のスタブが切り替える).
+	 *
+	 * @var string
+	 */
+	public $prefix = 'wp_';
+
+	/**
+	 * 現在のサイトの `options` テーブル名(`$wpdb->options`. `prefix` と同じく切り替わる).
+	 *
+	 * @var string
+	 */
+	public $options = 'wp_options';
+
+	/**
+	 * `SHOW TABLES LIKE` に「ある」と答えるテーブル名の一覧(v0.9 §Step6).
+	 *
+	 * @var string[]
+	 */
+	public $existing_tables = array();
+
+	/**
 	 * 直近の `insert()` が採番した id(本番の `$wpdb->insert_id` に相当).
 	 *
 	 * @var int
@@ -448,6 +470,14 @@ class WPCV_Test_Fake_WPDB {
 	public function get_var( $query ) {
 		$this->get_var_calls[] = $query;
 
+		// v0.9 §Step6: `SHOW TABLES LIKE '...'`(テーブルの存在確認). `esc_like()` のエスケープを戻して、
+		// `$existing_tables` にあればその名前を、無ければ null を返す.
+		if ( 1 === preg_match( "/^\s*SHOW TABLES LIKE '(.*)'\s*$/s", $query, $show_matches ) ) {
+			$table = str_replace( array( '\\_', '\\%' ), array( '_', '%' ), stripslashes( $show_matches[1] ) );
+
+			return in_array( $table, $this->existing_tables, true ) ? $table : null;
+		}
+
 		if ( 1 === preg_match( '/^\s*SELECT\s+COUNT\(\s*\*\s*\)\s+FROM\s+(\S+)(?:\s+WHERE\s+(.+?))?\s*$/is', $query, $matches ) ) {
 			$conditions = isset( $matches[2] ) ? $this->parse_where_conditions_strict( $matches[2] ) : array();
 
@@ -620,9 +650,37 @@ class WPCV_Test_Fake_WPDB {
 			return $this->apply_insert_ignore( $matches[1], $matches[2], $matches[3] );
 		} elseif ( 1 === preg_match( '/^UPDATE\s+(\S+)\s+SET\s+(.+?)\s+WHERE\s+(.+)$/is', $query, $matches ) ) {
 			$this->apply_bulk_update( $matches[1], $matches[2], $matches[3] );
+		} elseif ( 1 === preg_match( '/^DELETE\s+FROM\s+(\S+)\s+WHERE\s+(.+)$/is', $query, $matches ) ) {
+			// v0.9 §Step2: 保持期間の掃除が `DELETE ... WHERE id IN (...)` を発行する.
+			$this->apply_bulk_delete( $matches[1], $matches[2] );
 		}
 
 		return true;
+	}
+
+	/**
+	 * `DELETE FROM {table} WHERE cond AND cond ...` を解釈し、`$this->rows` から該当行を
+	 * 取り除く(`query()` 専用のヘルパー. v0.9 §Step2).`apply_bulk_update()` と同じ
+	 * 「本プラグインが実際に発行する形だけを解釈する簡易パーサー」で、WHERE は
+	 * `column = literal` / `column IN (literal, ...)` / `column IS NULL` を `AND` で
+	 * 結んだものだけ.
+	 *
+	 * @param string $table     テーブル名.
+	 * @param string $where_str `WHERE` 直後の条件文字列.
+	 * @return void
+	 */
+	private function apply_bulk_delete( $table, $where_str ) {
+		if ( ! isset( $this->rows[ $table ] ) ) {
+			return;
+		}
+
+		$conditions = $this->parse_where_conditions( $where_str );
+
+		foreach ( $this->rows[ $table ] as $id => $row ) {
+			if ( $this->row_matches_conditions( $row, $conditions ) ) {
+				unset( $this->rows[ $table ][ $id ] );
+			}
+		}
 	}
 
 	/**
@@ -970,6 +1028,17 @@ class WPCV_Test_Fake_WPDB {
 	 */
 	public function get_charset_collate() {
 		return '';
+	}
+
+	/**
+	 * `LIKE` の値のワイルドカード(`_`・`%`・`\\`)をバックスラッシュでエスケープする(実 `$wpdb->esc_like()` の
+	 * 簡易フェイク. v0.9 §Step6: uninstall の掃除が使う).
+	 *
+	 * @param string $text エスケープ前の文字列.
+	 * @return string
+	 */
+	public function esc_like( $text ) {
+		return addcslashes( (string) $text, '_%\\' );
 	}
 
 	/**
