@@ -431,6 +431,8 @@ if ( is_admin() ) {
 	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-admin-notices.php';
 	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-admin-menu.php';
 	WPCV_Admin_Menu::register();
+	// プラグイン一覧の「無効化」などの並びに「設定」のリンクを足す.
+	WPCV_Admin_Menu::register_action_links( plugin_basename( __FILE__ ) );
 	// v0.9 §Step4(M1): サブサイトだけで有効化されたときの警告(自動実行が走らないため).
 	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-multisite-notice.php';
 	WPCV_Multisite_Notice::register();
