@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.2] - 2026-10-03
+
+### Added
+
+- **A "Settings" link in the plugin list.** The plugin's row in the Plugins
+  screen now shows "Settings" before "Deactivate", linking to the settings
+  screen. On multisite it appears only in the network admin Plugins screen,
+  where the settings screen lives. It is shown only to people who can open the
+  settings screen (the same check as the menu, so the
+  `wpcv_required_capability` filter applies).
+
 ## [0.9.1] - 2026-10-03
 
 ### Fixed
