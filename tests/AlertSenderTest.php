@@ -1039,4 +1039,180 @@ class AlertSenderTest extends TestCase {
 		$this->assertSame( 'failed', $wpdb->rows['wp_wpcv_runs'][6]['alert_status'] );
 		$this->assertSame( 'SMTP connect() failed', $wpdb->rows['wp_wpcv_runs'][6]['alert_error'] );
 	}
+
+	// ------------------------------------------------------------------
+	// v0.9 §Step7: GitHub のトークンの失効・権限不足(`source_access_denied`)の通知(R8).
+	// ------------------------------------------------------------------
+
+	/**
+	 * 3つの run と、`plugin:foo` の target_run を用意する(`$statuses` は run 1・2 の状態、
+	 * 3つ目の run が今回).
+	 *
+	 * @param WPCV_Test_Fake_WPDB $wpdb     フェイク wpdb.
+	 * @param array               $previous run 1・2 の target_run の `status`/`error_code`(run_id => 上書き).
+	 * @return void
+	 */
+	private function seed_access_denied_history( WPCV_Test_Fake_WPDB $wpdb, array $previous ) {
+		foreach ( array( 1, 2, 3 ) as $run_id ) {
+			$wpdb->rows['wp_wpcv_runs'][ $run_id ] = $this->make_run_row( $run_id );
+		}
+
+		foreach ( $previous as $run_id => $overrides ) {
+			$wpdb->rows['wp_wpcv_target_runs'][ $run_id ] = $this->make_target_run_row(
+				$run_id,
+				array_merge(
+					array(
+						'run_id'    => $run_id,
+						'target_id' => 'plugin:foo',
+					),
+					$overrides
+				)
+			);
+		}
+
+		$wpdb->rows['wp_wpcv_target_runs'][3] = $this->make_target_run_row(
+			3,
+			array(
+				'run_id'     => 3,
+				'target_id'  => 'plugin:foo',
+				'status'     => 'unverifiable',
+				'error_code' => WPCV_Error_Code::SOURCE_ACCESS_DENIED,
+			)
+		);
+	}
+
+	/**
+	 * 初めて `source_access_denied` になった(前回の結果が無い)ときは、他に理由が無くてもメールを送る(R8).
+	 * 件名は専用の文言で、本文に「(new)」と、トークンを確認する案内が載る.
+	 *
+	 * @return void
+	 */
+	public function test_sends_when_access_denied_appears_for_the_first_time() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$this->seed_access_denied_history( $wpdb, array() );
+		$env = $this->make_sender_environment( $wpdb );
+
+		WPCV_Settings::update_alert_to( 'ops@example.com' );
+
+		$this->assertSame( array( 'action' => 'sent' ), $env['sender']->send_for_run( 3, self::OWNER ) );
+
+		$mail = $GLOBALS['_wpcv_test_wp_mail_calls'][0];
+
+		$this->assertStringContainsString( '1 target(s) cannot be compared with the source', $mail['subject'] );
+		$this->assertStringContainsString( 'Cannot compare with the source', $mail['message'] );
+		$this->assertStringContainsString( 'plugin:foo  (new)', $mail['message'] );
+		$this->assertStringContainsString( 'WPCV_GITHUB_TOKEN', $mail['message'] );
+	}
+
+	/**
+	 * 前回も同じ `source_access_denied` なら「続いている」ので、それだけではメールを送らない(`not_needed`).
+	 *
+	 * @return void
+	 */
+	public function test_does_not_send_when_access_denied_continues() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$this->seed_access_denied_history(
+			$wpdb,
+			array(
+				2 => array(
+					'status'     => 'unverifiable',
+					'error_code' => WPCV_Error_Code::SOURCE_ACCESS_DENIED,
+				),
+			)
+		);
+		$env = $this->make_sender_environment( $wpdb );
+
+		WPCV_Settings::update_alert_to( 'ops@example.com' );
+
+		$this->assertSame( array( 'action' => 'not_needed' ), $env['sender']->send_for_run( 3, self::OWNER ) );
+		$this->assertArrayNotHasKey( '_wpcv_test_wp_mail_calls', $GLOBALS );
+	}
+
+	/**
+	 * 中断(aborted)の run を挟んでも、確定した前回の結果で「続いている」と判定する(また初めてにならない).
+	 *
+	 * @return void
+	 */
+	public function test_aborted_previous_run_is_skipped_when_judging_new() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$this->seed_access_denied_history(
+			$wpdb,
+			array(
+				1 => array(
+					'status'     => 'unverifiable',
+					'error_code' => WPCV_Error_Code::SOURCE_ACCESS_DENIED,
+				),
+				2 => array(
+					'status'     => 'aborted',
+					'error_code' => null,
+				),
+			)
+		);
+		$env = $this->make_sender_environment( $wpdb );
+
+		WPCV_Settings::update_alert_to( 'ops@example.com' );
+
+		$this->assertSame( array( 'action' => 'not_needed' ), $env['sender']->send_for_run( 3, self::OWNER ) );
+	}
+
+	/**
+	 * 直って(前回 success)からまた失効したときは、もう一度「初めて」として送る.
+	 *
+	 * @return void
+	 */
+	public function test_sends_again_when_access_denied_recurs_after_recovery() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$this->seed_access_denied_history(
+			$wpdb,
+			array(
+				1 => array(
+					'status'     => 'unverifiable',
+					'error_code' => WPCV_Error_Code::SOURCE_ACCESS_DENIED,
+				),
+				2 => array(
+					'status'     => 'success',
+					'error_code' => null,
+				),
+			)
+		);
+		$env = $this->make_sender_environment( $wpdb );
+
+		WPCV_Settings::update_alert_to( 'ops@example.com' );
+
+		$this->assertSame( array( 'action' => 'sent' ), $env['sender']->send_for_run( 3, self::OWNER ) );
+		$this->assertStringContainsString( 'plugin:foo  (new)', $GLOBALS['_wpcv_test_wp_mail_calls'][0]['message'] );
+	}
+
+	/**
+	 * 続いている `source_access_denied` も、ほかの理由でメールを送るとき(ここでは解消した finding)の
+	 * 本文には載る(「(new)」は付かない. 件名は通常のまま).
+	 *
+	 * @return void
+	 */
+	public function test_continuing_access_denied_is_listed_when_alert_is_sent_for_another_reason() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$this->seed_access_denied_history(
+			$wpdb,
+			array(
+				2 => array(
+					'status'     => 'unverifiable',
+					'error_code' => WPCV_Error_Code::SOURCE_ACCESS_DENIED,
+				),
+			)
+		);
+		// 別の理由: 今回の run が解消した finding を持つ.
+		$wpdb->rows['wp_wpcv_runs'][3]['findings_resolved'] = 2;
+		$env = $this->make_sender_environment( $wpdb );
+
+		WPCV_Settings::update_alert_to( 'ops@example.com' );
+
+		$this->assertSame( array( 'action' => 'sent' ), $env['sender']->send_for_run( 3, self::OWNER ) );
+
+		$mail = $GLOBALS['_wpcv_test_wp_mail_calls'][0];
+
+		$this->assertStringContainsString( '0 new findings, 2 resolved', $mail['subject'] );
+		$this->assertStringContainsString( 'Cannot compare with the source', $mail['message'] );
+		$this->assertStringContainsString( '  plugin:foo', $mail['message'] );
+		$this->assertStringNotContainsString( '(new)', $mail['message'] );
+	}
 }

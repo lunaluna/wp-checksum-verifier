@@ -6,6 +6,8 @@
  */
 
 require_once __DIR__ . '/wp-stubs.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-error-code.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-run-history.php';
@@ -204,5 +206,92 @@ class PageRunHistoryTest extends TestCase {
 	 */
 	public function test_format_update_event_created_by_labels_zero_as_automatic() {
 		$this->assertSame( 'Automatic (cron/WP-CLI)', WPCV_Page_Run_History::format_update_event_created_by( 0 ) );
+	}
+
+	// ------------------------------------------------------------------
+	// v0.9 §Step7: stat で監視した target の理由の文言と、source_access_denied の説明.
+	// ------------------------------------------------------------------
+
+	/**
+	 * `source_access_denied` には説明文がある(コードそのものを出さない).
+	 *
+	 * @return void
+	 */
+	public function test_reason_label_describes_source_access_denied() {
+		$label = WPCV_Page_Run_History::target_run_reason_label(
+			array(
+				'status'     => 'unverifiable',
+				'error_code' => 'source_access_denied',
+			)
+		);
+
+		$this->assertStringContainsString( 'GitHub token', $label );
+		$this->assertStringNotContainsString( 'source_access_denied', $label );
+	}
+
+	/**
+	 * Stat で監視した unverifiable の本体には、その旨を添える. そうでなければ従来どおり.
+	 * 照合できた(success)・error_code の無い行には添えない.
+	 *
+	 * @return void
+	 */
+	public function test_reason_label_notes_stat_monitoring_only_for_unverifiable_targets() {
+		$row = array(
+			'status'     => 'unverifiable',
+			'error_code' => 'manifest_not_found',
+		);
+
+		$plain = WPCV_Page_Run_History::target_run_reason_label( $row );
+		$noted = WPCV_Page_Run_History::target_run_reason_label( $row, true );
+
+		$this->assertStringStartsWith( $plain, $noted );
+		$this->assertStringContainsString( 'monitored by file-change tracking', $noted );
+
+		$this->assertSame( $plain, WPCV_Page_Run_History::target_run_reason_label( $row, false ) );
+		$this->assertSame(
+			'',
+			WPCV_Page_Run_History::target_run_reason_label(
+				array(
+					'status'     => 'success',
+					'error_code' => null,
+				),
+				true
+			)
+		);
+	}
+
+	/**
+	 * `:_stat` の行が success の本体だけが「stat で監視した」とみなされる(checksum_covered で skipped の
+	 * stat や、success でない stat は対象外).
+	 *
+	 * @return void
+	 */
+	public function test_stat_monitored_target_ids_picks_bodies_whose_stat_succeeded() {
+		$ids = WPCV_Page_Run_History::stat_monitored_target_ids(
+			array(
+				array(
+					'target_id' => 'plugin:a',
+					'status'    => 'unverifiable',
+				),
+				array(
+					'target_id' => 'plugin:a:_stat',
+					'status'    => 'success',
+				),
+				array(
+					'target_id' => 'plugin:b:_stat',
+					'status'    => 'skipped',
+				),
+				array(
+					'target_id' => 'plugin:c:_stat',
+					'status'    => 'unverifiable',
+				),
+				array(
+					'target_id' => 'plugin:d',
+					'status'    => 'success',
+				),
+			)
+		);
+
+		$this->assertSame( array( 'plugin:a' => true ), $ids );
 	}
 }

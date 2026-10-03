@@ -131,8 +131,9 @@ class WPCV_Alert_Sender {
 		$unverifiable_threshold     = max( 1, (int) apply_filters( 'wpcv_alert_unverifiable_streak', 3 ) );
 		$unverifiable_streaks       = $this->gather_unverifiable_streaks( $target_runs, $run_id, $unverifiable_threshold );
 		$unrecorded_version_changes = $this->gather_unrecorded_version_changes( $target_runs, $run_id );
+		$access_denied              = $this->gather_access_denied( $target_runs, $run_id );
 
-		if ( ! WPCV_Generation_Differ::should_send_alert( $candidates['notify_count'], $resolved_count, ! empty( $unverifiable_streaks ), count( $unrecorded_version_changes ) ) ) {
+		if ( ! WPCV_Generation_Differ::should_send_alert( $candidates['notify_count'], $resolved_count, ! empty( $unverifiable_streaks ), count( $unrecorded_version_changes ), self::count_new_access_denied( $access_denied ) ) ) {
 			$this->run_repository->record_alert_result( $run_id, $owner, 'not_needed', null, null, false );
 
 			return array( 'action' => 'not_needed' );
@@ -170,6 +171,7 @@ class WPCV_Alert_Sender {
 				'resolved_items'             => $this->finding_repository->find_resolved_items( $run_id, self::RESOLVED_ITEMS_FETCH_LIMIT ),
 				'baseline_rebuilt'           => $this->gather_baseline_rebuilt( $target_runs, $run_id ),
 				'unrecorded_version_changes' => $unrecorded_version_changes,
+				'access_denied'              => $access_denied,
 				'unverifiable_streaks'       => $unverifiable_streaks,
 				'unverifiable_threshold'     => $unverifiable_threshold,
 				'removed_targets'            => $this->finding_repository->count_removed_targets( $run_id ),
@@ -465,6 +467,56 @@ class WPCV_Alert_Sender {
 		}
 
 		return $items;
+	}
+
+	/**
+	 * 今回のrunで`error_code = source_access_denied`(GitHub のトークンの失効・権限不足.
+	 * v0.9 §Step7)になった本体 target を集め、それぞれが**初めて**かどうかを付ける(R8).
+	 *
+	 * 「初めて」= 前回の結果(確定した状態のうち直近. `find_previous_target_run()`)が
+	 * `source_access_denied` ではない(前回の結果が無い場合を含む). 続いているものは、メールを送る
+	 * 理由にはしない(`should_send_alert()`)が、ほかの理由でメールを送るときの本文には載せる
+	 * (トークンの失効に気づけるように. 管理画面の通知とあわせて知らせる).
+	 *
+	 * @param array<int, array> $target_runs 今回のrunのtarget_run行一覧.
+	 * @param int               $run_id      対象のrunのid.
+	 * @return array<int, array{target_id: string, is_new: bool}>
+	 */
+	private function gather_access_denied( array $target_runs, $run_id ) {
+		$items = array();
+
+		foreach ( $target_runs as $target_run ) {
+			if ( WPCV_Target_Status::UNVERIFIABLE !== ( $target_run['status'] ?? null ) || WPCV_Error_Code::SOURCE_ACCESS_DENIED !== ( $target_run['error_code'] ?? null ) ) {
+				continue;
+			}
+
+			$target_id = (string) ( $target_run['target_id'] ?? '' );
+			$previous  = $this->target_run_repository->find_previous_target_run( $target_id, $run_id );
+
+			$items[] = array(
+				'target_id' => $target_id,
+				'is_new'    => null === $previous || WPCV_Error_Code::SOURCE_ACCESS_DENIED !== $previous['error_code'],
+			);
+		}
+
+		return $items;
+	}
+
+	/**
+	 * `gather_access_denied()` の結果のうち、初めて現れたものの数.
+	 *
+	 * @param array<int, array{target_id: string, is_new: bool}> $access_denied `gather_access_denied()` の結果.
+	 * @return int
+	 */
+	private static function count_new_access_denied( array $access_denied ) {
+		return count(
+			array_filter(
+				$access_denied,
+				static function ( $item ) {
+					return ! empty( $item['is_new'] );
+				}
+			)
+		);
 	}
 
 	/**

@@ -27,6 +27,17 @@ class WPCV_Error_Code {
 	/** GitHub レート制限. */
 	const RATE_LIMITED = 'rate_limited';
 
+	/**
+	 * 照合元(GitHub)の認証・権限の失敗: トークンが無効・失効(401)、または権限が足りない・
+	 * 失敗が続いて一時的に拒否された(レート制限の印の無い 403)(v0.9 §Step7. プラン §3.5).
+	 *
+	 * トークンの失効は恒常的な状態で、一時的な通信障害(`http_error`)とは意味が違う. このコードの
+	 * target は、連続 unverifiable の数えない側にし、代わりに stat 差分検知で監視する.
+	 * 非公開のリポジトリにトークンが無い・権限が無い場合は、GitHub が存在しないリポジトリと区別しない
+	 * 404 を返す(公式ドキュメント)ので、このコードにはならず `manifest_not_found` になる.
+	 */
+	const SOURCE_ACCESS_DENIED = 'source_access_denied';
+
 	/** ZipArchive 拡張が無い. */
 	const ZIPARCHIVE_MISSING = 'ziparchive_missing';
 
@@ -129,6 +140,7 @@ class WPCV_Error_Code {
 			self::MANIFEST_NOT_FOUND         => __( 'Manifest not found (including not yet published)', 'wp-checksum-verifier' ),
 			self::HTTP_ERROR                 => __( 'HTTP error while fetching', 'wp-checksum-verifier' ),
 			self::RATE_LIMITED               => __( 'GitHub rate limit reached', 'wp-checksum-verifier' ),
+			self::SOURCE_ACCESS_DENIED       => __( 'Cannot access the source (the GitHub token is invalid, expired or lacks permission)', 'wp-checksum-verifier' ),
 			self::ZIPARCHIVE_MISSING         => __( 'ZipArchive extension is not available', 'wp-checksum-verifier' ),
 			self::PACKAGE_NOT_FOUND          => __( 'Distribution package not found (e.g. child theme)', 'wp-checksum-verifier' ),
 			self::NO_RELEASE_ASSET           => __( 'GitHub release has no asset', 'wp-checksum-verifier' ),

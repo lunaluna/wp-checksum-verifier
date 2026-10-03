@@ -441,7 +441,25 @@ class WPCV_GitHub_Client {
 	}
 
 	/**
-	 * 200 でも 404 でもなかった応答を、`rate_limited` か `http_error` に分ける(D9).
+	 * 200 でも 404 でもなかった応答を、`rate_limited`・`source_access_denied`・`http_error` に分ける(D9.
+	 * v0.9 §Step7 で `source_access_denied` を追加).
+	 *
+	 * 分け方(公式ドキュメントに基づく. 2026-10-03 確認):
+	 *
+	 * - 401: 無効な資格情報(トークンの失効・取消・誤り)→ `source_access_denied`.
+	 * - 403 / 429 でレート制限の印がある → `rate_limited`. 印とは、`retry-after` がある、
+	 *   `x-ratelimit-remaining` が 0、**429**(ドキュメント: レート制限のステータスは 403 か 429)、
+	 *   または本文のメッセージがレート制限を示す(2次レート制限は `retry-after` が付かないことがあり、
+	 *   「超えた旨のメッセージ」が返る).本文の文言そのものは文書化されていないため、`rate limit` という
+	 *   部分一致(大文字小文字を区別しない)で見る — **文言は未確認**. 外れて取り逃すと 403 が
+	 *   `source_access_denied` になり、一時的な制限を「トークン不良」と誤認する(影響は、その run で
+	 *   stat に回ることと、管理通知・初回メールが出ること).
+	 * - それ以外の 403 → `source_access_denied`(権限不足の「Resource not accessible」、または、短時間に
+	 *   無効な資格情報を送り続けたために有効なものも含めて一時的に 403 で拒否される失敗ログイン制限).
+	 * - その他(5xx など)→ `http_error`.
+	 *
+	 * 非公開のリポジトリにトークンが無い・権限が無い場合は、GitHub が存在の有無を隠すため 404 を返す.
+	 * 404 はこのメソッドに来ない(`find_release_by_version()` が `manifest_not_found` にする).
 	 *
 	 * `rate_limited` のときは、解除の時刻を site transient に置く.
 	 *
@@ -450,6 +468,10 @@ class WPCV_GitHub_Client {
 	 * @return string `WPCV_Error_Code` の値.
 	 */
 	private function classify_failure( $response, $code ) {
+		if ( 401 === $code ) {
+			return WPCV_Error_Code::SOURCE_ACCESS_DENIED;
+		}
+
 		if ( 403 !== $code && 429 !== $code ) {
 			return WPCV_Error_Code::HTTP_ERROR;
 		}
@@ -462,18 +484,19 @@ class WPCV_GitHub_Client {
 		$has_retry_after = is_numeric( $retry_after );
 		$exhausted       = is_numeric( $remaining ) && 0 === (int) $remaining;
 
-		if ( ! $has_retry_after && ! $exhausted ) {
-			// 権限の無い 403 など(制限ではない).
-			return WPCV_Error_Code::HTTP_ERROR;
+		if ( ! $has_retry_after && ! $exhausted && 429 !== $code && ! self::body_mentions_rate_limit( $response ) ) {
+			// レート制限の印の無い 403(権限不足・失敗ログイン制限).
+			return WPCV_Error_Code::SOURCE_ACCESS_DENIED;
 		}
 
 		$now = (int) call_user_func( $this->now );
 
 		if ( $has_retry_after ) {
 			$until = $now + max( 0, (int) $retry_after );
-		} elseif ( is_numeric( $reset ) ) {
+		} elseif ( $exhausted && is_numeric( $reset ) ) {
 			$until = (int) $reset;
 		} else {
+			// 解除の時刻が分からない(2次レート制限など). 公式ドキュメント「少なくとも1分待つ」.
 			$until = $now + self::RATE_LIMIT_FALLBACK_SECONDS;
 		}
 
@@ -483,6 +506,28 @@ class WPCV_GitHub_Client {
 		set_site_transient( self::RATE_LIMIT_TRANSIENT, $until, $until - $now );
 
 		return WPCV_Error_Code::RATE_LIMITED;
+	}
+
+	/**
+	 * 応答の本文のメッセージが、レート制限を示しているかを返す(2次レート制限の判定. `classify_failure()` 参照).
+	 *
+	 * 本文は JSON の `message` を見る. JSON でなければ本文の文字列全体を見る. 文言は文書化されていない
+	 * ため、`rate limit` の部分一致(大文字小文字を区別しない)で判定する.
+	 *
+	 * @param array|WP_Error $response HTTP の応答.
+	 * @return bool
+	 */
+	private static function body_mentions_rate_limit( $response ) {
+		$body = is_array( $response ) ? (string) wp_remote_retrieve_body( $response ) : '';
+
+		if ( '' === $body ) {
+			return false;
+		}
+
+		$decoded = json_decode( $body, true );
+		$message = is_array( $decoded ) && isset( $decoded['message'] ) && is_string( $decoded['message'] ) ? $decoded['message'] : $body;
+
+		return false !== stripos( $message, 'rate limit' );
 	}
 
 	/**

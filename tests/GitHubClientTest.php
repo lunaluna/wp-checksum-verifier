@@ -180,6 +180,7 @@ class GitHubClientTest extends TestCase {
 
 	/**
 	 * 通信の失敗・想定外のステータス・壊れた JSON は `http_error`(次の tag は試さない).
+	 * (401・403 は v0.9 §Step7 から `source_access_denied`. 下の専用のテストで確かめる.)
 	 *
 	 * @return void
 	 */
@@ -187,8 +188,6 @@ class GitHubClientTest extends TestCase {
 		$cases = array(
 			'wp_error'    => new WP_Error(),
 			'server'      => self::response( 500 ),
-			'forbidden'   => self::response( 403, array( 'message' => 'Resource not accessible' ) ),
-			'bad_token'   => self::response( 401 ),
 			'broken_json' => self::response( 200, 'not json' ),
 			'no_tag_name' => self::response( 200, array( 'id' => 1 ) ),
 		);
@@ -251,33 +250,141 @@ class GitHubClientTest extends TestCase {
 	}
 
 	/**
-	 * 403 でも、残りが0でも `retry-after` も無ければ制限ではない(権限の無い 403 など).
+	 * レート制限の印の無い 403(権限不足・失敗ログイン制限)は制限ではなく `source_access_denied`
+	 * (v0.9 §Step7. 以前は `http_error`). 解除の時刻は置かず、次の tag も試さない.
 	 *
 	 * @return void
 	 */
-	public function test_403_without_rate_limit_headers_is_not_rate_limited() {
+	public function test_403_without_rate_limit_signs_is_access_denied_not_rate_limited() {
 		$client = $this->client( array( self::response( 403, '', array( 'x-ratelimit-remaining' => '42' ) ) ) );
 
 		$result = $client->find_release_by_version( 'lunaluna/x', '1.0' );
 
-		$this->assertSame( WPCV_Error_Code::HTTP_ERROR, $result['error_code'] );
+		$this->assertSame( WPCV_Error_Code::SOURCE_ACCESS_DENIED, $result['error_code'] );
 		$this->assertNull( $client->get_rate_limited_until() );
+		$this->assertCount( 1, $this->calls );
+	}
+
+	/**
+	 * 401(無効な資格情報)は `source_access_denied`. 公式ドキュメント: 「無効な資格情報は最初は 401 を返す」.
+	 *
+	 * @return void
+	 */
+	public function test_401_is_access_denied() {
+		foreach ( array( self::response( 401 ), self::response( 401, array( 'message' => 'Bad credentials' ) ) ) as $response ) {
+			$this->calls = array();
+			$result      = $this->client( array( $response, self::response( 200, array( 'tag_name' => 'x' ) ) ) )->find_release_by_version( 'lunaluna/x', '1.0' );
+
+			$this->assertSame( WPCV_Error_Code::SOURCE_ACCESS_DENIED, $result['error_code'] );
+			$this->assertCount( 1, $this->calls, '次の tag は試さない.' );
+		}
+	}
+
+	/**
+	 * 権限不足(「Resource not accessible」)・失敗ログイン制限の 403 はどちらも `source_access_denied`.
+	 *
+	 * @return void
+	 */
+	public function test_403_permission_and_failed_login_limit_are_access_denied() {
+		$cases = array(
+			'permission'         => self::response( 403, array( 'message' => 'Resource not accessible by personal access token' ) ),
+			'failed_login_limit' => self::response( 403, array( 'message' => 'Forbidden' ) ),
+			'empty_body'         => self::response( 403 ),
+		);
+
+		foreach ( $cases as $name => $response ) {
+			$result = $this->client( array( $response ) )->find_release_by_version( 'lunaluna/x', '1.0' );
+
+			$this->assertSame( WPCV_Error_Code::SOURCE_ACCESS_DENIED, $result['error_code'], $name );
+		}
+	}
+
+	/**
+	 * 2次レート制限: `retry-after` が付かない 403 でも、本文のメッセージがレート制限を示していれば
+	 * `rate_limited`(トークン不良と誤認しない). 解除の時刻が分からないので 60 秒. 本文は JSON の
+	 * `message`、または JSON でない文字列.
+	 *
+	 * @return void
+	 */
+	public function test_secondary_rate_limit_without_headers_is_rate_limited_by_message() {
+		$cases = array(
+			'json'      => self::response( 403, array( 'message' => 'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.' ) ),
+			'uppercase' => self::response( 403, array( 'message' => 'SECONDARY RATE LIMIT' ) ),
+			'plain'     => self::response( 403, 'You have exceeded a secondary rate limit' ),
+		);
+
+		foreach ( $cases as $name => $response ) {
+			unset( $GLOBALS['_wpcv_test_site_transients'] );
+
+			$client = $this->client( array( $response ) );
+
+			$this->assertSame( WPCV_Error_Code::RATE_LIMITED, $client->find_release_by_version( 'lunaluna/x', '1.0' )['error_code'], $name );
+			$this->assertSame( 1000000 + WPCV_GitHub_Client::RATE_LIMIT_FALLBACK_SECONDS, $client->get_rate_limited_until(), $name );
+		}
 	}
 
 	/**
 	 * 解除の時刻が応答から分からない制限は 60 秒(公式ドキュメントの「少なくとも1分」).
+	 * 429 は(ヘッダーが無くても)レート制限のステータスなので `rate_limited`. 残りが 0 で reset も無い
+	 * 403 も同じ(v0.9 §Step7: 以前は 429 で `retry-after` が数字でないと `http_error` だった).
 	 *
 	 * @return void
 	 */
 	public function test_rate_limit_without_reset_uses_fallback_seconds() {
-		$client = $this->client( array( self::response( 429, '', array( 'retry-after' => 'soon' ) ), self::response( 403, '', array( 'x-ratelimit-remaining' => '0' ) ) ) );
+		$cases = array(
+			'429 retry-after が数字でない' => self::response( 429, '', array( 'retry-after' => 'soon' ) ),
+			'429 ヘッダー無し'             => self::response( 429 ),
+			'403 残り 0・reset 無し'       => self::response( 403, '', array( 'x-ratelimit-remaining' => '0' ) ),
+		);
 
-		// `retry-after` が数字でなく、残りの記載も無い → 制限とみなさない.
-		$this->assertSame( WPCV_Error_Code::HTTP_ERROR, $client->find_release_by_version( 'lunaluna/x', '1.0' )['error_code'] );
+		foreach ( $cases as $name => $response ) {
+			unset( $GLOBALS['_wpcv_test_site_transients'] );
 
-		// 残りが0で reset も無い → 60 秒.
+			$client = $this->client( array( $response ) );
+
+			$this->assertSame( WPCV_Error_Code::RATE_LIMITED, $client->find_release_by_version( 'lunaluna/x', '1.0' )['error_code'], $name );
+			$this->assertSame( 1000000 + WPCV_GitHub_Client::RATE_LIMIT_FALLBACK_SECONDS, $client->get_rate_limited_until(), $name );
+		}
+	}
+
+	/**
+	 * 残りが 0 でない 429 の reset は無視する(reset は一次制限の窓の終わりで、この制限の解除ではない).
+	 *
+	 * @return void
+	 */
+	public function test_429_with_remaining_ignores_reset_and_uses_fallback() {
+		$client = $this->client( array( self::response( 429, '', array( 'x-ratelimit-remaining' => '10', 'x-ratelimit-reset' => '1003000' ) ) ) );
+
 		$this->assertSame( WPCV_Error_Code::RATE_LIMITED, $client->find_release_by_version( 'lunaluna/x', '1.0' )['error_code'] );
 		$this->assertSame( 1000000 + WPCV_GitHub_Client::RATE_LIMIT_FALLBACK_SECONDS, $client->get_rate_limited_until() );
+	}
+
+	/**
+	 * 非公開のリポジトリへのアクセス(トークン無し・権限無し)は、GitHub が存在の有無を隠すため 404.
+	 * `source_access_denied` ではなく `manifest_not_found`(公式ドキュメント: 「404 を返す」).
+	 *
+	 * @return void
+	 */
+	public function test_404_for_private_repository_stays_manifest_not_found() {
+		$client = $this->client( array( self::response( 404 ), self::response( 404 ) ) );
+
+		$this->assertSame( WPCV_Error_Code::MANIFEST_NOT_FOUND, $client->find_release_by_version( 'lunaluna/private', '1.0' )['error_code'] );
+	}
+
+	/**
+	 * トークンありのアセット取得(Assets API)での 401・レート制限の印の無い 403 も `source_access_denied`.
+	 *
+	 * @return void
+	 */
+	public function test_asset_download_401_and_403_are_access_denied() {
+		$this->with_token( 'ghp_secret_value' );
+
+		foreach ( array( self::response( 401 ), self::response( 403, array( 'message' => 'Resource not accessible' ) ) ) as $response ) {
+			$result = $this->client( array( $response ) )->download_asset( 'lunaluna/x', array( 'url' => 'https://api.github.com/repos/lunaluna/x/releases/assets/1' ), 1000000 );
+
+			$this->assertNull( $result['path'] );
+			$this->assertSame( WPCV_Error_Code::SOURCE_ACCESS_DENIED, $result['error_code'] );
+		}
 	}
 
 	/**

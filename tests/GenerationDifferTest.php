@@ -660,4 +660,38 @@ class GenerationDifferTest extends TestCase {
 			)
 		);
 	}
+
+	// ------------------------------------------------------------------
+	// v0.9 §Step7: source_access_denied.
+	// ------------------------------------------------------------------
+
+	/**
+	 * `source_access_denied`(トークンの失効・権限不足)は連続 unverifiable に数えない(恒常的な状態).
+	 * 一時障害の `http_error` / `rate_limited` / `timeout` は数える(従来どおり).
+	 *
+	 * @return void
+	 */
+	public function test_source_access_denied_is_not_an_unverifiable_streak_member() {
+		$denied = array(
+			'target_id'  => 'plugin:foo',
+			'status'     => WPCV_Target_Status::UNVERIFIABLE,
+			'error_code' => WPCV_Error_Code::SOURCE_ACCESS_DENIED,
+		);
+
+		$this->assertFalse( WPCV_Generation_Differ::is_unverifiable_streak_member( $denied ) );
+
+		foreach ( array( WPCV_Error_Code::HTTP_ERROR, WPCV_Error_Code::RATE_LIMITED, WPCV_Error_Code::TIMEOUT ) as $transient ) {
+			$this->assertTrue( WPCV_Generation_Differ::is_unverifiable_streak_member( array_merge( $denied, array( 'error_code' => $transient ) ) ), $transient );
+		}
+	}
+
+	/**
+	 * 初めて `source_access_denied` になった target が1件以上あれば、他に理由が無くてもアラートを送る(R8).
+	 *
+	 * @return void
+	 */
+	public function test_should_send_alert_true_when_new_access_denied() {
+		$this->assertTrue( WPCV_Generation_Differ::should_send_alert( 0, 0, false, 0, 1 ) );
+		$this->assertFalse( WPCV_Generation_Differ::should_send_alert( 0, 0, false, 0, 0 ) );
+	}
 }

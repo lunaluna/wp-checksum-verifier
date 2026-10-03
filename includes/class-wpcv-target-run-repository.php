@@ -1064,6 +1064,43 @@ class WPCV_Target_Run_Repository {
 	}
 
 	/**
+	 * 指定 target の、`$before_run_id` より前の run での target_run を1件返す(v0.9 §Step7・R8:
+	 * `source_access_denied` が「初めて現れたか」を、前回の結果から判定する).
+	 *
+	 * 結果が確定している状態(success・unverifiable・skipped・failed)だけを見る. aborted や
+	 * 未完了の行は「前回の結果」とみなさない(中断された run を挟んで「また初めて」にならないため).
+	 *
+	 * @param string $target_id     対象の target_id.
+	 * @param int    $before_run_id この run より前だけを対象にする.
+	 * @return array{id: int, run_id: int, status: string, error_code: string|null}|null 無ければ `null`.
+	 */
+	public function find_previous_target_run( $target_id, $before_run_id ) {
+		$table    = $this->wpdb->base_prefix . 'wpcv_target_runs';
+		$statuses = array( WPCV_Target_Status::SUCCESS, WPCV_Target_Status::UNVERIFIABLE, WPCV_Target_Status::SKIPPED, WPCV_Target_Status::FAILED );
+		$sql      = "SELECT * FROM {$table} WHERE target_id = %s AND run_id < %d ORDER BY run_id DESC LIMIT 20";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via prepare() below.
+		$rows = $this->select_rows( $this->wpdb->prepare( $sql, (string) $target_id, (int) $before_run_id ) );
+
+		// 状態の絞り込みは PHP で行う(`ORDER BY run_id DESC` の直近 20 件の中から). aborted が連続して
+		// 20 件を超えることは通常無く、20 件に無ければ「前回の結果なし」(= 初めて)に倒れる.
+		foreach ( $rows as $row ) {
+			if ( (int) $row['run_id'] >= (int) $before_run_id || ! in_array( $row['status'], $statuses, true ) ) {
+				continue;
+			}
+
+			return array(
+				'id'         => (int) $row['id'],
+				'run_id'     => (int) $row['run_id'],
+				'status'     => (string) $row['status'],
+				'error_code' => isset( $row['error_code'] ) ? (string) $row['error_code'] : null,
+			);
+		}
+
+		return null;
+	}
+
+	/**
 	 * `diff_mode = version_changed` になった target_run に、WordPressの更新機構を
 	 * 通った記録が見つからなかったことを示す `error_code` を書く(v0.6プラン
 	 * §3.1・D5. Step3で`WPCV_Diff_Dispatcher`から呼ばれる).
