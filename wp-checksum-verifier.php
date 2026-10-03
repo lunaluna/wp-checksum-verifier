@@ -368,6 +368,12 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-runner-a
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-settings.php';
 
 /**
+ * マルチサイトで、plugin / theme を有効にしているサイトを求める(v0.9 §Step4). 検出結果の画面が使う.
+ * `WPCV_Run_Planner`・`WPCV_Target_Resolver` に依存する(いずれも上で読み込み済み).
+ */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-affected-sites.php';
+
+/**
  * プラグイン・テーマと GitHub リポジトリの対応付け(v0.8 §Step6. 設定とフィルターから集める).
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-github-mappings.php';
@@ -420,6 +426,9 @@ if ( is_admin() ) {
 	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-admin-notices.php';
 	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-admin-menu.php';
 	WPCV_Admin_Menu::register();
+	// v0.9 §Step4(M1): サブサイトだけで有効化されたときの警告(自動実行が走らないため).
+	require_once plugin_dir_path( __FILE__ ) . 'includes/admin/class-wpcv-multisite-notice.php';
+	WPCV_Multisite_Notice::register();
 }
 
 /**

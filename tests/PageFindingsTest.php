@@ -8,6 +8,7 @@
 require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-affected-sites.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-run-history.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-findings.php';
 
@@ -268,5 +269,84 @@ class PageFindingsTest extends TestCase {
 
 		// 未知の値はそのまま出す(target_run_reason_label()と同じ方針).
 		$this->assertSame( 'some_future_state', WPCV_Page_Findings::format_diff_state( array( 'diff_state' => 'some_future_state', 'notified_at' => null ) ) );
+	}
+
+	// ------------------------------------------------------------------
+	// v0.9 §Step4: マルチサイトの「Active on」列の整形.
+	// ------------------------------------------------------------------
+
+	/**
+	 * `format_affected_sites()` が、状態ごとの短い文を返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_format_affected_sites_by_state() {
+		$base = array(
+			'sites'           => array(),
+			'network_enabled' => false,
+			'total_sites'     => 3,
+		);
+
+		$this->assertSame( 'Network-wide (all sites)', WPCV_Page_Findings::format_affected_sites( array_merge( $base, array( 'state' => 'network' ) ) ) );
+		$this->assertSame( 'Not active on any site', WPCV_Page_Findings::format_affected_sites( array_merge( $base, array( 'state' => 'none' ) ) ) );
+		$this->assertSame(
+			'Network-enabled, but not active on any site',
+			WPCV_Page_Findings::format_affected_sites( array_merge( $base, array( 'state' => 'none', 'network_enabled' => true ) ) )
+		);
+		$this->assertSame( 'Not shown (the network has 12000 sites)', WPCV_Page_Findings::format_affected_sites( array_merge( $base, array( 'state' => 'unavailable', 'total_sites' => 12000 ) ) ) );
+		$this->assertSame( '—', WPCV_Page_Findings::format_affected_sites( array_merge( $base, array( 'state' => 'not_applicable' ) ) ) );
+	}
+
+	/**
+	 * サイトの一覧は名前を「, 」で並べ、親テーマには注記を付け、名前が空なら URL を使い、
+	 * 表示の上限を超えた分は「and N more」にまとめることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_format_affected_sites_lists_names_with_parent_note_and_overflow() {
+		$sites = array(
+			array(
+				'blog_id'  => 1,
+				'name'     => 'Main',
+				'url'      => 'https://example.test/',
+				'relation' => 'active',
+			),
+			array(
+				'blog_id'  => 2,
+				'name'     => '',
+				'url'      => 'https://example.test/two/',
+				'relation' => 'active',
+			),
+			array(
+				'blog_id'  => 3,
+				'name'     => 'Three',
+				'url'      => 'https://example.test/three/',
+				'relation' => 'parent',
+			),
+		);
+
+		$info = array(
+			'state'           => 'sites',
+			'sites'           => $sites,
+			'network_enabled' => false,
+			'total_sites'     => 3,
+		);
+
+		$this->assertSame( 'Main, https://example.test/two/, Three (parent theme)', WPCV_Page_Findings::format_affected_sites( $info ) );
+
+		$many = array();
+
+		for ( $i = 1; $i <= WPCV_Page_Findings::AFFECTED_SITES_DISPLAY_LIMIT + 2; $i++ ) {
+			$many[] = array(
+				'blog_id'  => $i,
+				'name'     => 'S' . $i,
+				'url'      => '',
+				'relation' => 'active',
+			);
+		}
+
+		$info['sites'] = $many;
+
+		$this->assertSame( 'S1, S2, S3, S4, S5, and 2 more', WPCV_Page_Findings::format_affected_sites( $info ) );
 	}
 }
