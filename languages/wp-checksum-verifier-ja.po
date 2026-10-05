@@ -698,14 +698,13 @@ msgstr ""
 "限が低くなります。非公開リポジトリや上限の引き上げが必要な場合は、wp-"
 "config.php で WPCV_GITHUB_TOKEN を定義してください。"
 
-#. translators: %s: date and time (UTC).
+#. translators: %s: date and time in the site time zone.
 #: includes/admin/class-wpcv-page-settings.php:348
 #, php-format
 msgid ""
-"The GitHub rate limit has been reached. GitHub is not contacted until %s "
-"(UTC)."
+"The GitHub rate limit has been reached. GitHub is not contacted until %s."
 msgstr ""
-"GitHub のレート制限に達しました。%s(UTC)まで GitHub に問い合わせません。"
+"GitHub のレート制限に達しました。%s まで GitHub に問い合わせません。"
 
 #: includes/admin/class-wpcv-page-settings.php:360
 msgid "Alert recipients"

@@ -571,10 +571,10 @@ msgstr ""
 msgid "Public repositories work without one, but unauthenticated GitHub API requests have a low rate limit. For private repositories or a higher limit, define WPCV_GITHUB_TOKEN in wp-config.php."
 msgstr ""
 
-#. translators: %s: date and time (UTC).
+#. translators: %s: date and time in the site time zone.
 #: includes/admin/class-wpcv-page-settings.php:348
 #, php-format
-msgid "The GitHub rate limit has been reached. GitHub is not contacted until %s (UTC)."
+msgid "The GitHub rate limit has been reached. GitHub is not contacted until %s."
 msgstr ""
 
 #: includes/admin/class-wpcv-page-settings.php:360

@@ -152,6 +152,34 @@ class PageSettingsTest extends TestCase {
 	}
 
 	/**
+	 * `format_run_summary()` の最終動作の日時が、サイトのタイムゾーンで表示されることを確認する(D2).
+	 *
+	 * @return void
+	 */
+	public function test_format_run_summary_shows_last_activity_in_site_time_zone() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		$run = array(
+			'run_id'           => 1,
+			'status'           => 'running',
+			'findings_total'   => 0,
+			'last_activity_at' => '2026-10-05 18:03:34',
+			'targets'          => array(
+				'queued'  => 0,
+				'retry'   => 0,
+				'running' => 0,
+				'total'   => 0,
+			),
+		);
+
+		try {
+			$this->assertStringContainsString( 'last activity: 2026-10-06 03:03:34', WPCV_Page_Settings::format_run_summary( $run ) );
+		} finally {
+			unset( $GLOBALS['_wpcv_test_options']['timezone_string'] );
+		}
+	}
+
+	/**
 	 * `format_run_summary()` が `last_activity_at` が `null` の場合、日時の
 	 * 代わりにダッシュを表示することを確認する(target_runsが一度も
 	 * claim・finalizeされていない直後のrun等).

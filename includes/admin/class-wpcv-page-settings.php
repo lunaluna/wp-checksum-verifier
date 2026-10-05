@@ -354,9 +354,9 @@ class WPCV_Page_Settings {
 									<?php
 									echo esc_html(
 										sprintf(
-											/* translators: %s: date and time (UTC). */
-											__( 'The GitHub rate limit has been reached. GitHub is not contacted until %s (UTC).', 'wp-checksum-verifier' ),
-											gmdate( 'Y-m-d H:i:s', $github_rate_limited_until )
+											/* translators: %s: date and time in the site time zone. */
+											__( 'The GitHub rate limit has been reached. GitHub is not contacted until %s.', 'wp-checksum-verifier' ),
+											WPCV_Settings::format_datetime( (int) $github_rate_limited_until )
 										)
 									);
 									?>
@@ -896,6 +896,8 @@ class WPCV_Page_Settings {
 		$last_cli_run = WPCV_Plugin::run_repository()->find_most_recent_by_trigger( 'cli' );
 		?>
 		<h2><?php echo esc_html__( 'Status', 'wp-checksum-verifier' ); ?></h2>
+		<?php // 日時はサイトのタイムゾーンで表示する(v0.10.0). 以前の UTC 表示と混同しないよう注記を添える. ?>
+		<p class="description"><?php echo esc_html( WPCV_Settings::datetime_notice() ); ?></p>
 		<table class="widefat" style="max-width: 640px;">
 			<tbody>
 				<tr>
@@ -908,7 +910,7 @@ class WPCV_Page_Settings {
 				</tr>
 				<tr>
 					<th scope="row"><?php echo esc_html__( 'Next scheduled run', 'wp-checksum-verifier' ); ?></th>
-					<td><?php echo esc_html( (string) $status['next_scheduled_at'] ); ?></td>
+					<td><?php echo esc_html( WPCV_Settings::format_datetime( (string) $status['next_scheduled_at'] ) ); ?></td>
 				</tr>
 				<tr>
 					<th scope="row"><?php echo esc_html__( 'WP-Cron', 'wp-checksum-verifier' ); ?></th>
@@ -927,7 +929,7 @@ class WPCV_Page_Settings {
 						echo esc_html(
 							null === $last_cli_run
 								? __( 'Never observed on this site (this only reflects runs recorded here, not whether WP-CLI is installed).', 'wp-checksum-verifier' )
-								: (string) $last_cli_run['started_at']
+								: WPCV_Settings::format_datetime( (string) $last_cli_run['started_at'] )
 						);
 						?>
 					</td>
@@ -966,7 +968,7 @@ class WPCV_Page_Settings {
 			(int) $targets['queued'],
 			(int) $targets['retry'],
 			(int) $run['findings_total'],
-			null === $run['last_activity_at'] ? '—' : (string) $run['last_activity_at'],
+			WPCV_Settings::format_datetime( $run['last_activity_at'] ),
 			WPCV_Page_Run_History::format_diff_summary( $run ),
 			WPCV_Page_Run_History::format_alert_status( $run )
 		);
