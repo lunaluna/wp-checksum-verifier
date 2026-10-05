@@ -40,7 +40,8 @@ $wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->base_prefix . 'wpcv_manifest_cach
 // DBバージョン(WPCV_Migrator::DB_VERSION_OPTION)・設定画面の値(alert_to等.
 // WPCV_Settings::OPTION_NAME)・REST APIトークンのハッシュ(read/write.
 // WPCV_Rest_Token::OPTION_NAME/OPTION_NAME_READ)・更新イベント連動の基準時刻
-// (v0.6 §2.3. WPCV_Migrator::maybe_record_update_events_since())を消す. この
+// (v0.6 §2.3. WPCV_Migrator::maybe_record_update_events_since())・「古い履歴を今すぐ削除」の
+// 結果(v0.10.0. WPCV_Prune_Job::STATUS_OPTION)を消す. この
 // ファイルはプラグイン本体のクラスを読み込まないため、値は直接指定する
 // (§7-3是正. v0.5.1. v0.6でwpcv_update_events_sinceを追加).
 $wpcv_uninstall_options = array(
@@ -49,6 +50,8 @@ $wpcv_uninstall_options = array(
 	'wpcv_rest_token_hash',
 	'wpcv_rest_token_hash_read',
 	'wpcv_update_events_since',
+	// v0.10.0: 「古い履歴を今すぐ削除」の結果(WPCV_Prune_Job::STATUS_OPTION).
+	'wpcv_prune_status',
 );
 
 // `uninstall_plugin()`(WordPressコア)はネットワーク管理画面から実行された

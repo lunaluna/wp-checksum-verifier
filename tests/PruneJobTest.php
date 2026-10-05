@@ -366,4 +366,24 @@ class PruneJobTest extends TestCase {
 		$this->assertArrayHasKey( WPCV_Prune_Job::STATUS_OPTION, $GLOBALS['_wpcv_test_site_options'] );
 		$this->assertArrayNotHasKey( WPCV_Prune_Job::STATUS_OPTION, $GLOBALS['_wpcv_test_options'] ?? array() );
 	}
+
+	/**
+	 * 無効化・アンインストールの後片付けに含まれる前提(§8.5 #11)を確かめる.
+	 *
+	 * - 無効化は `WPCV_Chunk_Dispatcher::deactivate()` が group `wpcv` のアクションをすべて取り消す.
+	 *   削除アクションが同じ group にあれば、一緒に消える.
+	 * - アンインストールは hook が `wpcv_` で始まる Action Scheduler の行を消す(`uninstall.php`).
+	 *
+	 * @return void
+	 */
+	public function test_action_is_covered_by_deactivation_and_uninstall_cleanup() {
+		$this->assertSame( WPCV_Chunk_Dispatcher::GROUP, WPCV_Prune_Job::GROUP );
+		$this->assertStringStartsWith( 'wpcv_', WPCV_Prune_Job::HOOK );
+
+		$this->enable_action_scheduler();
+		WPCV_Chunk_Dispatcher::deactivate();
+
+		$this->assertSame( array( '', array(), WPCV_Prune_Job::GROUP ), $GLOBALS['_wpcv_test_as_unschedule_all_calls'][0] );
+		unset( $GLOBALS['_wpcv_test_as_unschedule_all_calls'] );
+	}
 }
