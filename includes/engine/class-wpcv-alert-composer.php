@@ -213,11 +213,13 @@ class WPCV_Alert_Composer {
 		$run   = (array) $input['run'];
 		$lines = array();
 
+		// 日時は DB の UTC 値をサイトのタイムゾーンで表示し、タイムゾーン名を添える(v0.10.0. 以前は UTC 固定の表記).
 		$lines[] = sprintf(
-			/* translators: 1: run id, 2: finished time (UTC), 3: run trigger. */
-			__( 'Run #%1$s (%2$s UTC, %3$s)', 'wp-checksum-verifier' ),
+			/* translators: 1: run id, 2: finished time in the site time zone, 3: site time zone name (e.g. Asia/Tokyo or +09:00), 4: run trigger. */
+			__( 'Run #%1$s (%2$s %3$s, %4$s)', 'wp-checksum-verifier' ),
 			(int) ( $run['id'] ?? 0 ),
-			self::clean( $run['finished_at'] ?? '' ),
+			WPCV_Settings::format_datetime( $run['finished_at'] ?? null ),
+			self::clean( WPCV_Settings::site_timezone()->getName() ),
 			self::clean( $run['run_trigger'] ?? '' )
 		);
 
@@ -530,10 +532,11 @@ class WPCV_Alert_Composer {
 
 		foreach ( (array) $input['streak_runs'] as $run ) {
 			$lines[] = sprintf(
-				'  #%1$s  %2$s  %3$s UTC  %4$s',
+				'  #%1$s  %2$s  %3$s %4$s  %5$s',
 				(int) ( $run['id'] ?? 0 ),
 				self::clean( $run['status'] ?? '' ),
-				self::clean( $run['started_at'] ?? '' ),
+				WPCV_Settings::format_datetime( $run['started_at'] ?? null ),
+				self::clean( WPCV_Settings::site_timezone()->getName() ),
 				self::clean( $run['run_trigger'] ?? '' )
 			);
 		}

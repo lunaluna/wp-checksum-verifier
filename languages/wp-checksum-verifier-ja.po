@@ -1033,11 +1033,11 @@ msgstr "[WPCV] %1$s: WordPress の更新を経ないバージョン変更 %2$s �
 msgid "[WPCV] %1$s: %2$s new findings, %3$s resolved"
 msgstr "[WPCV] %1$s: 新規の検出結果 %2$s 件、解消 %3$s 件"
 
-#. translators: 1: run id, 2: finished time (UTC), 3: run trigger.
+#. translators: 1: run id, 2: finished time in the site time zone, 3: site time zone name (e.g. Asia/Tokyo or +09:00), 4: run trigger.
 #: includes/engine/class-wpcv-alert-composer.php:218
 #, php-format
-msgid "Run #%1$s (%2$s UTC, %3$s)"
-msgstr "実行 #%1$s(%2$s UTC、%3$s)"
+msgid "Run #%1$s (%2$s %3$s, %4$s)"
+msgstr "実行 #%1$s(%2$s %3$s、%4$s)"
 
 #. translators: 1: checksum verified targets, 2: change-tracked (stat) targets, 3: unverifiable targets, 4: failed targets.
 #: includes/engine/class-wpcv-alert-composer.php:227
