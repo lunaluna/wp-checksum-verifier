@@ -78,7 +78,14 @@ class CliCommandTest extends TestCase {
 	 */
 	public static function setUpBeforeClass(): void {
 		parent::setUpBeforeClass();
-		self::$registered_command = end( $GLOBALS['_wpcv_test_wp_cli_calls']['add_command'] );
+		// 他のコマンド(`wpcv prune` など)も同じ配列に登録するので、`wpcv run` の登録を名前で探す.
+		self::$registered_command = false;
+
+		foreach ( $GLOBALS['_wpcv_test_wp_cli_calls']['add_command'] as $call ) {
+			if ( 'wpcv run' === $call[0] ) {
+				self::$registered_command = $call;
+			}
+		}
 	}
 
 	/**

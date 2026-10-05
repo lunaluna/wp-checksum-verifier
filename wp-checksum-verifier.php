@@ -422,6 +422,7 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/functions-api.php';
 if ( defined( 'WP_CLI' ) && WP_CLI ) {
 	require_once plugin_dir_path( __FILE__ ) . 'includes/cli/class-wpcv-cli-command.php';
 	require_once plugin_dir_path( __FILE__ ) . 'includes/cli/class-wpcv-cli-bench-stat-command.php';
+	require_once plugin_dir_path( __FILE__ ) . 'includes/cli/class-wpcv-cli-prune-command.php';
 }
 
 /**
