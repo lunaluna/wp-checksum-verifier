@@ -823,6 +823,29 @@ if ( ! function_exists( 'wp_is_large_network' ) ) {
 	}
 }
 
+if ( ! function_exists( 'wp_timezone' ) ) {
+	/**
+	 * Stub wp_timezone() — 本物(`wp_timezone_string()` + `new DateTimeZone()`)と同じ規則で、
+	 * `$GLOBALS['_wpcv_test_options']` の `timezone_string` / `gmt_offset` から組み立てる.
+	 *
+	 * @return DateTimeZone
+	 */
+	function wp_timezone() { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$timezone_string = get_option( 'timezone_string' );
+
+		if ( $timezone_string ) {
+			return new DateTimeZone( $timezone_string );
+		}
+
+		$offset  = (float) get_option( 'gmt_offset' );
+		$hours   = (int) $offset;
+		$minutes = ( $offset - $hours );
+		$sign    = ( $offset < 0 ) ? '-' : '+';
+
+		return new DateTimeZone( sprintf( '%s%02d:%02d', $sign, abs( $hours ), abs( $minutes * 60 ) ) );
+	}
+}
+
 if ( ! function_exists( 'get_main_site_id' ) ) {
 	/**
 	 * Stub get_main_site_id() — $GLOBALS['_wpcv_test_main_site_id'](既定 1)を返す.

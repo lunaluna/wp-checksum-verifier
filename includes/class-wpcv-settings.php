@@ -191,6 +191,41 @@ class WPCV_Settings {
 	}
 
 	/**
+	 * このプラグインが「サイトのタイムゾーン」として使うタイムゾーンを返す(v0.10.0).
+	 *
+	 * 単一サイトでは `wp_timezone()` をそのまま使う. マルチサイトでは設定・WP-Cron の
+	 * 予約・検出結果がネットワークで1つのため、サブサイトの設定ではなく**メインサイトの**
+	 * `timezone_string` / `gmt_offset` を使う(プラン U4). `switch_to_blog()` は使わず
+	 * `get_blog_option()` で読むので、呼び出し元がどのサイトでも(REST がサブサイトの URL で
+	 * 呼ばれても)同じ値になる. 組み立て規則は `wp_timezone_string()`
+	 * (`wp-includes/functions.php`)と同じ: `timezone_string` があればそれ、無ければ
+	 * `gmt_offset` から `+09:00` の形を作る.
+	 *
+	 * @return DateTimeZone
+	 */
+	public static function site_timezone() {
+		if ( ! is_multisite() ) {
+			return wp_timezone();
+		}
+
+		$main_site_id    = get_main_site_id();
+		$timezone_string = get_blog_option( $main_site_id, 'timezone_string' );
+
+		if ( $timezone_string ) {
+			return new DateTimeZone( $timezone_string );
+		}
+
+		// 30 分ずれ(5.5 など)も扱うため、整数部と小数部に分けて +05:30 の形にする.
+		$offset  = (float) get_blog_option( $main_site_id, 'gmt_offset' );
+		$hours   = (int) $offset;
+		$minutes = ( $offset - $hours );
+
+		$sign = ( $offset < 0 ) ? '-' : '+';
+
+		return new DateTimeZone( sprintf( '%s%02d:%02d', $sign, abs( $hours ), abs( $minutes * 60 ) ) );
+	}
+
+	/**
 	 * 実行時刻(UTC)を返す.
 	 *
 	 * @return array{hour:int,minute:int}

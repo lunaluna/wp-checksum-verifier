@@ -35,6 +35,23 @@ class SettingsTest extends TestCase {
 	}
 
 	/**
+	 * 各テストの後に、他のテストファイルへ状態を残さないよう掃除する.
+	 *
+	 * タイムゾーンのテストが `_wpcv_test_options`(timezone_string・gmt_offset)と
+	 * `_wpcv_test_is_multisite` を残すと、全体スイートで後続のテストが影響を受ける.
+	 *
+	 * @return void
+	 */
+	protected function tearDown(): void {
+		unset(
+			$GLOBALS['_wpcv_test_is_multisite'],
+			$GLOBALS['_wpcv_test_options'],
+			$GLOBALS['_wpcv_test_site_options']
+		);
+		parent::tearDown();
+	}
+
+	/**
 	 * 未保存の状態では既定値(03:00 UTC)が返ることを確認する.
 	 *
 	 * @return void
@@ -510,5 +527,72 @@ class SettingsTest extends TestCase {
 			WPCV_Settings::get_run_time()
 		);
 		$this->assertSame( 6, WPCV_Settings::get_retention_months() );
+	}
+
+	/**
+	 * 単一サイトで `timezone_string` があれば、それがそのまま使われることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_site_timezone_uses_timezone_string_on_single_site() {
+		$GLOBALS['_wpcv_test_is_multisite']              = false;
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		$this->assertSame( 'Asia/Tokyo', WPCV_Settings::site_timezone()->getName() );
+	}
+
+	/**
+	 * `timezone_string` が空で `gmt_offset` だけのとき、`+09:00` の形になることを確認する(#4).
+	 *
+	 * @return void
+	 */
+	public function test_site_timezone_falls_back_to_gmt_offset() {
+		$GLOBALS['_wpcv_test_is_multisite']          = false;
+		$GLOBALS['_wpcv_test_options']['gmt_offset'] = 9;
+
+		$this->assertSame( '+09:00', WPCV_Settings::site_timezone()->getName() );
+	}
+
+	/**
+	 * 30 分ずれ(`gmt_offset = 5.5`)と負のオフセット(-3.5)が正しく組み立てられることを確認する(#5).
+	 *
+	 * @return void
+	 */
+	public function test_site_timezone_handles_half_hour_offsets() {
+		$GLOBALS['_wpcv_test_is_multisite']          = false;
+		$GLOBALS['_wpcv_test_options']['gmt_offset'] = 5.5;
+		$this->assertSame( '+05:30', WPCV_Settings::site_timezone()->getName() );
+
+		$GLOBALS['_wpcv_test_options']['gmt_offset'] = -3.5;
+		$this->assertSame( '-03:30', WPCV_Settings::site_timezone()->getName() );
+	}
+
+	/**
+	 * 何も設定されていなければ UTC(`+00:00`)になることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_site_timezone_defaults_to_utc_offset() {
+		$GLOBALS['_wpcv_test_is_multisite'] = false;
+
+		$this->assertSame( '+00:00', WPCV_Settings::site_timezone()->getName() );
+	}
+
+	/**
+	 * マルチサイトでは `get_blog_option()` 経由(メインサイト)で読むことを確認する(#11).
+	 *
+	 * スタブの `get_blog_option()` は blog を分離しないため、ここでは「multisite でも
+	 * 同じ規則で組み立てられる」ことと、timezone_string・gmt_offset 両方の分岐を見る.
+	 *
+	 * @return void
+	 */
+	public function test_site_timezone_reads_main_site_options_on_multisite() {
+		$GLOBALS['_wpcv_test_is_multisite']               = true;
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'America/New_York';
+		$this->assertSame( 'America/New_York', WPCV_Settings::site_timezone()->getName() );
+
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = '';
+		$GLOBALS['_wpcv_test_options']['gmt_offset']      = 5.5;
+		$this->assertSame( '+05:30', WPCV_Settings::site_timezone()->getName() );
 	}
 }
