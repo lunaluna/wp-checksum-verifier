@@ -308,6 +308,24 @@ class WPCV_Suppression_Repository {
 	}
 
 	/**
+	 * `delete_expired_before()` が消す件数を、消さずに数える(v0.10.0: 保持期間の削除の `--dry-run` 用).
+	 *
+	 * @param string $cutoff MySQL DATETIME(UTC).
+	 * @return int 消すことになる件数.
+	 */
+	public function count_expired_before( $cutoff ) {
+		$count = 0;
+
+		foreach ( $this->all_rows() as $row ) {
+			if ( ! empty( $row['expired_at'] ) && (string) $row['expired_at'] < (string) $cutoff ) {
+				++$count;
+			}
+		}
+
+		return $count;
+	}
+
+	/**
 	 * `wpcv_suppressions` の全行を読み取る(`WPCV_Target_Run_Repository::all_rows()` と
 	 * 同じ理由でテーブル全体を取得しPHP側で絞り込む).
 	 *

@@ -152,7 +152,7 @@ class WPCV_Retention_Cleaner {
 		}
 
 		try {
-			$this->clean( (int) $run_id, $months );
+			$this->prune( $months, (int) $run_id );
 		} catch ( Throwable $e ) {
 			// クラス docblock 参照: 掃除の失敗で run の確定を妨げない.
 			unset( $e );
@@ -160,22 +160,51 @@ class WPCV_Retention_Cleaner {
 	}
 
 	/**
-	 * 保持期間を過ぎた履歴を消す.
+	 * 保持期間を過ぎた履歴を消す(または `$dry_run` で消す件数だけ数える).
 	 *
-	 * @param int $terminated_run_id 今終わった run の id(差分処理の前なので、消してはいけない側に入れる).
-	 * @param int $months            保持期間(月. 1 以上).
-	 * @return void
+	 * Run の終端(`handle_run_terminated()`)に加えて、`wp wpcv prune` と管理画面の「古い履歴を今すぐ
+	 * 削除」(v0.10.0)からも呼ぶ. 削除の判定を呼び出し元ごとに持たないよう、この1か所に集約する.
+	 * 保持期間は呼び出し元が `WPCV_Settings::get_retention_months()` で読んで渡す(無期限 = 0 の
+	 * 扱いは呼び出し元の責務. ここでは 1 未満なら何もしない).
+	 *
+	 * 通常(`$dry_run` が偽)は、1回の呼び出しで消す target_run の数に上限がある
+	 * (`MAX_TARGET_RUNS_PER_CALL`). 上限に達して続きがありうるときは戻り値の `remaining` が真になる
+	 * (厳密な「残りの有無」ではなく、上限で止めたかどうか. 次の呼び出しで 0 件になることがある).
+	 * 呼び出しごとに少なくとも1件消えるので、`remaining` が偽になるまで繰り返せば必ず終わる.
+	 * `$dry_run` が真のときは、何も消さず、上限も置かずに最後まで数える(件数が多いと時間がかかる).
+	 *
+	 * @param int  $months            保持期間(月. 1 未満なら何もしない).
+	 * @param int  $terminated_run_id 今終わった run の id(差分処理の前なので、消してはいけない側に入れる).
+	 *                                CLI・管理画面からは 0(無し)で呼ぶ.
+	 * @param bool $dry_run           真なら何も消さず、消す件数だけを返す.
+	 * @return array{suppressions:int, target_runs:int, findings:int, runs:int, remaining:bool} 消した(`$dry_run` では消すことになる)件数.
+	 *
+	 * @throws RuntimeException 削除に失敗した場合(各 Repository が投げる).
 	 */
-	private function clean( $terminated_run_id, $months ) {
-		$cutoff = $this->cutoff( $months );
+	public function prune( $months, $terminated_run_id = 0, $dry_run = false ) {
+		$result = array(
+			'suppressions' => 0,
+			'target_runs'  => 0,
+			'findings'     => 0,
+			'runs'         => 0,
+			'remaining'    => false,
+		);
+
+		if ( (int) $months < 1 ) {
+			return $result;
+		}
+
+		$cutoff = $this->cutoff( (int) $months );
 
 		// 期限切れの suppression は、run の有無に関わらず消す.
-		$this->suppression_repository->delete_expired_before( $cutoff );
+		$result['suppressions'] = $dry_run
+			? $this->suppression_repository->count_expired_before( $cutoff )
+			: $this->suppression_repository->delete_expired_before( $cutoff );
 
 		$boundary_run_id = $this->run_repository->find_last_started_before( $cutoff );
 
 		if ( null === $boundary_run_id ) {
-			return; // 期限切れの run が無い.
+			return $result; // 期限切れの run が無い.
 		}
 
 		// I3: 実行中・差分処理前の run.
@@ -189,8 +218,14 @@ class WPCV_Retention_Cleaner {
 		// I1 と、I3: 進行中の run が基準にする、その run より前の直近の success.
 		$protected_target_runs = $this->protected_target_run_map( $latest_success, array_keys( $unfinished ) );
 
-		$this->clean_target_runs( $boundary_run_id, $latest_success, $protected_target_runs, $unfinished );
-		$this->clean_runs( $cutoff, $protected_target_runs, $unfinished );
+		// dry-run で「消すことになる target_run」を run ごとに数え、run の判定(残る target_run が
+		// 無いか)に使う. 実際には消さないので、DB の件数からこの数を引いて判定する.
+		$simulated_deleted_by_run = array();
+
+		$this->clean_target_runs( $boundary_run_id, $latest_success, $protected_target_runs, $unfinished, $dry_run, $result, $simulated_deleted_by_run );
+		$this->clean_runs( $cutoff, $protected_target_runs, $unfinished, $dry_run, $result, $simulated_deleted_by_run );
+
+		return $result;
 	}
 
 	/**
@@ -244,9 +279,12 @@ class WPCV_Retention_Cleaner {
 	 * @param array<string, array{id: int, run_id: int}>                 $latest_success        各 target の直近の success.
 	 * @param array<int, array{id: int, run_id: int, target_id: string}> $protected_target_runs 消さない target_run(id => 行).
 	 * @param array<int, bool>                                           $unfinished            実行中・差分処理前の run の id => true.
+	 * @param bool                                                       $dry_run               真なら消さずに数える(上限も置かない).
+	 * @param array                                                      $result                `prune()` の戻り値(件数を足し込む).
+	 * @param array<int, int>                                            $simulated_deleted     dry-run で消すことになる target_run の run ごとの数.
 	 * @return void
 	 */
-	private function clean_target_runs( $boundary_run_id, array $latest_success, array $protected_target_runs, array $unfinished ) {
+	private function clean_target_runs( $boundary_run_id, array $latest_success, array $protected_target_runs, array $unfinished, $dry_run, array &$result, array &$simulated_deleted ) {
 		// I4 の判定に使う「target ごとの直近の success の id」.
 		$latest_id_by_target = array();
 
@@ -257,7 +295,7 @@ class WPCV_Retention_Cleaner {
 		$handled  = 0;
 		$after_id = 0;
 
-		while ( $handled < self::MAX_TARGET_RUNS_PER_CALL ) {
+		while ( $dry_run || $handled < self::MAX_TARGET_RUNS_PER_CALL ) {
 			$batch = $this->target_run_repository->find_ids_up_to_run( $boundary_run_id, $after_id, self::SCAN_BATCH_SIZE );
 
 			if ( empty( $batch ) ) {
@@ -273,11 +311,21 @@ class WPCV_Retention_Cleaner {
 
 				$keep_finding_ids = $this->notified_finding_ids_to_keep( $target_run, $latest_id_by_target );
 
-				$deleted_findings = $this->finding_repository->delete_by_target_run_id_except( $target_run['id'], $keep_finding_ids );
+				$deleted_findings = $dry_run
+					? $this->finding_repository->count_by_target_run_id_except( $target_run['id'], $keep_finding_ids )
+					: $this->finding_repository->delete_by_target_run_id_except( $target_run['id'], $keep_finding_ids );
+
+				$result['findings'] += $deleted_findings;
 
 				// 通知の記録として残す finding がある間は、その target_run も残す(finding が親を指すため).
 				if ( empty( $keep_finding_ids ) ) {
-					$this->target_run_repository->delete_by_id( $target_run['id'] );
+					if ( ! $dry_run ) {
+						$this->target_run_repository->delete_by_id( $target_run['id'] );
+					} else {
+						$simulated_deleted[ $target_run['run_id'] ] = ( $simulated_deleted[ $target_run['run_id'] ] ?? 0 ) + 1;
+					}
+
+					++$result['target_runs'];
 				} elseif ( $deleted_findings < 1 ) {
 					// 何も消さずに残しただけの target_run は、上限に数えない. 数えると、残す行が
 					// 上限の件数以上 id の小さい側に並んだとき、毎回その先頭から数え直して
@@ -287,7 +335,8 @@ class WPCV_Retention_Cleaner {
 
 				++$handled;
 
-				if ( $handled >= self::MAX_TARGET_RUNS_PER_CALL ) {
+				if ( ! $dry_run && $handled >= self::MAX_TARGET_RUNS_PER_CALL ) {
+					$result['remaining'] = true; // 上限で止めた. 続きがありうる.
 					return;
 				}
 			}
@@ -372,9 +421,12 @@ class WPCV_Retention_Cleaner {
 	 * @param string                                                     $cutoff                期限の境界(UTC の MySQL DATETIME 文字列).
 	 * @param array<int, array{id: int, run_id: int, target_id: string}> $protected_target_runs 消さない target_run.
 	 * @param array<int, bool>                                           $unfinished            実行中・差分処理前の run の id => true.
+	 * @param bool                                                       $dry_run               真なら消さずに数える(上限も置かない).
+	 * @param array                                                      $result                `prune()` の戻り値(件数を足し込む).
+	 * @param array<int, int>                                            $simulated_deleted     dry-run で消すことになる target_run の run ごとの数.
 	 * @return void
 	 */
-	private function clean_runs( $cutoff, array $protected_target_runs, array $unfinished ) {
+	private function clean_runs( $cutoff, array $protected_target_runs, array $unfinished, $dry_run, array &$result, array $simulated_deleted ) {
 		// I2: 基準の target_run が属する run. 件数を数えるクエリを省くための近道で、
 		// 正しさは「target_run が残っていれば消さない」の判定(下の count)が担う.
 		$protected_run_ids = array();
@@ -386,7 +438,7 @@ class WPCV_Retention_Cleaner {
 		$deleted  = 0;
 		$after_id = 0;
 
-		while ( $deleted < self::MAX_TARGET_RUNS_PER_CALL ) {
+		while ( $dry_run || $deleted < self::MAX_TARGET_RUNS_PER_CALL ) {
 			$ids = $this->run_repository->find_ids_started_before( $cutoff, $after_id, self::SCAN_BATCH_SIZE );
 
 			if ( empty( $ids ) ) {
@@ -400,14 +452,20 @@ class WPCV_Retention_Cleaner {
 					continue;
 				}
 
-				if ( $this->target_run_repository->count_by_run( $run_id ) > 0 ) {
-					continue; // 通知の記録として残した target_run がある.
+				// 通知の記録として残した target_run がある(dry-run では、消すことになる分を引いて数える).
+				if ( $this->target_run_repository->count_by_run( $run_id ) - ( $simulated_deleted[ $run_id ] ?? 0 ) > 0 ) {
+					continue;
 				}
 
-				$this->run_repository->delete_by_id( $run_id );
-				++$deleted;
+				if ( ! $dry_run ) {
+					$this->run_repository->delete_by_id( $run_id );
+				}
 
-				if ( $deleted >= self::MAX_TARGET_RUNS_PER_CALL ) {
+				++$deleted;
+				++$result['runs'];
+
+				if ( ! $dry_run && $deleted >= self::MAX_TARGET_RUNS_PER_CALL ) {
+					$result['remaining'] = true; // 上限で止めた. 続きがありうる.
 					return;
 				}
 			}

@@ -615,4 +615,163 @@ class RetentionCleanerTest extends TestCase {
 
 		$this->assertCount( 2, $wpdb->rows['wp_wpcv_target_runs'] );
 	}
+
+	/**
+	 * `prune()` を外から呼ぶと、消した件数を返し、run の終端と同じ結果になることを確認する(プラン §8.3・Step 9).
+	 *
+	 * 同じ期限切れの構成で、`handle_run_terminated()` が残す行と `prune()` が残す行が一致する.
+	 *
+	 * @return void
+	 */
+	public function test_prune_returns_counts_and_matches_run_terminated_result() {
+		$build = static function () {
+			$wpdb     = new WPCV_Test_Fake_WPDB();
+			$r_old    = self::insert_run( $wpdb, '2026-05-01 00:00:00' );
+			$r_recent = self::insert_run( $wpdb, '2026-10-02 00:00:00' );
+			$old      = self::insert_target_run( $wpdb, $r_old, 'plugin:a' );
+			self::insert_target_run( $wpdb, $r_recent, 'plugin:a' );
+			self::insert_finding( $wpdb, $r_old, $old, 'plugin:a', 'k1' );
+
+			return array( $wpdb, $r_recent );
+		};
+
+		list( $wpdb_prune ) = $build();
+		$result             = self::make_cleaner( $wpdb_prune )->prune( 3 );
+
+		$this->assertSame( 1, $result['target_runs'] );
+		$this->assertSame( 1, $result['findings'] );
+		$this->assertSame( 1, $result['runs'] );
+		$this->assertSame( 0, $result['suppressions'] );
+		$this->assertFalse( $result['remaining'] );
+
+		list( $wpdb_event, $recent_id ) = $build();
+		self::set_retention( 3 );
+		self::make_cleaner( $wpdb_event )->handle_run_terminated( 999, 'success' );
+
+		$this->assertSame( self::ids( $wpdb_event, 'target_runs' ), self::ids( $wpdb_prune, 'target_runs' ) );
+		$this->assertSame( self::ids( $wpdb_event, 'runs' ), self::ids( $wpdb_prune, 'runs' ) );
+		$this->assertSame( self::ids( $wpdb_event, 'findings' ), self::ids( $wpdb_prune, 'findings' ) );
+		$this->assertNotNull( $recent_id );
+	}
+
+	/**
+	 * `--dry-run` は何も消さず、実際に消したときと同じ件数を返すことを確認する(§8.5 #10).
+	 *
+	 * @return void
+	 */
+	public function test_prune_dry_run_counts_without_deleting() {
+		$wpdb     = new WPCV_Test_Fake_WPDB();
+		$r_old    = self::insert_run( $wpdb, '2026-05-01 00:00:00' );
+		$r_recent = self::insert_run( $wpdb, '2026-10-02 00:00:00' );
+		$old1     = self::insert_target_run( $wpdb, $r_old, 'plugin:a' );
+		self::insert_target_run( $wpdb, $r_recent, 'plugin:a' );
+		self::insert_finding( $wpdb, $r_old, $old1, 'plugin:a', 'k1' );
+		$wpdb->insert(
+			'wp_wpcv_suppressions',
+			array(
+				'expired_at' => '2026-01-01 00:00:00',
+			)
+		);
+
+		$before = array(
+			self::ids( $wpdb, 'runs' ),
+			self::ids( $wpdb, 'target_runs' ),
+			self::ids( $wpdb, 'findings' ),
+			self::ids( $wpdb, 'suppressions' ),
+		);
+
+		$dry = self::make_cleaner( $wpdb )->prune( 3, 0, true );
+
+		$this->assertSame(
+			$before,
+			array(
+				self::ids( $wpdb, 'runs' ),
+				self::ids( $wpdb, 'target_runs' ),
+				self::ids( $wpdb, 'findings' ),
+				self::ids( $wpdb, 'suppressions' ),
+			),
+			'dry-run は何も消さない'
+		);
+
+		$real = self::make_cleaner( $wpdb )->prune( 3 );
+
+		$this->assertSame( $real, $dry, 'dry-run の件数は実際に消した件数と一致する' );
+		$this->assertSame( 1, $dry['suppressions'] );
+		$this->assertSame( 1, $dry['runs'] );
+	}
+
+	/**
+	 * 保持期間が 1 未満(無期限)のときは何もせず、全件数 0 を返すことを確認する(§8.5 #1).
+	 *
+	 * @return void
+	 */
+	public function test_prune_with_unlimited_months_does_nothing() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$run  = self::insert_run( $wpdb, '2020-01-01 00:00:00' );
+		self::insert_target_run( $wpdb, $run, 'plugin:a' );
+		self::insert_target_run( $wpdb, $run, 'plugin:a' );
+
+		$result = self::make_cleaner( $wpdb )->prune( 0 );
+
+		$this->assertSame( array( 'suppressions' => 0, 'target_runs' => 0, 'findings' => 0, 'runs' => 0, 'remaining' => false ), $result );
+		$this->assertCount( 2, $wpdb->rows['wp_wpcv_target_runs'] );
+	}
+
+	/**
+	 * 期限切れが 1 回の上限(500)を超えるとき `remaining` が真になり、繰り返せば最後まで消えることを確認する(§8.5 #3).
+	 *
+	 * @return void
+	 */
+	public function test_prune_reports_remaining_and_finishes_when_repeated() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$old  = self::insert_run( $wpdb, '2026-01-01 00:00:00' );
+		$new  = self::insert_run( $wpdb, '2026-10-02 00:00:00' );
+
+		$total = WPCV_Retention_Cleaner::MAX_TARGET_RUNS_PER_CALL + 20;
+
+		// target ごとに最新の success は新しい run に 1 件ずつ(古い方が全部消える対象).
+		for ( $i = 0; $i < $total; $i++ ) {
+			self::insert_target_run( $wpdb, $old, 'plugin:p' . $i );
+			self::insert_target_run( $wpdb, $new, 'plugin:p' . $i );
+		}
+
+		$cleaner = self::make_cleaner( $wpdb );
+		$first   = $cleaner->prune( 3 );
+
+		$this->assertSame( WPCV_Retention_Cleaner::MAX_TARGET_RUNS_PER_CALL, $first['target_runs'] );
+		$this->assertTrue( $first['remaining'] );
+
+		$sum   = $first['target_runs'];
+		$calls = 1;
+
+		do {
+			$next = $cleaner->prune( 3 );
+			$sum += $next['target_runs'];
+			++$calls;
+		} while ( $next['remaining'] && $calls < 10 );
+
+		$this->assertSame( $total, $sum );
+		$this->assertFalse( $next['remaining'] );
+		$this->assertCount( $total, $wpdb->rows['wp_wpcv_target_runs'] );
+	}
+
+	/**
+	 * 同じ行を二重に消そうとしても(run の終端の自動削除と同時に走った場合)、エラーにならないことを確認する(§8.5 #5).
+	 *
+	 * @return void
+	 */
+	public function test_prune_twice_in_a_row_is_safe() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$old  = self::insert_run( $wpdb, '2026-05-01 00:00:00' );
+		$new  = self::insert_run( $wpdb, '2026-10-02 00:00:00' );
+		self::insert_target_run( $wpdb, $old, 'plugin:a' );
+		self::insert_target_run( $wpdb, $new, 'plugin:a' );
+
+		$cleaner = self::make_cleaner( $wpdb );
+		$cleaner->prune( 3 );
+		$second = $cleaner->prune( 3 );
+
+		$this->assertSame( 0, $second['target_runs'] );
+		$this->assertSame( 0, $second['runs'] );
+	}
 }
