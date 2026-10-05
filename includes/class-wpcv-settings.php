@@ -40,21 +40,39 @@ class WPCV_Settings {
 	const OPTION_NAME = 'wpcv_settings';
 
 	/**
-	 * 既定の実行時(UTC).
+	 * 既定の実行時(サイトのタイムゾーン. v0.10.0 で UTC から変更).
 	 *
 	 * 計画時点(v0.3)でユーザーと確認済みの仮値(実装セッションへの申し送り参照)。
 	 * 実地運用でのアクセス傾向(負荷の低い時間帯)を見て見直す余地がある.
+	 * 本来の設計意図は「サイトのタイムゾーンでの 3:00」だったが、v0.9.2 までは UTC の
+	 * 3:00 として動いていた(日本では 12:00). 新規インストールだけが現地 3:00 になり、
+	 * 既存サイトは `run_time_basis` の移行で実行時刻を保つ(プラン U1).
 	 *
 	 * @var int
 	 */
 	const DEFAULT_RUN_HOUR = 3;
 
 	/**
-	 * 既定の実行分(UTC).
+	 * 既定の実行分(サイトのタイムゾーン).
 	 *
 	 * @var int
 	 */
 	const DEFAULT_RUN_MINUTE = 0;
+
+	/**
+	 * `run_time_basis` の値: 保存されている `run_hour`/`run_minute` はサイトのタイムゾーンの時刻(v0.10.0 以降).
+	 *
+	 * @var string
+	 */
+	const RUN_TIME_BASIS_SITE = 'site';
+
+	/**
+	 * `run_time_basis` の値: 保存されている `run_hour`/`run_minute` は UTC の時刻(v0.9.2 まで.
+	 * 値を持たない旧データはこれとみなす).
+	 *
+	 * @var string
+	 */
+	const RUN_TIME_BASIS_UTC = 'utc';
 
 	/**
 	 * 外部HTTPモード(v0.4.0 §Step6。`WPCV_Rest_Run_Controller`)がdispatcherを
@@ -265,7 +283,7 @@ class WPCV_Settings {
 	}
 
 	/**
-	 * 実行時刻(UTC)を返す.
+	 * 実行時刻(サイトのタイムゾーン)を返す.
 	 *
 	 * @return array{hour:int,minute:int}
 	 */
@@ -279,7 +297,10 @@ class WPCV_Settings {
 	}
 
 	/**
-	 * 実行時刻(UTC)を保存する.
+	 * 実行時刻(サイトのタイムゾーン)を保存する.
+	 *
+	 * 保存する時刻は常にサイトのタイムゾーンの時刻なので、`run_time_basis` も `site` にする
+	 * (移行前の旧データに設定画面から保存した場合も、以後は現地時刻として扱う).
 	 *
 	 * @param int $hour   時. 範囲外(0-23 外)は clamp する.
 	 * @param int $minute 分. 範囲外(0-59 外)は clamp する.
@@ -288,8 +309,68 @@ class WPCV_Settings {
 	public static function update_run_time( $hour, $minute ) {
 		$settings = self::get_all();
 
-		$settings['run_hour']   = self::clamp_int( $hour, 0, 23 );
-		$settings['run_minute'] = self::clamp_int( $minute, 0, 59 );
+		$settings['run_hour']       = self::clamp_int( $hour, 0, 23 );
+		$settings['run_minute']     = self::clamp_int( $minute, 0, 59 );
+		$settings['run_time_basis'] = self::RUN_TIME_BASIS_SITE;
+
+		return self::write_option( $settings );
+	}
+
+	/**
+	 * 保存されている `run_time_basis` を返す(v0.10.0). 保存されていなければ `null`.
+	 *
+	 * `defaults()` には含めない. 含めると「未保存(旧データ = UTC)」と「保存済みの site」を
+	 * 区別できなくなり、移行(`WPCV_Migrator::maybe_migrate_run_time_basis()`)が
+	 * 旧データを見分けられないため.
+	 *
+	 * @return string|null `RUN_TIME_BASIS_SITE` / `RUN_TIME_BASIS_UTC`. それ以外・未保存は `null`.
+	 */
+	public static function get_stored_run_time_basis() {
+		$stored = self::read_option();
+
+		if ( ! is_array( $stored ) || ! isset( $stored['run_time_basis'] ) ) {
+			return null;
+		}
+
+		return in_array( $stored['run_time_basis'], array( self::RUN_TIME_BASIS_SITE, self::RUN_TIME_BASIS_UTC ), true )
+			? $stored['run_time_basis']
+			: null;
+	}
+
+	/**
+	 * 保存済みの実行時刻の基準を `site` にする. 必要なら UTC の時・分を現地の時・分に変換する(v0.10.0).
+	 *
+	 * 既存の保存値は UTC の時刻として動いていた(日本で 03:00 なら現地 12:00). 実行時刻を保つため
+	 * (プラン U1)、`$convert_from_utc` が真なら**移行した時点のオフセット**で現地の時・分に直す.
+	 * 夏時間のある地域では、切り替えをまたぐと UTC で見た実行時刻が1時間ずれる(現地の時刻は保たれる).
+	 * 時・分が未保存のサイト(設定画面を一度も保存していない)も既定の UTC 3:00 を同じ規則で変換して保存する.
+	 * 新規インストールは変換せず基準だけ `site` にする(既定の 3:00 をそのまま現地 3:00 として使う).
+	 *
+	 * @param bool         $convert_from_utc 真なら UTC の時・分を現地へ変換する. 偽なら基準だけ site にする.
+	 * @param DateTimeZone $timezone         変換に使う現地のタイムゾーン.
+	 * @param int          $now_timestamp    オフセットを決める時点(Unix timestamp. テストで注入する).
+	 * @return bool 保存の戻り値.
+	 */
+	public static function adopt_site_run_time_basis( $convert_from_utc, DateTimeZone $timezone, $now_timestamp ) {
+		$settings = self::get_all();
+
+		if ( $convert_from_utc ) {
+			// 移行した日の「UTC のその時刻」を現地の時刻に直す. 日付は今日のもので、オフセットだけを使う.
+			$utc_at = gmmktime(
+				self::clamp_int( $settings['run_hour'], 0, 23 ),
+				self::clamp_int( $settings['run_minute'], 0, 59 ),
+				0,
+				(int) gmdate( 'n', $now_timestamp ),
+				(int) gmdate( 'j', $now_timestamp ),
+				(int) gmdate( 'Y', $now_timestamp )
+			);
+			$local  = ( new DateTimeImmutable( '@' . $utc_at ) )->setTimezone( $timezone );
+
+			$settings['run_hour']   = (int) $local->format( 'G' );
+			$settings['run_minute'] = (int) $local->format( 'i' );
+		}
+
+		$settings['run_time_basis'] = self::RUN_TIME_BASIS_SITE;
 
 		return self::write_option( $settings );
 	}

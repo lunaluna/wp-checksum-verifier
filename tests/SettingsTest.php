@@ -595,4 +595,28 @@ class SettingsTest extends TestCase {
 		$GLOBALS['_wpcv_test_options']['gmt_offset']      = 5.5;
 		$this->assertSame( '+05:30', WPCV_Settings::site_timezone()->getName() );
 	}
+
+	/**
+	 * `run_time_basis` は未保存なら `null`、不正な値も `null`、`update_run_time()` 後は `site` になることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_stored_run_time_basis_lifecycle() {
+		$this->assertNull( WPCV_Settings::get_stored_run_time_basis() );
+
+		$GLOBALS['_wpcv_test_options'][ WPCV_Settings::OPTION_NAME ] = array( 'run_time_basis' => 'bogus' );
+		$this->assertNull( WPCV_Settings::get_stored_run_time_basis() );
+
+		WPCV_Settings::update_run_time( 3, 0 );
+		$this->assertSame( 'site', WPCV_Settings::get_stored_run_time_basis() );
+	}
+
+	/**
+	 * `defaults()` に `run_time_basis` を含めないこと(含めると未保存の旧データを見分けられない)を確認する.
+	 *
+	 * @return void
+	 */
+	public function test_defaults_do_not_include_run_time_basis() {
+		$this->assertArrayNotHasKey( 'run_time_basis', WPCV_Settings::defaults() );
+	}
 }

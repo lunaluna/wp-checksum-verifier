@@ -6,6 +6,7 @@
  */
 
 require_once __DIR__ . '/wp-stubs.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-migrator.php';
 require_once __DIR__ . '/doubles.php';
 
@@ -36,6 +37,20 @@ class MigratorTest extends TestCase {
 			$GLOBALS['_wpcv_test_main_site_id'],
 			$GLOBALS['wpdb']
 		);
+	}
+
+	/**
+	 * 各テストの後に、他のテストファイルへ状態を残さないよう掃除する.
+	 *
+	 * @return void
+	 */
+	protected function tearDown(): void {
+		unset(
+			$GLOBALS['_wpcv_test_is_multisite'],
+			$GLOBALS['_wpcv_test_options'],
+			$GLOBALS['_wpcv_test_site_options']
+		);
+		parent::tearDown();
 	}
 
 	/**
@@ -698,5 +713,158 @@ class MigratorTest extends TestCase {
 		foreach ( $tables as $index => $table ) {
 			$wpdb->columns_by_table[ $table ] = $parse_method->invoke( null, $sqls[ $index ] );
 		}
+	}
+
+	/**
+	 * 既存サイト(`run_time_basis` 無し・03:00 保存済み)は、現地 12:00 に変換されて `site` になることを確認する(プラン §4 #2).
+	 *
+	 * @return void
+	 */
+	public function test_migrate_converts_stored_utc_run_time_to_site_time() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+		$GLOBALS['_wpcv_test_options']['wpcv_settings']   = array(
+			'run_hour'   => 3,
+			'run_minute' => 0,
+		);
+
+		$this->assertTrue( WPCV_Migrator::maybe_migrate_run_time_basis() );
+		$this->assertSame( array( 'hour' => 12, 'minute' => 0 ), WPCV_Settings::get_run_time() );
+		$this->assertSame( WPCV_Settings::RUN_TIME_BASIS_SITE, WPCV_Settings::get_stored_run_time_basis() );
+	}
+
+	/**
+	 * 実行時刻を一度も保存していない既存サイトも、既定の UTC 3:00 を現地に変換して保存する(新規と取り違えない. #3).
+	 *
+	 * @return void
+	 */
+	public function test_migrate_converts_default_run_time_when_never_saved() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+		// 設定 option 自体が無い(他の設定も未保存).
+
+		$this->assertTrue( WPCV_Migrator::maybe_migrate_run_time_basis( false ) );
+		$this->assertSame( array( 'hour' => 12, 'minute' => 0 ), WPCV_Settings::get_run_time() );
+		$this->assertSame( 'site', WPCV_Settings::get_stored_run_time_basis() );
+	}
+
+	/**
+	 * 新規インストールは変換せず、既定の 3:00 を現地 3:00 として `site` にすることを確認する(#1).
+	 *
+	 * @return void
+	 */
+	public function test_migrate_for_fresh_install_keeps_default_and_marks_site() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		$this->assertFalse( WPCV_Migrator::maybe_migrate_run_time_basis( true ) );
+		$this->assertSame( array( 'hour' => 3, 'minute' => 0 ), WPCV_Settings::get_run_time() );
+		$this->assertSame( 'site', WPCV_Settings::get_stored_run_time_basis() );
+	}
+
+	/**
+	 * 2回目以降は何もしない(冪等). 変換済みの値を再度変換しないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_migrate_is_idempotent() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+		$GLOBALS['_wpcv_test_options']['wpcv_settings']   = array(
+			'run_hour'   => 3,
+			'run_minute' => 0,
+		);
+
+		$this->assertTrue( WPCV_Migrator::maybe_migrate_run_time_basis() );
+		$this->assertFalse( WPCV_Migrator::maybe_migrate_run_time_basis() );
+		$this->assertSame( array( 'hour' => 12, 'minute' => 0 ), WPCV_Settings::get_run_time() );
+	}
+
+	/**
+	 * 30 分ずれのタイムゾーン(+05:30)では 03:00 UTC が 08:30 になることを確認する(#5).
+	 *
+	 * @return void
+	 */
+	public function test_migrate_handles_half_hour_offset() {
+		$GLOBALS['_wpcv_test_options']['gmt_offset']    = 5.5;
+		$GLOBALS['_wpcv_test_options']['wpcv_settings'] = array(
+			'run_hour'   => 3,
+			'run_minute' => 0,
+		);
+
+		WPCV_Migrator::maybe_migrate_run_time_basis();
+
+		$this->assertSame( array( 'hour' => 8, 'minute' => 30 ), WPCV_Settings::get_run_time() );
+	}
+
+	/**
+	 * 日付をまたぐ変換(UTC 20:15 → 東京の翌日 05:15)でも時・分が正しいことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_migrate_wraps_across_midnight() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+		$GLOBALS['_wpcv_test_options']['wpcv_settings']   = array(
+			'run_hour'   => 20,
+			'run_minute' => 15,
+		);
+
+		WPCV_Migrator::maybe_migrate_run_time_basis();
+
+		$this->assertSame( array( 'hour' => 5, 'minute' => 15 ), WPCV_Settings::get_run_time() );
+	}
+
+	/**
+	 * 夏時間のある地域では、移行した日のオフセットで変換することを確認する(#9).
+	 *
+	 * 夏(7/1・EDT = UTC-4)は 03:00 UTC → 23:00、冬(1/15・EST = UTC-5)は 22:00 になる.
+	 *
+	 * @return void
+	 */
+	public function test_adopt_uses_offset_at_migration_time() {
+		$GLOBALS['_wpcv_test_options']['wpcv_settings'] = array(
+			'run_hour'   => 3,
+			'run_minute' => 0,
+		);
+		$timezone = new DateTimeZone( 'America/New_York' );
+
+		WPCV_Settings::adopt_site_run_time_basis( true, $timezone, gmmktime( 12, 0, 0, 7, 1, 2026 ) );
+		$this->assertSame( array( 'hour' => 23, 'minute' => 0 ), WPCV_Settings::get_run_time() );
+
+		$GLOBALS['_wpcv_test_options']['wpcv_settings'] = array(
+			'run_hour'   => 3,
+			'run_minute' => 0,
+		);
+		WPCV_Settings::adopt_site_run_time_basis( true, $timezone, gmmktime( 12, 0, 0, 1, 15, 2026 ) );
+		$this->assertSame( array( 'hour' => 22, 'minute' => 0 ), WPCV_Settings::get_run_time() );
+	}
+
+	/**
+	 * 移行前に設定画面から実行時刻を保存した場合も、基準が `site` になり、
+	 * その後の移行で二重に変換されないことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_update_run_time_marks_basis_site_and_blocks_migration() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		WPCV_Settings::update_run_time( 4, 0 );
+
+		$this->assertFalse( WPCV_Migrator::maybe_migrate_run_time_basis() );
+		$this->assertSame( array( 'hour' => 4, 'minute' => 0 ), WPCV_Settings::get_run_time() );
+	}
+
+	/**
+	 * マルチサイトでは site option に保存し、メインサイトのタイムゾーンで変換することを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_migrate_on_multisite_uses_site_option() {
+		$GLOBALS['_wpcv_test_is_multisite']               = true;
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+		$GLOBALS['_wpcv_test_site_options']['wpcv_settings'] = array(
+			'run_hour'   => 3,
+			'run_minute' => 0,
+		);
+
+		$this->assertTrue( WPCV_Migrator::maybe_migrate_run_time_basis() );
+		$this->assertSame( array( 'hour' => 12, 'minute' => 0 ), WPCV_Settings::get_run_time() );
+		$this->assertSame( 'site', $GLOBALS['_wpcv_test_site_options']['wpcv_settings']['run_time_basis'] );
 	}
 }

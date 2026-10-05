@@ -225,6 +225,24 @@ class SchedulerTest extends TestCase {
 	}
 
 	/**
+	 * 移行(UTC 03:00 → 現地 12:00 / Asia/Tokyo)の前後で、次回の予約時刻が変わらないことを確認する(プラン §3.3・#2・#15).
+	 *
+	 * @return void
+	 */
+	public function test_run_time_migration_keeps_next_scheduled_timestamp() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+		$now = gmmktime( 10, 0, 0, 9, 9, 2026 );
+
+		// 移行前の旧挙動: UTC の 03:00(翌日 UTC 2026-09-10 03:00).
+		$before = gmmktime( 3, 0, 0, 9, 10, 2026 );
+
+		// 移行後: 現地 12:00 = UTC 03:00.
+		$after = WPCV_Scheduler::next_timestamp_after( $now, 12, 0 );
+
+		$this->assertSame( $before, $after );
+	}
+
+	/**
 	 * `activate()` は未予約のときだけ `wp_schedule_single_event()` を呼ぶことを確認する.
 	 *
 	 * @return void

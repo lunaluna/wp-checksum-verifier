@@ -110,6 +110,12 @@ add_action(
 	'plugins_loaded',
 	static function () {
 		WPCV_Migrator::maybe_upgrade();
+
+		// 実行時刻の保存値の基準(UTC → サイトのタイムゾーン)の移行(v0.10.0). 変換したときだけ、
+		// 次回の WP-Cron の予約を保存値から作り直す(実行時刻は変わらないので予約時刻も変わらない見込み).
+		if ( WPCV_Migrator::maybe_migrate_run_time_basis() ) {
+			WPCV_Scheduler::reschedule();
+		}
 	}
 );
 
