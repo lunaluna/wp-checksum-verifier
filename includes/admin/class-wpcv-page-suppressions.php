@@ -62,6 +62,8 @@ class WPCV_Page_Suppressions {
 		?>
 		<div class="wrap">
 			<h1><?php echo esc_html__( 'Suppressions', 'wp-checksum-verifier' ); ?></h1>
+			<?php // 日時はサイトのタイムゾーンで表示する(v0.10.0). ?>
+			<p class="description"><?php echo esc_html( WPCV_Settings::datetime_notice() ); ?></p>
 
 			<?php if ( true === $action_result ) : ?>
 				<div class="notice notice-success is-dismissible">
@@ -97,7 +99,7 @@ class WPCV_Page_Suppressions {
 								<td><?php echo esc_html( self::format_target( $row ) ); ?></td>
 								<td><?php echo esc_html( (string) $row['reason'] ); ?></td>
 								<td><?php echo esc_html( self::format_created_by( (int) $row['created_by'] ) ); ?></td>
-								<td><?php echo esc_html( (string) $row['created_at'] ); ?></td>
+								<td><?php echo esc_html( WPCV_Settings::format_datetime( (string) $row['created_at'] ) ); ?></td>
 								<td><?php echo esc_html( self::status_label( $row ) ); ?></td>
 								<?php if ( $can_manage ) : ?>
 									<td>
@@ -169,7 +171,7 @@ class WPCV_Page_Suppressions {
 		return sprintf(
 			/* translators: 1: revoked timestamp, 2: revoke reason. */
 			__( 'Revoked at %1$s (%2$s)', 'wp-checksum-verifier' ),
-			(string) $row['expired_at'],
+			WPCV_Settings::format_datetime( (string) $row['expired_at'] ),
 			self::format_expired_reason( (string) $row['expired_reason'] )
 		);
 	}

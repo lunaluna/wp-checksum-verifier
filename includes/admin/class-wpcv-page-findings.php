@@ -99,6 +99,8 @@ class WPCV_Page_Findings {
 		?>
 		<div class="wrap">
 			<h1><?php echo esc_html__( 'Findings', 'wp-checksum-verifier' ); ?></h1>
+			<?php // 日時はサイトのタイムゾーンで表示する(v0.10.0). ?>
+			<p class="description"><?php echo esc_html( WPCV_Settings::datetime_notice() ); ?></p>
 
 			<?php if ( true === $action_result ) : ?>
 				<div class="notice notice-success is-dismissible">
@@ -424,7 +426,7 @@ class WPCV_Page_Findings {
 
 			$parts[] = 'size' === $key
 				? sprintf( 'size: %d → %d', $old, $new )
-				: sprintf( '%s: %s → %s', $key, gmdate( 'Y-m-d H:i:s', $old ), gmdate( 'Y-m-d H:i:s', $new ) );
+				: sprintf( '%s: %s → %s', $key, WPCV_Settings::format_datetime( $old ), WPCV_Settings::format_datetime( $new ) );
 		}
 
 		if ( ! empty( $detail['timestomp'] ) ) {
@@ -455,7 +457,8 @@ class WPCV_Page_Findings {
 			return '—';
 		}
 
-		$notified_at = empty( $finding['notified_at'] ) ? '' : (string) $finding['notified_at'];
+		// 送信日時(UTC で保存)はサイトのタイムゾーンで表示する(v0.10.0).
+		$notified_at = empty( $finding['notified_at'] ) ? '' : WPCV_Settings::format_datetime( (string) $finding['notified_at'] );
 
 		if ( '' === $notified_at ) {
 			return $diff_state;

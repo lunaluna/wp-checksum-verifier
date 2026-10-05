@@ -10,6 +10,7 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.p
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-affected-sites.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-run-history.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-findings.php';
 
 use PHPUnit\Framework\TestCase;
@@ -368,6 +369,39 @@ class PageFindingsTest extends TestCase {
 			);
 		} finally {
 			unset( $GLOBALS['_wpcv_test_is_multisite'] );
+		}
+	}
+
+	/**
+	 * 検出結果の「詳細」(ctime・mtime)と「差分」(送信日時)がサイトのタイムゾーンで表示されることを確認する(D8・D9).
+	 *
+	 * @return void
+	 */
+	public function test_findings_datetimes_are_shown_in_site_time_zone() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		try {
+			$text = WPCV_Page_Findings::format_detail(
+				array(
+					'detail' => wp_json_encode(
+						array(
+							'ctime' => array(
+								'old' => 1757000000,
+								'new' => 1757600000,
+							),
+						)
+					),
+				)
+			);
+			// UTC 2025-09-04 15:33:20 → 東京 2025-09-05 00:33:20.
+			$this->assertStringContainsString( 'ctime: 2025-09-05 00:33:20 → 2025-09-11 23:13:20', $text );
+
+			$this->assertSame(
+				'new (emailed 2026-09-28 09:00:00)',
+				WPCV_Page_Findings::format_diff_state( array( 'diff_state' => 'new', 'notified_at' => '2026-09-28 00:00:00' ) )
+			);
+		} finally {
+			unset( $GLOBALS['_wpcv_test_options']['timezone_string'] );
 		}
 	}
 }
