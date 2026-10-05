@@ -774,4 +774,79 @@ class RetentionCleanerTest extends TestCase {
 		$this->assertSame( 0, $second['target_runs'] );
 		$this->assertSame( 0, $second['runs'] );
 	}
+
+	/**
+	 * 現在時刻を指定して削除処理を作る(月末の境界のテスト用).
+	 *
+	 * @param WPCV_Test_Fake_WPDB $wpdb フェイク wpdb.
+	 * @param string              $now  現在時刻(UTC).
+	 * @return WPCV_Retention_Cleaner
+	 */
+	private static function make_cleaner_at( WPCV_Test_Fake_WPDB $wpdb, $now ) {
+		return new WPCV_Retention_Cleaner(
+			new WPCV_Run_Repository( $wpdb ),
+			new WPCV_Target_Run_Repository( $wpdb ),
+			new WPCV_Finding_Repository( $wpdb ),
+			new WPCV_Suppression_Repository( $wpdb ),
+			static function () use ( $now ) {
+				return $now;
+			}
+		);
+	}
+
+	/**
+	 * 保持期間の境界は「N か月前の同じ日」で、その月に同じ日が無ければ月末になることを確認する
+	 * (0.10.0 のコードレビュー指摘1. 29〜31日・うるう年・年またぎ).
+	 *
+	 * @return void
+	 */
+	public function test_cutoff_clamps_to_end_of_month() {
+		$cases = array(
+			// 現在時刻, 月数, 期待する境界.
+			array( '2027-05-31 10:00:00', 3, '2027-02-28 10:00:00' ),
+			array( '2028-05-31 10:00:00', 3, '2028-02-29 10:00:00' ), // うるう年.
+			array( '2027-05-31 10:00:00', 1, '2027-04-30 10:00:00' ),
+			array( '2027-03-31 10:00:00', 1, '2027-02-28 10:00:00' ),
+			array( '2027-03-30 10:00:00', 1, '2027-02-28 10:00:00' ),
+			array( '2027-03-29 10:00:00', 1, '2027-02-28 10:00:00' ),
+			array( '2028-03-29 10:00:00', 1, '2028-02-29 10:00:00' ),
+			array( '2027-12-31 23:59:59', 6, '2027-06-30 23:59:59' ),
+			array( '2027-01-31 00:00:00', 3, '2026-10-31 00:00:00' ), // 年またぎ.
+			array( '2027-02-28 00:00:00', 24, '2025-02-28 00:00:00' ),
+			array( '2028-02-29 00:00:00', 12, '2027-02-28 00:00:00' ), // うるう日の1年前.
+			array( '2026-10-03 00:00:00', 3, '2026-07-03 00:00:00' ), // 月末以外は今までと同じ.
+		);
+
+		$method = new ReflectionMethod( WPCV_Retention_Cleaner::class, 'cutoff' );
+		$method->setAccessible( true );
+
+		foreach ( $cases as $case ) {
+			list( $now, $months, $expected ) = $case;
+
+			$this->assertSame( $expected, $method->invoke( self::make_cleaner_at( new WPCV_Test_Fake_WPDB(), $now ), $months ), "{$now} - {$months} months" );
+		}
+	}
+
+	/**
+	 * 月末の削除で、境界より新しい履歴(3月1日・2日)を消さないことを確認する(レビュー指摘1の再現).
+	 *
+	 * 2027-05-31 の 3 か月保持の境界は 2027-02-28. 以前の計算(2027-03-03)では 3月1日の run も消えていた.
+	 *
+	 * @return void
+	 */
+	public function test_month_end_does_not_delete_runs_after_the_boundary() {
+		$wpdb    = new WPCV_Test_Fake_WPDB();
+		$r_feb   = self::insert_run( $wpdb, '2027-02-27 00:00:00' );
+		$r_march = self::insert_run( $wpdb, '2027-03-01 00:00:00' );
+		$r_new   = self::insert_run( $wpdb, '2027-05-30 00:00:00' );
+
+		self::insert_target_run( $wpdb, $r_feb, 'plugin:a' );
+		self::insert_target_run( $wpdb, $r_march, 'plugin:a' );
+		self::insert_target_run( $wpdb, $r_new, 'plugin:a' );
+
+		$result = self::make_cleaner_at( $wpdb, '2027-05-31 10:00:00' )->prune( 3 );
+
+		$this->assertSame( 1, $result['runs'], '2月27日の run だけが消える' );
+		$this->assertEqualsCanonicalizing( array( $r_march, $r_new ), self::ids( $wpdb, 'runs' ) );
+	}
 }

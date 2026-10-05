@@ -231,13 +231,29 @@ class WPCV_Retention_Cleaner {
 	/**
 	 * 保持期間の境界(UTC の MySQL DATETIME 文字列)を返す.
 	 *
+	 * 「N か月前の同じ日の同じ時刻」. その月に同じ日が無ければ、その月の末日にする
+	 * (例: 2027-05-31 の 3 か月前は 2027-02-28、うるう年の 2028-05-31 なら 2028-02-29).
+	 *
+	 * `DateTimeImmutable::modify( '-N months' )` は使わない. 存在しない日付を翌月へ繰り越すため
+	 * (2027-05-31 の 3 か月前が 2027-03-03 になる. PHP 8.4.4 で確認)、境界が数日新しくなり、
+	 * 残すべき履歴まで消してしまう(0.10.0 のコードレビュー指摘1).
+	 *
 	 * @param int $months 保持期間(月).
 	 * @return string
 	 */
 	private function cutoff( $months ) {
 		$now = new DateTimeImmutable( (string) call_user_func( $this->now ), new DateTimeZone( 'UTC' ) );
 
-		return $now->modify( '-' . (int) $months . ' months' )->format( 'Y-m-d H:i:s' );
+		// 年と月だけを先に戻す(月の計算を 0 始まりにして、年をまたぐ繰り下がりを整数で扱う).
+		$month_index = (int) $now->format( 'Y' ) * 12 + (int) $now->format( 'n' ) - 1 - (int) $months;
+		$year        = intdiv( $month_index, 12 );
+		$month       = $month_index % 12 + 1;
+
+		// その月の日数(1日の DateTime の `t`). calendar 拡張の cal_days_in_month() には頼らない.
+		$days_in_month = (int) ( new DateTimeImmutable( sprintf( '%04d-%02d-01', $year, $month ), new DateTimeZone( 'UTC' ) ) )->format( 't' );
+		$day           = min( (int) $now->format( 'j' ), $days_in_month );
+
+		return $now->setDate( $year, $month, $day )->format( 'Y-m-d H:i:s' );
 	}
 
 	/**
