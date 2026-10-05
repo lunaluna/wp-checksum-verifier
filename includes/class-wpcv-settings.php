@@ -244,6 +244,62 @@ class WPCV_Settings {
 	}
 
 	/**
+	 * 表示用の日時の書式(U7: 今までと同じ `Y-m-d H:i:s`. 「設定 > 一般」の書式には従わない).
+	 *
+	 * @var string
+	 */
+	const DISPLAY_DATETIME_FORMAT = 'Y-m-d H:i:s';
+
+	/**
+	 * DB に UTC で保存している日時を、サイトのタイムゾーンの表示用文字列にする(v0.10.0. プラン §3.6).
+	 *
+	 * 管理画面とアラートメールの日時はこの関数に集約する. 保存は UTC のままで、表示のときだけ変える.
+	 * UTC の `Y-m-d H:i:s` 文字列を timestamp にするときは、サーバーの既定タイムゾーンに左右されないよう
+	 * 明示的に UTC で解釈する. `int` は Unix timestamp とみなす(ファイルの ctime・mtime など).
+	 * `wp_date()` は timestamp ごとにオフセットを決めるので、夏時間をまたいだ古い記録もその時点の
+	 * オフセットで表示される(組み合わせ表 #17). タイムゾーンは `site_timezone()`(マルチサイトでは
+	 * メインサイト. U4)なので、どのサイトの画面・メールでも同じ値になる.
+	 *
+	 * @param string|int|null $value UTC の `Y-m-d H:i:s` 文字列、または Unix timestamp.
+	 * @return string 表示用の文字列. 空・`0000-00-00 00:00:00`・不正な値・1970 年以前は `—`.
+	 */
+	public static function format_datetime( $value ) {
+		if ( is_int( $value ) ) {
+			$timestamp = $value;
+		} elseif ( is_string( $value ) && '' !== trim( $value ) && 0 !== strpos( $value, '0000-00-00' ) ) {
+			try {
+				$timestamp = ( new DateTimeImmutable( trim( $value ), new DateTimeZone( 'UTC' ) ) )->getTimestamp();
+			} catch ( Exception $e ) {
+				return '—';
+			}
+		} else {
+			return '—';
+		}
+
+		// 0 以下は「未設定が 1970 年として出る」事故を避けて表示しない.
+		if ( $timestamp <= 0 ) {
+			return '—';
+		}
+
+		return (string) wp_date( self::DISPLAY_DATETIME_FORMAT, $timestamp, self::site_timezone() );
+	}
+
+	/**
+	 * 「日時はこのタイムゾーンで表示している」という注記を返す(v0.10.0).
+	 *
+	 * 以前の UTC 表示と見比べて混乱しないよう、日時を出す画面に添える.
+	 *
+	 * @return string エスケープ前の文字列.
+	 */
+	public static function datetime_notice() {
+		return sprintf(
+			/* translators: %s: site time zone name (e.g. Asia/Tokyo or +09:00). */
+			__( 'Dates and times are shown in the site time zone (%s).', 'wp-checksum-verifier' ),
+			self::site_timezone()->getName()
+		);
+	}
+
+	/**
 	 * 指定したタイムゾーンの「`$date` の `$hour:$minute`」の Unix timestamp を返す(v0.10.0).
 	 *
 	 * 日付と時刻を**文字列で組み立てて**から解釈する. 既存の `DateTime` に `setTime()` で時刻を

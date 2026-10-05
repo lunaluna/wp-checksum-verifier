@@ -619,4 +619,75 @@ class SettingsTest extends TestCase {
 	public function test_defaults_do_not_include_run_time_basis() {
 		$this->assertArrayNotHasKey( 'run_time_basis', WPCV_Settings::defaults() );
 	}
+
+	/**
+	 * `format_datetime()`: UTC の保存値が現地時刻になり、日付も変わることを確認する(プラン §4 #16).
+	 *
+	 * @return void
+	 */
+	public function test_format_datetime_converts_utc_to_site_time() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		$this->assertSame( '2026-10-06 03:03:34', WPCV_Settings::format_datetime( '2026-10-05 18:03:34' ) );
+	}
+
+	/**
+	 * Unix timestamp(int)も現地時刻で表示できることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_format_datetime_accepts_unix_timestamp() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		$this->assertSame( '2026-10-06 03:03:34', WPCV_Settings::format_datetime( gmmktime( 18, 3, 34, 10, 5, 2026 ) ) );
+	}
+
+	/**
+	 * 夏時間をまたいだ古い記録は、その時点のオフセットで表示されることを確認する(#17).
+	 *
+	 * @return void
+	 */
+	public function test_format_datetime_uses_offset_at_that_time() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'America/New_York';
+
+		$this->assertSame( '2026-07-01 08:00:00', WPCV_Settings::format_datetime( '2026-07-01 12:00:00' ) );
+		$this->assertSame( '2026-01-15 07:00:00', WPCV_Settings::format_datetime( '2026-01-15 12:00:00' ) );
+	}
+
+	/**
+	 * タイムゾーンを変えると、保存値は同じでも新しいタイムゾーンで表示されることを確認する(#18).
+	 *
+	 * @return void
+	 */
+	public function test_format_datetime_follows_timezone_change() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+		$this->assertSame( '2026-10-06 03:00:00', WPCV_Settings::format_datetime( '2026-10-05 18:00:00' ) );
+
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Europe/London';
+		$this->assertSame( '2026-10-05 19:00:00', WPCV_Settings::format_datetime( '2026-10-05 18:00:00' ) );
+	}
+
+	/**
+	 * 空・0000-00-00・不正・0 以下は例外や 1970 年を出さずダッシュになることを確認する(#19).
+	 *
+	 * @return void
+	 */
+	public function test_format_datetime_returns_dash_for_empty_or_invalid() {
+		foreach ( array( null, '', '   ', '0000-00-00 00:00:00', 'not a date', 0, -5 ) as $value ) {
+			$this->assertSame( '—', WPCV_Settings::format_datetime( $value ), var_export( $value, true ) );
+		}
+	}
+
+	/**
+	 * マルチサイトでもメインサイトのタイムゾーンで表示され、注記に名前が出ることを確認する(#20).
+	 *
+	 * @return void
+	 */
+	public function test_format_datetime_and_notice_use_main_site_timezone_on_multisite() {
+		$GLOBALS['_wpcv_test_is_multisite']               = true;
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		$this->assertSame( '2026-10-06 03:00:00', WPCV_Settings::format_datetime( '2026-10-05 18:00:00' ) );
+		$this->assertStringContainsString( 'Asia/Tokyo', WPCV_Settings::datetime_notice() );
+	}
 }

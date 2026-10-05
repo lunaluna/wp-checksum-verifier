@@ -846,6 +846,24 @@ if ( ! function_exists( 'wp_timezone' ) ) {
 	}
 }
 
+if ( ! function_exists( 'wp_date' ) ) {
+	/**
+	 * Stub wp_date() — 本物と同じく timestamp を `$timezone`(省略時 `wp_timezone()`)で整形する
+	 * (月名・曜日の翻訳はしない).
+	 *
+	 * @param string            $format    書式.
+	 * @param int|null          $timestamp Unix timestamp. 省略時は現在.
+	 * @param DateTimeZone|null $timezone  タイムゾーン.
+	 * @return string
+	 */
+	function wp_date( $format, $timestamp = null, $timezone = null ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$timestamp = null === $timestamp ? time() : $timestamp;
+		$timezone  = null === $timezone ? wp_timezone() : $timezone;
+
+		return ( new DateTimeImmutable( '@' . $timestamp ) )->setTimezone( $timezone )->format( $format );
+	}
+}
+
 if ( ! function_exists( 'get_main_site_id' ) ) {
 	/**
 	 * Stub get_main_site_id() — $GLOBALS['_wpcv_test_main_site_id'](既定 1)を返す.

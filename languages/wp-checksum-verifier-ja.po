@@ -1277,3 +1277,9 @@ msgstr ""
 #: wp-checksum-verifier.php:467
 msgid "GitHub"
 msgstr "GitHub"
+
+#. translators: %s: site time zone name (e.g. Asia/Tokyo or +09:00).
+#: includes/class-wpcv-settings.php
+#, php-format
+msgid "Dates and times are shown in the site time zone (%s)."
+msgstr "日時はサイトのタイムゾーン(%s)で表示しています。"
