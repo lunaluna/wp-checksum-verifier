@@ -1437,8 +1437,8 @@ class WPCV_Run_Repository {
 	 *    同じくそれを返す(新規作成は行わない。5分間隔の外部cronが連打しても、
 	 *    進行中の run が1件そのまま前進し続けることを保証する).
 	 * 2. 無ければ、現在時刻(`$this->now`)が本日の設定実行時刻(`$hour:$minute`
-	 *    UTC)をまだ過ぎていない場合、または本日分の run(`scheduled_for` の暦日が
-	 *    今日と一致する run。ステータスは問わない)が既に存在する場合は、
+	 *    サイトのタイムゾーン)をまだ過ぎていない場合、または本日分の run(`scheduled_for` が
+	 *    現地の今日の暦日に入る run。ステータスは問わない)が既に存在する場合は、
 	 *    何も作成せず `run_id: null` を返す(「作業対象の run が無い」ことを表す。
 	 *    呼び出し元は `find_most_recent_run()` 等で直近の状態を報告すること).
 	 * 3. どちらでもなければ、`scheduled_for` に本日の設定実行時刻を記録した新規
@@ -1450,8 +1450,8 @@ class WPCV_Run_Repository {
 	 * どちらの分岐も決定的に検証できるようにするため(呼び出し元が別途 `time()` を
 	 * 読んで判定を分散させると、テストが実際の壁時計時刻に依存してしまう).
 	 *
-	 * @param int   $hour   設定実行時刻の時(UTC. 0-23).
-	 * @param int   $minute 設定実行時刻の分(UTC. 0-59).
+	 * @param int   $hour   設定実行時刻の時(サイトのタイムゾーン. 0-23).
+	 * @param int   $minute 設定実行時刻の分(サイトのタイムゾーン. 0-59).
 	 * @param array $args   `reserve_run()` と同じ(`run_trigger`/`runner`/`initial_status`).
 	 * @return array{
 	 *     run_id: int|null,
@@ -1501,10 +1501,15 @@ class WPCV_Run_Repository {
 				);
 			}
 
-			$now_string    = call_user_func( $this->now );
-			$scheduled_for = gmdate( 'Y-m-d H:i:s', $this->today_due_at( (int) $hour, (int) $minute ) );
+			$now_string = call_user_func( $this->now );
 
-			if ( $now_string < $scheduled_for || $this->has_run_scheduled_for_date( substr( $scheduled_for, 0, 10 ) ) ) {
+			// 「今日」はサイトのタイムゾーンの暦日(v0.10.0. 以前は UTC の暦日だった). `scheduled_for`
+			// 列は今までどおり UTC の `Y-m-d H:i:s` で保存する(列の意味は変えない).
+			$timezone      = WPCV_Settings::site_timezone();
+			$due_at        = $this->today_due_at( (int) $hour, (int) $minute, $timezone );
+			$scheduled_for = gmdate( 'Y-m-d H:i:s', $due_at );
+
+			if ( $now_string < $scheduled_for || $this->has_run_scheduled_on_local_day( $due_at, $timezone ) ) {
 				return array(
 					'run_id'      => null,
 					'status'      => null,
@@ -1530,38 +1535,38 @@ class WPCV_Run_Repository {
 	}
 
 	/**
-	 * `$this->now` が属するUTC暦日における `$hour:$minute` の Unix timestamp を返す
-	 * (「今日の設定実行時刻」。その時刻を過ぎているかどうかは問わない.
+	 * `$this->now` が属する現地(サイトのタイムゾーン)の暦日における `$hour:$minute` の
+	 * Unix timestamp を返す(「今日の設定実行時刻」。その時刻を過ぎているかどうかは問わない.
 	 * `reserve_due_run()` の due 判定専用の内部ヘルパー).
 	 *
-	 * @param int $hour   時(UTC).
-	 * @param int $minute 分(UTC).
+	 * @param int          $hour     時(現地).
+	 * @param int          $minute   分(現地).
+	 * @param DateTimeZone $timezone 現地のタイムゾーン.
 	 * @return int
 	 */
-	private function today_due_at( $hour, $minute ) {
-		$now_timestamp = strtotime( call_user_func( $this->now ) );
+	private function today_due_at( $hour, $minute, DateTimeZone $timezone ) {
+		$now_timestamp = strtotime( call_user_func( $this->now ) . ' UTC' );
 
-		return gmmktime(
-			$hour,
-			$minute,
-			0,
-			(int) gmdate( 'n', $now_timestamp ),
-			(int) gmdate( 'j', $now_timestamp ),
-			(int) gmdate( 'Y', $now_timestamp )
-		);
+		return WPCV_Settings::timestamp_in_timezone( WPCV_Settings::local_date( $now_timestamp, $timezone ), $hour, $minute, $timezone );
 	}
 
 	/**
-	 * 指定した暦日(`Y-m-d`)を `scheduled_for` に持つ run が(ステータスを問わず)
-	 * 既に存在するかどうかを調べる(`reserve_due_run()` の「当日分は作成済みか」判定).
+	 * `$timestamp` が属する現地の暦日 `[現地 00:00, 翌日の現地 00:00)` に `scheduled_for` を持つ
+	 * run が(ステータスを問わず)既に存在するかどうかを調べる(`reserve_due_run()` の
+	 * 「当日分は作成済みか」判定).
 	 *
-	 * @param string $date `Y-m-d` 形式(UTC).
+	 * 現地の暦日の範囲を UTC に直してから `scheduled_for`(UTC)と比べる. UTC の日付で見ると、
+	 * 現地の実行時刻の前後で日付が食い違うことがあるため(プラン §4 #13). 翌日の始まりは
+	 * 秒数を足さず日付を進めて求める(夏時間の切り替え日は1日が 23/25 時間).
+	 *
+	 * @param int          $timestamp 判定したい現地の暦日に属する時刻(Unix timestamp).
+	 * @param DateTimeZone $timezone  現地のタイムゾーン.
 	 * @return bool
 	 */
-	private function has_run_scheduled_for_date( $date ) {
+	private function has_run_scheduled_on_local_day( $timestamp, DateTimeZone $timezone ) {
 		$table = $this->wpdb->base_prefix . 'wpcv_runs';
-		$start = $date . ' 00:00:00';
-		$end   = gmdate( 'Y-m-d H:i:s', strtotime( $start . ' UTC' ) + DAY_IN_SECONDS );
+		$start = gmdate( 'Y-m-d H:i:s', WPCV_Settings::timestamp_in_timezone( WPCV_Settings::local_date( $timestamp, $timezone ), 0, 0, $timezone ) );
+		$end   = gmdate( 'Y-m-d H:i:s', WPCV_Settings::timestamp_in_timezone( WPCV_Settings::local_date( $timestamp, $timezone, 1 ), 0, 0, $timezone ) );
 
 		// その暦日の範囲(`[当日 00:00:00, 翌日 00:00:00)`)で絞り込む(コードレビュー
 		// 指摘5. 以前は全runを読んでPHPで日付部分を比べていた).

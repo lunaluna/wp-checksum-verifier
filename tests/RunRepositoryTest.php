@@ -8,6 +8,7 @@
 require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-run-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once __DIR__ . '/doubles.php';
 
@@ -32,7 +33,17 @@ class RunRepositoryTest extends TestCase {
 	 */
 	protected function setUp(): void {
 		parent::setUp();
-		unset( $GLOBALS['_wpcv_test_do_action_calls'] );
+		unset( $GLOBALS['_wpcv_test_do_action_calls'], $GLOBALS['_wpcv_test_options'] );
+	}
+
+	/**
+	 * タイムゾーンのテストが `_wpcv_test_options` を残さないよう、各テストの後に掃除する.
+	 *
+	 * @return void
+	 */
+	protected function tearDown(): void {
+		unset( $GLOBALS['_wpcv_test_options'] );
+		parent::tearDown();
 	}
 
 	/**
@@ -952,6 +963,138 @@ class RunRepositoryTest extends TestCase {
 
 		$this->assertTrue( $reservation['created'], '翌日分のrunは当日分に数えない' );
 		$this->assertSame( '2026-09-08 11:00:00', $wpdb->rows['wp_wpcv_runs'][ $reservation['run_id'] ]['scheduled_for'] );
+	}
+
+	/**
+	 * `now` を指定して `reserve_due_run()` 用のリポジトリを作る(現地暦日のテスト用).
+	 *
+	 * @param WPCV_Test_Fake_WPDB $wpdb      フェイク DB.
+	 * @param string              $now_utc   固定する現在時刻(UTC. `Y-m-d H:i:s`).
+	 * @return WPCV_Run_Repository
+	 */
+	private function make_repository_at( WPCV_Test_Fake_WPDB $wpdb, $now_utc ) {
+		return new WPCV_Run_Repository(
+			$wpdb,
+			static function () use ( $now_utc ) {
+				return $now_utc;
+			}
+		);
+	}
+
+	/**
+	 * Asia/Tokyo で、現地の実行時刻(03:00)を過ぎていれば run を作り、`scheduled_for` は UTC で
+	 * 保存することを確認する(プラン §4 #1・#12).
+	 *
+	 * @return void
+	 */
+	public function test_reserve_due_run_uses_site_timezone_for_due_time() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		// UTC 2026-09-07 19:00 = 現地 2026-09-08 04:00. 現地 03:00 は過ぎている(UTC 18:00 前日).
+		$wpdb        = new WPCV_Test_Fake_WPDB();
+		$repository  = $this->make_repository_at( $wpdb, '2026-09-07 19:00:00' );
+		$reservation = $repository->reserve_due_run( 3, 0 );
+
+		$this->assertTrue( $reservation['created'] );
+		$this->assertSame( '2026-09-07 18:00:00', $wpdb->rows['wp_wpcv_runs'][ $reservation['run_id'] ]['scheduled_for'] );
+	}
+
+	/**
+	 * 現地 0:00 から実行時刻までの間は run を作らないことを確認する. UTC の日付では前日・当日が
+	 * 混ざる時間帯でも現地の暦日で判定する(プラン §4 #13).
+	 *
+	 * @return void
+	 */
+	public function test_reserve_due_run_does_not_create_before_local_due_time() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		// UTC 2026-09-07 16:00 = 現地 2026-09-08 01:00. 現地 03:00 はまだ来ていない.
+		$wpdb        = new WPCV_Test_Fake_WPDB();
+		$repository  = $this->make_repository_at( $wpdb, '2026-09-07 16:00:00' );
+		$reservation = $repository->reserve_due_run( 3, 0 );
+
+		$this->assertNull( $reservation['run_id'] );
+		$this->assertArrayNotHasKey( 'wp_wpcv_runs', $wpdb->rows );
+	}
+
+	/**
+	 * 同じ現地暦日の分が作成済みなら、UTC の日付が変わっていても2件目を作らないことを確認する(#12).
+	 *
+	 * @return void
+	 */
+	public function test_reserve_due_run_does_not_create_second_run_on_same_local_day() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		// 現地 2026-09-08 03:00 = UTC 2026-09-07 18:00 の分が作成済み.
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'status'        => 'success',
+				'run_trigger'   => 'rest',
+				'runner'        => 'sync',
+				'scheduled_for' => '2026-09-07 18:00:00',
+			)
+		);
+
+		// UTC 2026-09-08 10:00 = 現地 19:00(UTC の暦日は翌日になっている).
+		$repository  = $this->make_repository_at( $wpdb, '2026-09-08 10:00:00' );
+		$reservation = $repository->reserve_due_run( 3, 0 );
+
+		$this->assertNull( $reservation['run_id'] );
+		$this->assertCount( 1, $wpdb->rows['wp_wpcv_runs'] );
+	}
+
+	/**
+	 * 現地の翌日の分は「当日分」に数えないことを確認する(現地暦日の終端の境界).
+	 *
+	 * @return void
+	 */
+	public function test_reserve_due_run_ignores_run_scheduled_on_next_local_day() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		// 現地 2026-09-09 00:00 = UTC 2026-09-08 15:00 ちょうど. 現地では翌日.
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$wpdb->insert(
+			'wp_wpcv_runs',
+			array(
+				'status'        => 'success',
+				'run_trigger'   => 'rest',
+				'runner'        => 'sync',
+				'scheduled_for' => '2026-09-08 15:00:00',
+			)
+		);
+
+		// 現地 2026-09-08 19:00 → 当日 03:00(UTC 2026-09-07 18:00)の分はまだ無い.
+		$repository  = $this->make_repository_at( $wpdb, '2026-09-08 10:00:00' );
+		$reservation = $repository->reserve_due_run( 3, 0 );
+
+		$this->assertTrue( $reservation['created'] );
+	}
+
+	/**
+	 * 夏時間の切り替え日(秋・1日が25時間)でも、2回ある時刻(01:30)は1回目に1件だけ作ることを確認する(#7).
+	 *
+	 * @return void
+	 */
+	public function test_reserve_due_run_creates_once_on_ambiguous_local_time() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'America/New_York';
+
+		// 2026-11-01 01:30 は2回ある. 1回目 = EDT(UTC 05:30). 2回目 = EST(UTC 06:30).
+		$wpdb       = new WPCV_Test_Fake_WPDB();
+		$first      = $this->make_repository_at( $wpdb, '2026-11-01 05:45:00' );
+		$reserved_1 = $first->reserve_due_run( 1, 30 );
+		$this->assertTrue( $reserved_1['created'] );
+		$this->assertSame( '2026-11-01 05:30:00', $wpdb->rows['wp_wpcv_runs'][ $reserved_1['run_id'] ]['scheduled_for'] );
+
+		// 1件目を完了扱いにする(active run があると、その run を返してしまうため).
+		$wpdb->rows['wp_wpcv_runs'][ $reserved_1['run_id'] ]['status'] = 'success';
+
+		// 2回目の 01:30(EST = UTC 06:30)を過ぎた後に呼んでも、もう作らない.
+		$second     = $this->make_repository_at( $wpdb, '2026-11-01 06:45:00' );
+		$reserved_2 = $second->reserve_due_run( 1, 30 );
+		$this->assertNull( $reserved_2['run_id'] );
+		$this->assertCount( 1, $wpdb->rows['wp_wpcv_runs'] );
 	}
 
 	/**

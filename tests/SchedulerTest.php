@@ -86,6 +86,7 @@ class SchedulerTest extends TestCase {
 	 * @return void
 	 */
 	protected function tearDown(): void {
+		unset( $GLOBALS['_wpcv_test_options'] );
 		wpcv_test_inject_run_repository();
 		wpcv_test_inject_chunk_dispatcher();
 		parent::tearDown();
@@ -116,6 +117,110 @@ class SchedulerTest extends TestCase {
 		$this->assertSame(
 			gmmktime( 3, 0, 0, 9, 10, 2026 ),
 			WPCV_Scheduler::next_timestamp_after( $now, 3, 0 )
+		);
+	}
+
+	/**
+	 * Asia/Tokyo では現地 03:00(= UTC 18:00 前日)に予約されることを確認する(プラン §4 #1).
+	 *
+	 * @return void
+	 */
+	public function test_next_timestamp_after_uses_site_timezone() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		// UTC 2026-09-09 01:00 = 現地 10:00. 現地 03:00 は過ぎたので翌日の現地 03:00 = UTC 2026-09-09 18:00.
+		$this->assertSame(
+			gmmktime( 18, 0, 0, 9, 9, 2026 ),
+			WPCV_Scheduler::next_timestamp_after( gmmktime( 1, 0, 0, 9, 9, 2026 ), 3, 0 )
+		);
+
+		// UTC 2026-09-08 20:00 = 現地 05:00 (9/9). 現地 9/10 03:00 = UTC 9/9 18:00.
+		$this->assertSame(
+			gmmktime( 18, 0, 0, 9, 9, 2026 ),
+			WPCV_Scheduler::next_timestamp_after( gmmktime( 20, 0, 0, 9, 8, 2026 ), 3, 0 )
+		);
+
+		// UTC 2026-09-08 16:00 = 現地 01:00 (9/9). 現地 03:00 はまだ → UTC 9/8 18:00.
+		$this->assertSame(
+			gmmktime( 18, 0, 0, 9, 8, 2026 ),
+			WPCV_Scheduler::next_timestamp_after( gmmktime( 16, 0, 0, 9, 8, 2026 ), 3, 0 )
+		);
+	}
+
+	/**
+	 * `timezone_string` が空で `gmt_offset` だけのサイト(+09:00 と +05:30)でも正しく計算できることを確認する(#4・#5).
+	 *
+	 * @return void
+	 */
+	public function test_next_timestamp_after_with_gmt_offset() {
+		$GLOBALS['_wpcv_test_options']['gmt_offset'] = 9;
+		$this->assertSame(
+			gmmktime( 18, 0, 0, 9, 8, 2026 ),
+			WPCV_Scheduler::next_timestamp_after( gmmktime( 16, 0, 0, 9, 8, 2026 ), 3, 0 )
+		);
+
+		// +05:30 の現地 08:30 = UTC 03:00.
+		$GLOBALS['_wpcv_test_options']['gmt_offset'] = 5.5;
+		$this->assertSame(
+			gmmktime( 3, 0, 0, 9, 9, 2026 ),
+			WPCV_Scheduler::next_timestamp_after( gmmktime( 4, 0, 0, 9, 8, 2026 ), 8, 30 )
+		);
+	}
+
+	/**
+	 * 夏時間で存在しない時刻(春・02:30)は1時間後ろの 03:30 になることを確認する(#6).
+	 *
+	 * @return void
+	 */
+	public function test_next_timestamp_after_nonexistent_local_time_moves_forward() {
+		$tz = new DateTimeZone( 'America/New_York' );
+
+		// 2026-03-08 02:30 は存在しない. 03:30 EDT = UTC 07:30.
+		$this->assertSame(
+			gmmktime( 7, 30, 0, 3, 8, 2026 ),
+			WPCV_Scheduler::next_timestamp_after( gmmktime( 6, 0, 0, 3, 8, 2026 ), 2, 30, $tz )
+		);
+	}
+
+	/**
+	 * 夏時間で2回ある時刻(秋・01:30)は1回目(夏時間側)に予約され、その後は翌日になることを確認する(#7).
+	 *
+	 * @return void
+	 */
+	public function test_next_timestamp_after_ambiguous_local_time_uses_first_occurrence() {
+		$tz = new DateTimeZone( 'America/New_York' );
+
+		// 1回目の 01:30 EDT = UTC 05:30.
+		$this->assertSame(
+			gmmktime( 5, 30, 0, 11, 1, 2026 ),
+			WPCV_Scheduler::next_timestamp_after( gmmktime( 4, 0, 0, 11, 1, 2026 ), 1, 30, $tz )
+		);
+
+		// 1回目と2回目(EST = UTC 06:30)の間に呼ぶと、同じ日の 2回目ではなく翌日の 01:30 EST(UTC 06:30)になる.
+		$this->assertSame(
+			gmmktime( 6, 30, 0, 11, 2, 2026 ),
+			WPCV_Scheduler::next_timestamp_after( gmmktime( 6, 0, 0, 11, 1, 2026 ), 1, 30, $tz )
+		);
+	}
+
+	/**
+	 * 夏時間の切り替え日の翌日は、秒数を足さず日付を進めるので現地の同じ時刻になることを確認する(#8).
+	 *
+	 * @return void
+	 */
+	public function test_next_timestamp_after_keeps_local_time_across_dst_change() {
+		$tz = new DateTimeZone( 'America/New_York' );
+
+		// 2026-11-01 03:00 EST(UTC 08:00)を過ぎた後 → 翌日 2026-11-02 03:00 EST = UTC 08:00.
+		$this->assertSame(
+			gmmktime( 8, 0, 0, 11, 2, 2026 ),
+			WPCV_Scheduler::next_timestamp_after( gmmktime( 9, 0, 0, 11, 1, 2026 ), 3, 0, $tz )
+		);
+
+		// 前日(10/31 03:00 EDT = UTC 07:00)から見ると、切り替え日の 03:00 EST は UTC 08:00(25 時間後).
+		$this->assertSame(
+			gmmktime( 8, 0, 0, 11, 1, 2026 ),
+			WPCV_Scheduler::next_timestamp_after( gmmktime( 7, 30, 0, 10, 31, 2026 ), 3, 0, $tz )
 		);
 	}
 

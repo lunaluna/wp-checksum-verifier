@@ -226,6 +226,45 @@ class WPCV_Settings {
 	}
 
 	/**
+	 * 指定したタイムゾーンの「`$date` の `$hour:$minute`」の Unix timestamp を返す(v0.10.0).
+	 *
+	 * 日付と時刻を**文字列で組み立てて**から解釈する. 既存の `DateTime` に `setTime()` で時刻を
+	 * 当てると、夏時間で2回ある時刻(秋の 01:30 など)が元のオブジェクトのオフセットに引きずられて
+	 * 2回目になることがあるため(テストで確認). 文字列から作ると、存在しない時刻は1時間後ろ、
+	 * 2回ある時刻は1回目(夏時間側)になる(PHP 8.4.4 で実測. プラン §2・U2).
+	 *
+	 * @param string       $date     `Y-m-d` 形式の現地の日付.
+	 * @param int          $hour     時(0-23).
+	 * @param int          $minute   分(0-59).
+	 * @param DateTimeZone $timezone 現地のタイムゾーン.
+	 * @return int
+	 */
+	public static function timestamp_in_timezone( $date, $hour, $minute, DateTimeZone $timezone ) {
+		return ( new DateTimeImmutable( sprintf( '%s %02d:%02d:00', $date, (int) $hour, (int) $minute ), $timezone ) )->getTimestamp();
+	}
+
+	/**
+	 * `$timestamp` が属する現地の暦日を `Y-m-d` で返し、`$days` 日ずらした日付も返せる(v0.10.0).
+	 *
+	 * 秒数を足さず日付で進める(夏時間の切り替え日は1日が 23/25 時間のため). 日付だけ進めるので、
+	 * 正午に寄せてから動かし、0 時付近の夏時間の影響を避ける.
+	 *
+	 * @param int          $timestamp Unix timestamp.
+	 * @param DateTimeZone $timezone  現地のタイムゾーン.
+	 * @param int          $days      進める日数(負も可. 既定 0).
+	 * @return string
+	 */
+	public static function local_date( $timestamp, DateTimeZone $timezone, $days = 0 ) {
+		$local = ( new DateTimeImmutable( '@' . (int) $timestamp ) )->setTimezone( $timezone )->setTime( 12, 0, 0 );
+
+		if ( 0 !== (int) $days ) {
+			$local = $local->modify( sprintf( '%+d day', (int) $days ) );
+		}
+
+		return $local->format( 'Y-m-d' );
+	}
+
+	/**
 	 * 実行時刻(UTC)を返す.
 	 *
 	 * @return array{hour:int,minute:int}
