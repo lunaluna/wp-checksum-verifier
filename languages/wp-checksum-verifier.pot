@@ -1057,3 +1057,79 @@ msgstr ""
 #: includes/class-wpcv-settings.php
 msgid "Dates and times are shown in the site time zone (%s)."
 msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Could not start deleting old history. Please try again later."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Deleting old history in the background. Reload this page to see the progress."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Old history is already being deleted."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "History retention is set to \"Keep forever\", so nothing was deleted."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Action Scheduler is not available, so one batch was deleted now. The rest will be removed automatically at the end of the following runs."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Choose a retention period above and save to use this."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Old history is being deleted. Reload this page to see the progress."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "In progress"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Completed"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Partly finished (the rest will be removed at the end of the following runs)"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Stopped (retention was changed to \"Keep forever\")"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Failed"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Interrupted"
+msgstr ""
+
+#. translators: 1: state (e.g. Completed), 2: start time, 3: end time or a dash, 4: runs deleted, 5: per-target results deleted, 6: findings deleted, 7: suppressions deleted.
+#: includes/admin/class-wpcv-page-settings.php
+#, php-format
+msgid "%1$s — started: %2$s, finished: %3$s — deleted: %4$d runs, %5$d per-target results, %6$d findings, %7$d suppressions"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Delete old history now"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Delete history older than the saved retention period right away, instead of waiting for the following runs. The newest verified result of each target, results still being processed, and records needed to avoid repeating an alert are kept. This cannot be undone."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Last deletion:"
+msgstr ""
+
+#. translators: %d: retention period in months.
+#: includes/admin/class-wpcv-page-settings.php
+#, php-format
+msgid "Delete history older than %d months? This cannot be undone."
+msgstr ""

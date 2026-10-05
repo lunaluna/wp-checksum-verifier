@@ -9,6 +9,7 @@ require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-github-client.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-github-mappings.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-prune-job.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-settings.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-run-history.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
@@ -293,5 +294,122 @@ class PageSettingsTest extends TestCase {
 		$this->assertSame( array( 'twentytwentyfive' ), WPCV_Page_Settings::find_core_bundled_themes( $resolved, $core ) );
 		$this->assertSame( array(), WPCV_Page_Settings::find_core_bundled_themes( $resolved, null ) );
 		$this->assertSame( array(), WPCV_Page_Settings::find_core_bundled_themes( array(), $core ) );
+	}
+
+	/**
+	 * 「古い履歴を今すぐ削除」ボタンは、保持期間が無期限のとき・削除中のときに押せないことを確認する(§8.5 #1・#6).
+	 *
+	 * @return void
+	 */
+	public function test_prune_button_state_disables_when_unlimited_or_active() {
+		$unlimited = WPCV_Page_Settings::prune_button_state( 0, false );
+		$this->assertTrue( $unlimited['disabled'] );
+		$this->assertNotEmpty( $unlimited['notice'] );
+
+		$active = WPCV_Page_Settings::prune_button_state( 12, true );
+		$this->assertTrue( $active['disabled'] );
+		$this->assertNotEmpty( $active['notice'] );
+
+		$this->assertSame(
+			array(
+				'disabled' => false,
+				'notice'   => null,
+			),
+			WPCV_Page_Settings::prune_button_state( 12, false )
+		);
+	}
+
+	/**
+	 * `WPCV_Prune_Job::request()` の結果ごとに、通知の種類が決まることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_prune_result_notice_maps_each_outcome() {
+		$this->assertNull( WPCV_Page_Settings::prune_result_notice( null ) );
+
+		$expected = array(
+			WPCV_Prune_Job::RESULT_SCHEDULED       => 'success',
+			WPCV_Prune_Job::RESULT_ALREADY_RUNNING => 'info',
+			WPCV_Prune_Job::RESULT_UNLIMITED       => 'warning',
+			WPCV_Prune_Job::RESULT_INLINE          => 'success',
+		);
+
+		foreach ( $expected as $result => $type ) {
+			$notice = WPCV_Page_Settings::prune_result_notice(
+				array(
+					'result' => $result,
+					'error'  => null,
+				)
+			);
+
+			$this->assertSame( $type, $notice['type'], $result );
+			$this->assertNotSame( '', $notice['message'] );
+		}
+
+		$error = WPCV_Page_Settings::prune_result_notice(
+			array(
+				'result' => WPCV_Prune_Job::RESULT_SCHEDULED,
+				'error'  => 'enqueue_failed',
+			)
+		);
+		$this->assertSame( 'error', $error['type'] );
+	}
+
+	/**
+	 * 直近の削除の結果の文字列に、状態・サイトのタイムゾーンの日時・件数が入ることを確認する(D14).
+	 *
+	 * @return void
+	 */
+	public function test_format_prune_status_shows_state_local_time_and_counts() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		try {
+			$text = WPCV_Page_Settings::format_prune_status(
+				array(
+					'state'       => WPCV_Prune_Job::STATE_DONE,
+					'months'      => 12,
+					'started_at'  => '2026-10-05 18:00:00',
+					'finished_at' => '2026-10-05 18:00:30',
+					'totals'      => array(
+						'runs'         => 3,
+						'target_runs'  => 40,
+						'findings'     => 7,
+						'suppressions' => 1,
+					),
+				)
+			);
+		} finally {
+			unset( $GLOBALS['_wpcv_test_options']['timezone_string'] );
+		}
+
+		$this->assertStringContainsString( 'Completed', $text );
+		$this->assertStringContainsString( 'started: 2026-10-06 03:00:00', $text );
+		$this->assertStringContainsString( 'finished: 2026-10-06 03:00:30', $text );
+		$this->assertStringContainsString( '3 runs, 40 per-target results, 7 findings, 1 suppressions', $text );
+	}
+
+	/**
+	 * 終わっていない削除は、終了日時がダッシュで表示されることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_format_prune_status_shows_dash_while_running() {
+		$text = WPCV_Page_Settings::format_prune_status(
+			array(
+				'state'       => WPCV_Prune_Job::STATE_RUNNING,
+				'months'      => 12,
+				'started_at'  => '2026-10-05 18:00:00',
+				'finished_at' => null,
+				'totals'      => array(
+					'runs'         => 0,
+					'target_runs'  => 0,
+					'findings'     => 0,
+					'suppressions' => 0,
+				),
+			)
+		);
+
+		$this->assertStringContainsString( 'In progress', $text );
+		$this->assertStringContainsString( 'finished: —', $text );
 	}
 }

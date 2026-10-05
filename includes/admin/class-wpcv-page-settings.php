@@ -66,6 +66,20 @@ class WPCV_Page_Settings {
 	const RUN_NOW_NONCE_NAME = 'wpcv_run_now_nonce';
 
 	/**
+	 * 「古い履歴を今すぐ削除」フォームの nonce action(v0.10.0).
+	 *
+	 * @var string
+	 */
+	const PRUNE_NONCE_ACTION = 'wpcv_prune_history';
+
+	/**
+	 * 「古い履歴を今すぐ削除」フォームの nonce name(v0.10.0).
+	 *
+	 * @var string
+	 */
+	const PRUNE_NONCE_NAME = 'wpcv_prune_history_nonce';
+
+	/**
 	 * Run scopeトークン発行フォームの nonce action.
 	 *
 	 * @var string
@@ -132,6 +146,7 @@ class WPCV_Page_Settings {
 		$generated_run_token  = self::maybe_handle_generate_token( self::TOKEN_NONCE_NAME, self::TOKEN_NONCE_ACTION, WPCV_Rest_Token::SCOPE_RUN );
 		$generated_read_token = self::maybe_handle_generate_token( self::READ_TOKEN_NONCE_NAME, self::READ_TOKEN_NONCE_ACTION, WPCV_Rest_Token::SCOPE_READ );
 		$test_alert_result    = self::maybe_handle_send_test_alert();
+		$prune_result         = self::maybe_handle_prune();
 
 		$run_time                          = WPCV_Settings::get_run_time();
 		$external_http_time_budget_seconds = WPCV_Settings::get_external_http_time_budget_seconds();
@@ -180,6 +195,16 @@ class WPCV_Page_Settings {
 			<?php elseif ( is_wp_error( $run_now_result ) ) : ?>
 				<div class="notice notice-error is-dismissible">
 					<p><?php echo esc_html( $run_now_result->get_error_message() ); ?></p>
+				</div>
+			<?php endif; ?>
+
+			<?php
+			// 「古い履歴を今すぐ削除」の結果(v0.10.0).
+			$prune_notice = self::prune_result_notice( $prune_result );
+			?>
+			<?php if ( null !== $prune_notice ) : ?>
+				<div class="notice notice-<?php echo esc_attr( $prune_notice['type'] ); ?> is-dismissible">
+					<p><?php echo esc_html( $prune_notice['message'] ); ?></p>
 				</div>
 			<?php endif; ?>
 
@@ -436,6 +461,8 @@ class WPCV_Page_Settings {
 				?>
 			</form>
 
+			<?php self::render_prune_section( $retention_months ); ?>
+
 			<h2><?php echo esc_html__( 'REST API token (run)', 'wp-checksum-verifier' ); ?></h2>
 			<?php if ( null !== $generated_run_token ) : ?>
 				<div class="notice notice-success">
@@ -480,6 +507,189 @@ class WPCV_Page_Settings {
 				<?php submit_button( __( 'Generate new read-only token', 'wp-checksum-verifier' ), 'secondary', 'wpcv_generate_read_token_submit' ); ?>
 			</form>
 		</div>
+		<?php
+	}
+
+	/**
+	 * 「古い履歴を今すぐ削除」フォームが POST されていれば、nonce・権限を確かめて削除を受け付ける(v0.10.0).
+	 *
+	 * 削除そのものは `WPCV_Prune_Job::request()` が Action Scheduler のアクションとして予約する
+	 * (リクエストの中で最後までやらない). 二重に押された場合や、保持期間が無期限の場合の扱いも
+	 * そちらが決める.
+	 *
+	 * @return array{result: string, error: string|null}|null POSTされていない・権限が無い場合は `null`.
+	 */
+	private static function maybe_handle_prune() {
+		if ( ! isset( $_POST[ self::PRUNE_NONCE_NAME ] ) ) {
+			return null;
+		}
+
+		check_admin_referer( self::PRUNE_NONCE_ACTION, self::PRUNE_NONCE_NAME );
+
+		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_SETTINGS ) ) ) {
+			return null;
+		}
+
+		return WPCV_Prune_Job::request();
+	}
+
+	/**
+	 * `WPCV_Prune_Job::request()` の結果を、画面に出す通知(種類と文言)にする(`render()` から分離してテスト可能にする).
+	 *
+	 * @param array{result: string, error: string|null}|null $outcome `maybe_handle_prune()` の戻り値.
+	 * @return array{type: string, message: string}|null 表示しないなら `null`. `type` は notice の種類(success・info・warning・error).
+	 */
+	public static function prune_result_notice( $outcome ) {
+		if ( null === $outcome ) {
+			return null;
+		}
+
+		if ( null !== $outcome['error'] ) {
+			return array(
+				'type'    => 'error',
+				'message' => __( 'Could not start deleting old history. Please try again later.', 'wp-checksum-verifier' ),
+			);
+		}
+
+		switch ( $outcome['result'] ) {
+			case WPCV_Prune_Job::RESULT_SCHEDULED:
+				return array(
+					'type'    => 'success',
+					'message' => __( 'Deleting old history in the background. Reload this page to see the progress.', 'wp-checksum-verifier' ),
+				);
+			case WPCV_Prune_Job::RESULT_ALREADY_RUNNING:
+				return array(
+					'type'    => 'info',
+					'message' => __( 'Old history is already being deleted.', 'wp-checksum-verifier' ),
+				);
+			case WPCV_Prune_Job::RESULT_UNLIMITED:
+				return array(
+					'type'    => 'warning',
+					'message' => __( 'History retention is set to "Keep forever", so nothing was deleted.', 'wp-checksum-verifier' ),
+				);
+			case WPCV_Prune_Job::RESULT_INLINE:
+				return array(
+					'type'    => 'success',
+					'message' => __( 'Action Scheduler is not available, so one batch was deleted now. The rest will be removed automatically at the end of the following runs.', 'wp-checksum-verifier' ),
+				);
+		}
+
+		return null;
+	}
+
+	/**
+	 * 「古い履歴を今すぐ削除」ボタンの表示状態を判定する(v0.10.0. `run_now_button_state()` と同じ考え方).
+	 *
+	 * @param int  $retention_months 保存されている保持期間(月. 0 は無期限).
+	 * @param bool $active           削除のアクションが予約済み・実行中か.
+	 * @return array{disabled: bool, notice: string|null}
+	 */
+	public static function prune_button_state( $retention_months, $active ) {
+		if ( (int) $retention_months < 1 ) {
+			return array(
+				'disabled' => true,
+				'notice'   => __( 'Choose a retention period above and save to use this.', 'wp-checksum-verifier' ),
+			);
+		}
+
+		if ( $active ) {
+			return array(
+				'disabled' => true,
+				'notice'   => __( 'Old history is being deleted. Reload this page to see the progress.', 'wp-checksum-verifier' ),
+			);
+		}
+
+		return array(
+			'disabled' => false,
+			'notice'   => null,
+		);
+	}
+
+	/**
+	 * 直近の「古い履歴を今すぐ削除」の結果を、1行の表示文字列にする(`render_prune_section()` から分離してテスト可能にする).
+	 *
+	 * 日時は UTC で保存されているので、サイトのタイムゾーンで表示する(`WPCV_Settings::format_datetime()`).
+	 *
+	 * @param array{state: string, months: int, started_at: string, finished_at: string|null, totals: array{runs:int,target_runs:int,findings:int,suppressions:int}} $status `WPCV_Prune_Job::get_status()` の値.
+	 * @return string
+	 */
+	public static function format_prune_status( array $status ) {
+		switch ( $status['state'] ) {
+			case WPCV_Prune_Job::STATE_RUNNING:
+				$label = __( 'In progress', 'wp-checksum-verifier' );
+				break;
+			case WPCV_Prune_Job::STATE_DONE:
+				$label = __( 'Completed', 'wp-checksum-verifier' );
+				break;
+			case WPCV_Prune_Job::STATE_PARTIAL:
+				$label = __( 'Partly finished (the rest will be removed at the end of the following runs)', 'wp-checksum-verifier' );
+				break;
+			case WPCV_Prune_Job::STATE_CANCELLED:
+				$label = __( 'Stopped (retention was changed to "Keep forever")', 'wp-checksum-verifier' );
+				break;
+			case WPCV_Prune_Job::STATE_FAILED:
+				$label = __( 'Failed', 'wp-checksum-verifier' );
+				break;
+			default:
+				$label = __( 'Interrupted', 'wp-checksum-verifier' );
+		}
+
+		return sprintf(
+			/* translators: 1: state (e.g. Completed), 2: start time, 3: end time or a dash, 4: runs deleted, 5: per-target results deleted, 6: findings deleted, 7: suppressions deleted. */
+			__( '%1$s — started: %2$s, finished: %3$s — deleted: %4$d runs, %5$d per-target results, %6$d findings, %7$d suppressions', 'wp-checksum-verifier' ),
+			$label,
+			WPCV_Settings::format_datetime( $status['started_at'] ),
+			WPCV_Settings::format_datetime( $status['finished_at'] ),
+			$status['totals']['runs'],
+			$status['totals']['target_runs'],
+			$status['totals']['findings'],
+			$status['totals']['suppressions']
+		);
+	}
+
+	/**
+	 * 「古い履歴を今すぐ削除」の節(説明・直近の結果・ボタン)を描画する(v0.10.0).
+	 *
+	 * ボタンは確認のダイアログを出す(削除は元に戻せないため). 画面の保持期間のプルダウンを変えて
+	 * 保存していない場合は、保存済みの値で消す.
+	 *
+	 * @param int $retention_months 保存されている保持期間(月).
+	 * @return void
+	 */
+	private static function render_prune_section( $retention_months ) {
+		$state  = self::prune_button_state( $retention_months, WPCV_Prune_Job::is_active() );
+		$status = WPCV_Prune_Job::get_status();
+		?>
+		<h2><?php echo esc_html__( 'Delete old history now', 'wp-checksum-verifier' ); ?></h2>
+		<form method="post">
+			<?php wp_nonce_field( self::PRUNE_NONCE_ACTION, self::PRUNE_NONCE_NAME ); ?>
+			<p class="description">
+				<?php echo esc_html__( 'Delete history older than the saved retention period right away, instead of waiting for the following runs. The newest verified result of each target, results still being processed, and records needed to avoid repeating an alert are kept. This cannot be undone.', 'wp-checksum-verifier' ); ?>
+			</p>
+			<?php if ( $state['notice'] ) : ?>
+				<p class="description"><?php echo esc_html( $state['notice'] ); ?></p>
+			<?php endif; ?>
+			<?php if ( null !== $status ) : ?>
+				<p>
+					<strong><?php echo esc_html__( 'Last deletion:', 'wp-checksum-verifier' ); ?></strong>
+					<?php echo esc_html( self::format_prune_status( $status ) ); ?>
+				</p>
+			<?php endif; ?>
+			<?php
+			$confirm_message = sprintf(
+				/* translators: %d: retention period in months. */
+				__( 'Delete history older than %d months? This cannot be undone.', 'wp-checksum-verifier' ),
+				(int) $retention_months
+			);
+			$attributes = array( 'onclick' => 'return confirm(' . wp_json_encode( $confirm_message ) . ');' );
+
+			if ( $state['disabled'] ) {
+				$attributes['disabled'] = 'disabled';
+			}
+
+			submit_button( __( 'Delete old history now', 'wp-checksum-verifier' ), 'secondary', 'wpcv_prune_history_submit', true, $attributes );
+			?>
+		</form>
 		<?php
 	}
 

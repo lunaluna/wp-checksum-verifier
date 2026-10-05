@@ -1282,3 +1282,79 @@ msgstr "GitHub"
 #, php-format
 msgid "Dates and times are shown in the site time zone (%s)."
 msgstr "日時はサイトのタイムゾーン(%s)で表示しています。"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Could not start deleting old history. Please try again later."
+msgstr "履歴の削除を開始できませんでした。しばらくしてからもう一度お試しください。"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Deleting old history in the background. Reload this page to see the progress."
+msgstr "古い履歴をバックグラウンドで削除しています。進み具合は、このページを再読み込みすると確認できます。"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Old history is already being deleted."
+msgstr "古い履歴はすでに削除中です。"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "History retention is set to \"Keep forever\", so nothing was deleted."
+msgstr "履歴の保持期間が「無期限に保持」のため、何も削除しませんでした。"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Action Scheduler is not available, so one batch was deleted now. The rest will be removed automatically at the end of the following runs."
+msgstr "Action Scheduler が使えないため、今回は1回分だけ削除しました。残りは、この後の実行の終わりに自動で削除されます。"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Choose a retention period above and save to use this."
+msgstr "上で保持期間を選んで保存すると使えます。"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Old history is being deleted. Reload this page to see the progress."
+msgstr "古い履歴を削除中です。進み具合は、このページを再読み込みすると確認できます。"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "In progress"
+msgstr "実行中"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Completed"
+msgstr "完了"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Partly finished (the rest will be removed at the end of the following runs)"
+msgstr "一部だけ完了(残りは、この後の実行の終わりに削除されます)"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Stopped (retention was changed to \"Keep forever\")"
+msgstr "停止(保持期間が「無期限に保持」に変わりました)"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Failed"
+msgstr "失敗"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Interrupted"
+msgstr "中断"
+
+#. translators: 1: state (e.g. Completed), 2: start time, 3: end time or a dash, 4: runs deleted, 5: per-target results deleted, 6: findings deleted, 7: suppressions deleted.
+#: includes/admin/class-wpcv-page-settings.php
+#, php-format
+msgid "%1$s — started: %2$s, finished: %3$s — deleted: %4$d runs, %5$d per-target results, %6$d findings, %7$d suppressions"
+msgstr "%1$s — 開始: %2$s、終了: %3$s — 削除: 実行履歴 %4$d 件、対象ごとの結果 %5$d 件、検出結果 %6$d 件、抑制 %7$d 件"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Delete old history now"
+msgstr "古い履歴を今すぐ削除"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Delete history older than the saved retention period right away, instead of waiting for the following runs. The newest verified result of each target, results still being processed, and records needed to avoid repeating an alert are kept. This cannot be undone."
+msgstr "保存されている保持期間より古い履歴を、この後の実行を待たずに今すぐ削除します。各対象の最新の照合結果、処理中の結果、アラートの重複を避けるために必要な記録は残します。元に戻せません。"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Last deletion:"
+msgstr "直近の削除:"
+
+#. translators: %d: retention period in months.
+#: includes/admin/class-wpcv-page-settings.php
+#, php-format
+msgid "Delete history older than %d months? This cannot be undone."
+msgstr "%d か月より古い履歴を削除しますか?元に戻せません。"
