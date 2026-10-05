@@ -339,6 +339,7 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-manifest
  * `WPCV_Manifest_Cache_Cleaner` と同じ理由で、`WPCV_Plugin` 本体より前に読み込んでも問題ない.
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-retention-cleaner.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-prune-job.php';
 
 /**
  * Run開始時の「列挙(plan)→保存」を失敗時の後始末込みで行う共通処理

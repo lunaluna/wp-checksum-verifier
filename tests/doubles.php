@@ -1478,3 +1478,16 @@ class WPCV_Test_Fake_Rest_Request {
 		throw new RuntimeException( 'get_param() should never be called: ' . esc_html( $name ) );
 	}
 }
+
+/**
+ * `WPCV_Plugin::retention_cleaner()` が返すインスタンスを差し替える
+ * (`wpcv_test_inject_run_repository()` と同じ手法. v0.10.0 Step 11).
+ *
+ * @param WPCV_Retention_Cleaner|null $cleaner 差し替え先. 省略時はキャッシュを空に戻す.
+ * @return void
+ */
+function wpcv_test_inject_retention_cleaner( $cleaner = null ) {
+	$property = new ReflectionProperty( WPCV_Plugin::class, 'retention_cleaner' );
+	$property->setAccessible( true );
+	$property->setValue( null, $cleaner );
+}

@@ -439,6 +439,23 @@ if ( ! function_exists( 'as_schedule_single_action' ) ) {
 	}
 }
 
+if ( ! function_exists( 'as_has_scheduled_action' ) ) {
+	/**
+	 * Stub as_has_scheduled_action() — `$GLOBALS['_wpcv_test_as_has_scheduled'][$hook]` が真なら true
+	 * (予約済みまたは実行中のアクションがあることを表す). 呼び出しは `_wpcv_test_as_has_scheduled_calls` に記録する.
+	 *
+	 * @param string     $hook  Hook name.
+	 * @param array|null $args  Args.
+	 * @param string     $group Group.
+	 * @return bool
+	 */
+	function as_has_scheduled_action( $hook, $args = null, $group = '' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_as_has_scheduled_calls'][] = array( $hook, $args, $group );
+
+		return ! empty( $GLOBALS['_wpcv_test_as_has_scheduled'][ $hook ] );
+	}
+}
+
 if ( ! function_exists( 'as_unschedule_all_actions' ) ) {
 	/**
 	 * Stub as_unschedule_all_actions() — records the call in
