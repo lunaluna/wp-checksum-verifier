@@ -69,7 +69,37 @@ class WPCV_Scheduler {
 		add_action( self::HOOK, array( __CLASS__, 'handle_event' ) );
 		add_action( self::MANUAL_HOOK, array( __CLASS__, 'handle_manual_event' ) );
 
+		// サイトのタイムゾーンが変わったら、予約済みの次回分をすぐ予約し直す(v0.10.0. プラン U3).
+		// 一般設定の保存は timezone_string と gmt_offset の一方または両方を更新するため、4つとも見る
+		// (`add_option_*` は option が初めて作られるとき. `wp-includes/option.php` の
+		// `do_action( "update_option_{$option}" )` / `do_action( "add_option_{$option}" )`).
+		// コールバックは引数を使わないので accepted_args は 0.
+		foreach ( array( 'timezone_string', 'gmt_offset' ) as $option_name ) {
+			add_action( 'update_option_' . $option_name, array( __CLASS__, 'handle_timezone_change' ), 10, 0 );
+			add_action( 'add_option_' . $option_name, array( __CLASS__, 'handle_timezone_change' ), 10, 0 );
+		}
+
 		self::ensure_scheduled();
+	}
+
+	/**
+	 * タイムゾーン関連の option(`timezone_string`・`gmt_offset`)が変わったときに、次回の予約を作り直す.
+	 *
+	 * 保存されている時・分は変えない(「現地 3:00」のまま、新しいタイムゾーンの 3:00 になる).
+	 * マルチサイトではメインサイトの option の変更だけを見る(プラン U4. サブサイトのタイムゾーン変更では
+	 * 何もしない. 予約はメインサイトの cron にしか無く、時刻もメインサイトのタイムゾーンで決まるため).
+	 * 一般設定の1回の保存で2つの option が変わると2回呼ばれるが、`reschedule()` は冪等なので問題ない.
+	 * 実行中の run には影響しない(deadline・lease は UTC の絶対時刻のまま. `reschedule()` は
+	 * 定時イベントを消して作り直すだけ).
+	 *
+	 * @return void
+	 */
+	public static function handle_timezone_change() {
+		if ( ! is_main_site() ) {
+			return;
+		}
+
+		self::reschedule();
 	}
 
 	/**

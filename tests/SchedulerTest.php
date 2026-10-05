@@ -243,6 +243,76 @@ class SchedulerTest extends TestCase {
 	}
 
 	/**
+	 * `init()` がタイムゾーン関連の4つの option フックを登録することを確認する(U3).
+	 *
+	 * @return void
+	 */
+	public function test_init_registers_timezone_change_hooks() {
+		WPCV_Scheduler::init();
+
+		foreach ( array( 'update_option_timezone_string', 'add_option_timezone_string', 'update_option_gmt_offset', 'add_option_gmt_offset' ) as $hook ) {
+			$registered = array_column( $GLOBALS['_wpcv_test_added_actions'][ $hook ], 0 );
+			$this->assertContains( array( 'WPCV_Scheduler', 'handle_timezone_change' ), $registered, $hook );
+		}
+	}
+
+	/**
+	 * タイムゾーンを変えると、保存されている時・分のまま新しいタイムゾーンの次回時刻に予約し直されることを確認する(#10).
+	 *
+	 * @return void
+	 */
+	public function test_handle_timezone_change_reschedules_with_new_timezone() {
+		WPCV_Settings::update_run_time( 3, 0 );
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+		$GLOBALS['_wpcv_test_scheduled_hooks'][ WPCV_Scheduler::HOOK ] = 12345;
+
+		WPCV_Scheduler::handle_timezone_change();
+		$tokyo = $GLOBALS['_wpcv_test_scheduled_hooks'][ WPCV_Scheduler::HOOK ];
+
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'America/New_York';
+		WPCV_Scheduler::handle_timezone_change();
+		$new_york = $GLOBALS['_wpcv_test_scheduled_hooks'][ WPCV_Scheduler::HOOK ];
+
+		$this->assertNotSame( 12345, $tokyo, '古い予約は消えて作り直される' );
+		$this->assertNotSame( $tokyo, $new_york );
+		$this->assertCount( 2, $GLOBALS['_wpcv_test_schedule_single_event_calls'] );
+
+		// 現地 3:00 のまま. 東京は UTC 18:00、ニューヨークは UTC 7:00 か 8:00(夏時間かどうか).
+		$this->assertSame( '18:00', gmdate( 'H:i', $tokyo ) );
+		$this->assertContains( gmdate( 'H:i', $new_york ), array( '07:00', '08:00' ) );
+	}
+
+	/**
+	 * `timezone_string` と `gmt_offset` の両方が変わって2回呼ばれても、予約は1つのまま(冪等)であることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_handle_timezone_change_twice_keeps_single_schedule() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		WPCV_Scheduler::handle_timezone_change();
+		WPCV_Scheduler::handle_timezone_change();
+
+		$this->assertCount( 2, $GLOBALS['_wpcv_test_clear_scheduled_hook_calls'] );
+		$this->assertIsInt( $GLOBALS['_wpcv_test_scheduled_hooks'][ WPCV_Scheduler::HOOK ] );
+	}
+
+	/**
+	 * マルチサイトのサブサイトでのタイムゾーン変更では再予約しないことを確認する(#11).
+	 *
+	 * @return void
+	 */
+	public function test_handle_timezone_change_ignores_non_main_site() {
+		$GLOBALS['_wpcv_test_is_multisite'] = true;
+		$GLOBALS['_wpcv_test_is_main_site'] = false;
+
+		WPCV_Scheduler::handle_timezone_change();
+
+		$this->assertArrayNotHasKey( '_wpcv_test_clear_scheduled_hook_calls', $GLOBALS );
+		$this->assertArrayNotHasKey( '_wpcv_test_schedule_single_event_calls', $GLOBALS );
+	}
+
+	/**
 	 * `activate()` は未予約のときだけ `wp_schedule_single_event()` を呼ぶことを確認する.
 	 *
 	 * @return void
