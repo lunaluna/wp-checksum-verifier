@@ -12,7 +12,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * 設定画面.
  *
- * 実行時刻(UTC)の変更フォームをv0.3 §Step6で、「今すぐ実行」ボタンを§Step7で、
+ * 実行時刻(v0.10.0 以降はサイトのタイムゾーン)の変更フォームをv0.3 §Step6で、「今すぐ実行」ボタンを§Step7で、
  * REST時間予算の変更フォームを§Step8で、RESTトークンの発行UIを§Step9で追加した
  * (v0.3計画の全9ステップの最後のUI追加)。§Step8のREST時間予算はv0.3.1 §Step4で
  * 廃止した(`WPCV_Settings` のクラス docblock 参照)。v0.4.0 §Step6で、外部HTTP
@@ -190,14 +190,24 @@ class WPCV_Page_Settings {
 				<table class="form-table" role="presentation">
 					<tr>
 						<th scope="row">
-							<label for="wpcv_run_hour"><?php echo esc_html__( 'Daily run time (UTC)', 'wp-checksum-verifier' ); ?></label>
+							<label for="wpcv_run_hour">
+								<?php
+								echo esc_html(
+									sprintf(
+										/* translators: %s: site time zone name (e.g. Asia/Tokyo or +09:00). */
+										__( 'Daily run time (site time zone: %s)', 'wp-checksum-verifier' ),
+										WPCV_Settings::site_timezone()->getName()
+									)
+								);
+								?>
+							</label>
 						</th>
 						<td>
 							<input type="number" min="0" max="23" step="1" name="wpcv_run_hour" id="wpcv_run_hour" value="<?php echo esc_attr( self::format_two_digits( $run_time['hour'] ) ); ?>" style="width: 4em;" />
 							:
 							<input type="number" min="0" max="59" step="1" name="wpcv_run_minute" id="wpcv_run_minute" value="<?php echo esc_attr( self::format_two_digits( $run_time['minute'] ) ); ?>" style="width: 4em;" />
 							<p class="description">
-								<?php echo esc_html__( 'The verification run starts automatically at this time every day (UTC). External HTTP mode (below) also uses this time to decide when to start the daily run.', 'wp-checksum-verifier' ); ?>
+								<?php echo esc_html__( 'The verification run starts automatically at this time every day, in the site time zone (Settings > General). External HTTP mode (below) also uses this time to decide when to start the daily run.', 'wp-checksum-verifier' ); ?>
 							</p>
 						</td>
 					</tr>

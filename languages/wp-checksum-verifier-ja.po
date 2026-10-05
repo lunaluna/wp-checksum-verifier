@@ -497,17 +497,19 @@ msgid "A verification run has been scheduled."
 msgstr "検証の実行を予約しました。"
 
 #: includes/admin/class-wpcv-page-settings.php:193
-msgid "Daily run time (UTC)"
-msgstr "毎日の実行時刻(UTC)"
+#. translators: %s: site time zone name (e.g. Asia/Tokyo or +09:00).
+#, php-format
+msgid "Daily run time (site time zone: %s)"
+msgstr "毎日の実行時刻(サイトのタイムゾーン: %s)"
 
 #: includes/admin/class-wpcv-page-settings.php:200
 msgid ""
-"The verification run starts automatically at this time every day (UTC). "
-"External HTTP mode (below) also uses this time to decide when to start the "
-"daily run."
+"The verification run starts automatically at this time every day, in the "
+"site time zone (Settings > General). External HTTP mode (below) also uses "
+"this time to decide when to start the daily run."
 msgstr ""
-"検証は毎日この時刻(UTC)に自動で始まります。外部 HTTP モード(下記)も、この時刻"
-"を毎日の実行を始める目安にします。"
+"検証は毎日この時刻に自動で始まります。時刻は「設定 > 一般」のタイムゾーンで"
+"す。外部 HTTP モード(下記)も、この時刻を毎日の実行を始める目安にします。"
 
 #: includes/admin/class-wpcv-page-settings.php:206
 msgid "External HTTP time budget (seconds)"

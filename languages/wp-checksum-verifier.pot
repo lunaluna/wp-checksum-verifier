@@ -459,12 +459,12 @@ msgstr ""
 msgid "A verification run has been scheduled."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:193
-msgid "Daily run time (UTC)"
+#. translators: %s: site time zone name (e.g. Asia/Tokyo or +09:00).
+msgid "Daily run time (site time zone: %s)"
 msgstr ""
 
 #: includes/admin/class-wpcv-page-settings.php:200
-msgid "The verification run starts automatically at this time every day (UTC). External HTTP mode (below) also uses this time to decide when to start the daily run."
+msgid "The verification run starts automatically at this time every day, in the site time zone (Settings > General). External HTTP mode (below) also uses this time to decide when to start the daily run."
 msgstr ""
 
 #: includes/admin/class-wpcv-page-settings.php:206
