@@ -73,6 +73,8 @@ class WPCV_Page_Run_History {
 		?>
 		<div class="wrap">
 			<h1><?php echo esc_html__( 'Run history', 'wp-checksum-verifier' ); ?></h1>
+			<?php // 日時はサイトのタイムゾーンで表示する(v0.10.0). ?>
+			<p class="description"><?php echo esc_html( WPCV_Settings::datetime_notice() ); ?></p>
 
 			<?php if ( empty( $result['rows'] ) ) : ?>
 				<p><?php echo esc_html__( 'No runs have been recorded yet.', 'wp-checksum-verifier' ); ?></p>
@@ -150,6 +152,8 @@ class WPCV_Page_Run_History {
 		?>
 		<div class="wrap">
 			<h1><?php echo esc_html__( 'Run history', 'wp-checksum-verifier' ); ?></h1>
+			<?php // 日時はサイトのタイムゾーンで表示する(v0.10.0). ?>
+			<p class="description"><?php echo esc_html( WPCV_Settings::datetime_notice() ); ?></p>
 			<p>
 				<a href="<?php echo esc_url( self::page_url() ); ?>">
 					<?php echo esc_html__( '« Back to run history', 'wp-checksum-verifier' ); ?>
@@ -353,7 +357,7 @@ class WPCV_Page_Run_History {
 						<td><?php echo esc_html( (string) $event['target_id'] ); ?></td>
 						<td><?php echo esc_html( null !== $event['version'] ? (string) $event['version'] : '—' ); ?></td>
 						<td><?php echo esc_html( (string) $event['source'] ); ?></td>
-						<td><?php echo esc_html( (string) $event['event_at'] ); ?></td>
+						<td><?php echo esc_html( WPCV_Settings::format_datetime( (string) $event['event_at'] ) ); ?></td>
 						<td><?php echo esc_html( self::format_update_event_created_by( (int) $event['created_by'] ) ); ?></td>
 					</tr>
 				<?php endforeach; ?>
@@ -624,13 +628,15 @@ class WPCV_Page_Run_History {
 	}
 
 	/**
-	 * DATETIME文字列を表示用に整形する(未設定なら"—"を返す).
+	 * UTC で保存された DATETIME 文字列を、サイトのタイムゾーンの表示用に整形する(未設定なら"—"を返す).
 	 *
-	 * @param string|null $value `wpcv_runs`/`wpcv_target_runs`のDATETIME列の値.
+	 * `WPCV_Settings::format_datetime()` に任せる(v0.10.0 から. 以前は値をそのまま返していた).
+	 *
+	 * @param string|null $value `wpcv_runs`/`wpcv_target_runs`のDATETIME列の値(UTC).
 	 * @return string
 	 */
 	private static function display_datetime( $value ) {
-		return empty( $value ) ? '—' : (string) $value;
+		return WPCV_Settings::format_datetime( $value );
 	}
 
 	/**
