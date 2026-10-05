@@ -163,23 +163,43 @@ class RetentionCleanerTest extends TestCase {
 	}
 
 	/**
-	 * 既定(0 = 無期限)では何も消さないことを確認する(U5).
+	 * 明示的に 0(無期限)が保存されているときは何も消さないことを確認する(U5・0.10.0 の U9).
 	 *
 	 * @return void
 	 */
-	public function test_default_keeps_everything() {
+	public function test_explicit_zero_keeps_everything() {
 		$wpdb = new WPCV_Test_Fake_WPDB();
 		$run  = self::insert_run( $wpdb, '2020-01-01 00:00:00' );
 		$tr   = self::insert_target_run( $wpdb, $run, 'plugin:a' );
 		self::insert_target_run( $wpdb, $run, 'plugin:a' );
 		self::insert_finding( $wpdb, $run, $tr, 'plugin:a', 'k1' );
 
-		// 設定を保存していない = 既定.
+		self::set_retention( 0 );
 		self::make_cleaner( $wpdb )->handle_run_terminated( 999, 'success' );
 
 		$this->assertSame( array( $run ), self::ids( $wpdb, 'runs' ) );
 		$this->assertCount( 2, $wpdb->rows['wp_wpcv_target_runs'] );
 		$this->assertCount( 1, $wpdb->rows['wp_wpcv_findings'] );
+	}
+
+	/**
+	 * 保持期間を保存していなければ既定(12 か月)で動き、期限切れの履歴が消えることを確認する(0.10.0 の U8・U9).
+	 *
+	 * 最新の照合結果(I1)は古くても残るので、同じ target の古い方の 1 件だけが消える.
+	 *
+	 * @return void
+	 */
+	public function test_default_applies_twelve_months_when_not_saved() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$run  = self::insert_run( $wpdb, '2020-01-01 00:00:00' );
+		$tr   = self::insert_target_run( $wpdb, $run, 'plugin:a' );
+		self::insert_target_run( $wpdb, $run, 'plugin:a' );
+		self::insert_finding( $wpdb, $run, $tr, 'plugin:a', 'k1' );
+
+		// 設定を保存していない = 既定(12 か月).
+		self::make_cleaner( $wpdb )->handle_run_terminated( 999, 'success' );
+
+		$this->assertCount( 1, $wpdb->rows['wp_wpcv_target_runs'] );
 	}
 
 	/**

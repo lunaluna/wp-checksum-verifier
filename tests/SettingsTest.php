@@ -459,13 +459,36 @@ class SettingsTest extends TestCase {
 	// ------------------------------------------------------------------
 
 	/**
-	 * 未保存の状態では無期限(0)が返ることを確認する(プラン U5: 利用者が選ぶまで何も消さない).
+	 * 保存値が無ければ 12 か月になること(U8・U9. 新規インストールも、設定画面を保存していない既存サイトも)を確認する.
 	 *
 	 * @return void
 	 */
-	public function test_retention_months_defaults_to_unlimited() {
+	public function test_retention_months_defaults_to_twelve_when_unset() {
+		$this->assertSame( 12, WPCV_Settings::get_retention_months() );
+		$this->assertSame( 12, WPCV_Settings::defaults()['retention_months'] );
+		$this->assertContains( WPCV_Settings::DEFAULT_RETENTION_MONTHS, WPCV_Settings::RETENTION_MONTHS_CHOICES );
+	}
+
+	/**
+	 * 明示的に 0(無期限)が保存されているサイトは、12 か月にならず無期限のままであることを確認する(U9).
+	 *
+	 * @return void
+	 */
+	public function test_explicit_zero_retention_stays_unlimited() {
+		$GLOBALS['_wpcv_test_options'][ WPCV_Settings::OPTION_NAME ] = array( 'retention_months' => 0 );
+
 		$this->assertSame( 0, WPCV_Settings::get_retention_months() );
-		$this->assertSame( 0, WPCV_Settings::defaults()['retention_months'] );
+	}
+
+	/**
+	 * 保持期間を保存していない設定(他の項目だけ保存済み)でも 12 か月になることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_retention_default_applies_when_only_other_settings_are_stored() {
+		$GLOBALS['_wpcv_test_options'][ WPCV_Settings::OPTION_NAME ] = array( 'run_hour' => 5 );
+
+		$this->assertSame( 12, WPCV_Settings::get_retention_months() );
 	}
 
 	/**
@@ -489,7 +512,7 @@ class SettingsTest extends TestCase {
 	 */
 	public function test_update_retention_months_falls_back_to_unlimited_for_invalid_value() {
 		foreach ( array( -1, 5, 999, 'abc', null ) as $invalid ) {
-			WPCV_Settings::update_retention_months( 12 );
+			WPCV_Settings::update_retention_months( 6 );
 			WPCV_Settings::update_retention_months( $invalid );
 
 			$this->assertSame( 0, WPCV_Settings::get_retention_months() );

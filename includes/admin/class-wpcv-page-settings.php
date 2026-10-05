@@ -281,7 +281,7 @@ class WPCV_Page_Settings {
 							</p>
 						</td>
 					</tr>
-					<?php // v0.9 §Step2: 履歴の保持期間(プラン §3.1・U5). 既定は無期限(何も消さない). ?>
+					<?php // v0.9 §Step2: 履歴の保持期間(プラン §3.1・U5). 既定は 12 か月(v0.10.0 で無期限から変更. 無期限も選べる). ?>
 					<tr>
 						<th scope="row">
 							<label for="wpcv_retention_months"><?php echo esc_html__( 'History retention', 'wp-checksum-verifier' ); ?></label>
@@ -295,7 +295,7 @@ class WPCV_Page_Settings {
 								<?php endforeach; ?>
 							</select>
 							<p class="description">
-								<?php echo esc_html__( 'Delete run history, per-target results and findings older than this period. The newest verified result of each target, results still being processed, and records needed to avoid repeating an alert are always kept. The default keeps everything. After you choose a period, older history is removed gradually at the end of the following runs.', 'wp-checksum-verifier' ); ?>
+								<?php echo esc_html__( 'Delete run history, per-target results and findings older than this period. The newest verified result of each target, results still being processed, and records needed to avoid repeating an alert are always kept. The default is 12 months; choose "Keep forever" to keep everything. Older history is removed gradually at the end of the following runs.', 'wp-checksum-verifier' ); ?>
 							</p>
 						</td>
 					</tr>
@@ -586,7 +586,7 @@ class WPCV_Page_Settings {
 
 		// v0.9 §Step2: 保持期間. セレクトボックスは常に値が送られるので、キーが無いとき
 		// (このフォーム以外からの POST)だけは既存の値を変えない. 選択肢以外の値は
-		// `update_retention_months()` が既定(0 = 無期限)に倒す.
+		// `update_retention_months()` が無期限(0)に倒す.
 		if ( isset( $_POST['wpcv_retention_months'] ) ) {
 			WPCV_Settings::update_retention_months( absint( wp_unslash( $_POST['wpcv_retention_months'] ) ) );
 		}

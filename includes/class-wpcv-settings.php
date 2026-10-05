@@ -159,19 +159,36 @@ class WPCV_Settings {
 	 * 保持期間(月)の選択肢(v0.9 §Step2). 0 は無期限(何も消さない).
 	 *
 	 * 3・6・12・24 は暫定の選択肢(未実測). 本番の増加量は 2026-10-29 ごろに測れる(v0.9 プラン §2).
-	 * 選択肢以外の値は保存・読み取りのどちらでも既定(0)に倒す: 汚れた値で意図せず履歴を消さないため.
+	 * 選択肢以外の値は保存・読み取りのどちらでも `RETENTION_MONTHS_FALLBACK`(0 = 無期限)に倒す:
+	 * 汚れた値で意図せず履歴を消さないため.
 	 *
 	 * @var int[]
 	 */
 	const RETENTION_MONTHS_CHOICES = array( 0, 3, 6, 12, 24 );
 
 	/**
-	 * 保持期間(月)の既定値(v0.9 プラン U5). 0 = 無期限. 利用者が選ぶまで何も削除しない
-	 * (既定を有限にすると、今ある履歴が利用者に黙って消えるため).
+	 * 保持期間(月)の既定値. v0.10.0 から 12 か月(0.9.x までは 0 = 無期限だった).
+	 *
+	 * Background: v0.9 では「既定を有限にすると、今ある履歴が利用者に黙って消える」ため無期限にしていたが、
+	 * DB のデータが増え続ける問題が見つかり、2026-10-06 にユーザーが 12 か月への変更を決めた
+	 * (0.10.0 プラン U8). 保存値が無いサイトにも効かせる(U9): 設定画面を保存していない既存サイトも
+	 * 12 か月になる. 明示的に 0 が保存されているサイトは無期限のまま. 履歴は 2026-09 以降のもの
+	 * なので、更新してすぐに消える履歴は無い(最初の削除は 2027-09 以降).
+	 * 12 か月は未実測の値で、本番の増加量の実測(2026-10-29 ごろ)の後に見直す余地がある.
 	 *
 	 * @var int
 	 */
-	const DEFAULT_RETENTION_MONTHS = 0;
+	const DEFAULT_RETENTION_MONTHS = 12;
+
+	/**
+	 * 保持期間(月)の不正な値の戻り先. 0 = 無期限.
+	 *
+	 * 既定値(`DEFAULT_RETENTION_MONTHS`)とは別にしている. 既定が有限になったため、「不正な値 → 既定」
+	 * のままだと、汚れた値で意図せず履歴を削除してしまう(v0.9 の「汚れた値で消さない」という意図に反する).
+	 *
+	 * @var int
+	 */
+	const RETENTION_MONTHS_FALLBACK = 0;
 
 	/**
 	 * 既定値.
@@ -671,8 +688,9 @@ class WPCV_Settings {
 	/**
 	 * 保持期間(月)を返す(v0.9 §Step2). 0 は無期限.
 	 *
-	 * 保存済みの値が選択肢(`RETENTION_MONTHS_CHOICES`)以外(手動での書き換え等)なら、
-	 * 既定(0 = 無期限)として扱う.
+	 * 値が保存されていなければ既定(`DEFAULT_RETENTION_MONTHS` = 12). 保存済みの値が選択肢
+	 * (`RETENTION_MONTHS_CHOICES`)以外(手動での書き換え等)なら、無期限(`RETENTION_MONTHS_FALLBACK`)
+	 * として扱う: 汚れた値で意図せず履歴を消さないため.
 	 *
 	 * @return int
 	 */
@@ -682,13 +700,13 @@ class WPCV_Settings {
 
 		return in_array( (int) $months, self::RETENTION_MONTHS_CHOICES, true )
 			? (int) $months
-			: self::DEFAULT_RETENTION_MONTHS;
+			: self::RETENTION_MONTHS_FALLBACK;
 	}
 
 	/**
 	 * 保持期間(月)を保存する.
 	 *
-	 * @param int $months `RETENTION_MONTHS_CHOICES` のいずれか. それ以外は既定(0 = 無期限)として保存する.
+	 * @param int $months `RETENTION_MONTHS_CHOICES` のいずれか. それ以外は無期限(0)として保存する.
 	 * @return bool `update_option()`/`update_site_option()` の戻り値.
 	 */
 	public static function update_retention_months( $months ) {
@@ -696,7 +714,7 @@ class WPCV_Settings {
 
 		$settings['retention_months'] = in_array( (int) $months, self::RETENTION_MONTHS_CHOICES, true )
 			? (int) $months
-			: self::DEFAULT_RETENTION_MONTHS;
+			: self::RETENTION_MONTHS_FALLBACK;
 
 		return self::write_option( $settings );
 	}
