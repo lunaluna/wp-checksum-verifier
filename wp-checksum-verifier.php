@@ -340,6 +340,7 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-manifest
  */
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-retention-cleaner.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-prune-job.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-data-usage.php';
 
 /**
  * Run開始時の「列挙(plan)→保存」を失敗時の後始末込みで行う共通処理

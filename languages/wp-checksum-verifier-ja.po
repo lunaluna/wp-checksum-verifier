@@ -1358,3 +1358,51 @@ msgstr "直近の削除:"
 #, php-format
 msgid "Delete history older than %d months? This cannot be undone."
 msgstr "%d か月より古い履歴を削除しますか?元に戻せません。"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Per-target results"
+msgstr "対象ごとの結果"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "File state baseline"
+msgstr "ファイル状態の基準"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Update events"
+msgstr "更新イベント"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Manifest cache"
+msgstr "マニフェストのキャッシュ"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Total"
+msgstr "合計"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Stored data"
+msgstr "保存しているデータ"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "The amount of stored data could not be retrieved on this server."
+msgstr "このサーバーでは、保存しているデータの量を取得できません。"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Approximate row counts and sizes of the tables this plugin uses, from database statistics (they can be up to a day old)."
+msgstr "このプラグインが使うテーブルの、おおよその行数とサイズです。データベースの統計から取るため、最大1日ほど古いことがあります。"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Data"
+msgstr "データ"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Rows (approx.)"
+msgstr "行数(概算)"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Size (approx.)"
+msgstr "サイズ(概算)"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Oldest run:"
+msgstr "一番古い実行:"

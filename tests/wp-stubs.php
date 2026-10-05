@@ -863,6 +863,44 @@ if ( ! function_exists( 'wp_timezone' ) ) {
 	}
 }
 
+if ( ! function_exists( 'number_format_i18n' ) ) {
+	/**
+	 * Stub number_format_i18n() — 英語のロケール(桁区切り `,`)で整形する.
+	 *
+	 * @param float $number   数.
+	 * @param int   $decimals 小数の桁数.
+	 * @return string
+	 */
+	function number_format_i18n( $number, $decimals = 0 ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return number_format( (float) $number, $decimals );
+	}
+}
+
+if ( ! function_exists( 'size_format' ) ) {
+	/**
+	 * Stub size_format() — 本物(`wp-includes/functions.php`)と同じく 1024 区切りで B・KB・MB・GB に整形する(0 は「0 B」).
+	 *
+	 * @param int|string $bytes    バイト数.
+	 * @param int        $decimals 小数の桁数.
+	 * @return string|false
+	 */
+	function size_format( $bytes, $decimals = 0 ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		if ( 0 === $bytes ) {
+			return number_format( 0, $decimals ) . ' B';
+		}
+
+		$bytes = (float) $bytes;
+
+		foreach ( array( 'GB' => 1073741824, 'MB' => 1048576, 'KB' => 1024, 'B' => 1 ) as $unit => $size ) {
+			if ( $bytes >= $size ) {
+				return number_format( $bytes / $size, $decimals ) . ' ' . $unit;
+			}
+		}
+
+		return false;
+	}
+}
+
 if ( ! function_exists( 'wp_date' ) ) {
 	/**
 	 * Stub wp_date() — 本物と同じく timestamp を `$timezone`(省略時 `wp_timezone()`)で整形する

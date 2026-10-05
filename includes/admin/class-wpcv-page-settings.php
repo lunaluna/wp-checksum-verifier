@@ -461,6 +461,8 @@ class WPCV_Page_Settings {
 				?>
 			</form>
 
+			<?php self::render_data_usage_section(); ?>
+
 			<?php self::render_prune_section( $retention_months ); ?>
 
 			<h2><?php echo esc_html__( 'REST API token (run)', 'wp-checksum-verifier' ); ?></h2>
@@ -645,6 +647,100 @@ class WPCV_Page_Settings {
 			$status['totals']['findings'],
 			$status['totals']['suppressions']
 		);
+	}
+
+	/**
+	 * 「保存しているデータ」の表の行を作る(`render_data_usage_section()` から分離してテスト可能にする).
+	 *
+	 * @param array{tables: array<string, array{rows: int, bytes: int}>|null, oldest_run_at: string|null} $usage `WPCV_Data_Usage::collect()` の値.
+	 * @return array<int, array{label: string, rows: string, size: string}>|null テーブルの情報が取れていなければ `null`. 最後の行は合計.
+	 */
+	public static function data_usage_rows( array $usage ) {
+		if ( null === $usage['tables'] ) {
+			return null;
+		}
+
+		$labels = array(
+			'wpcv_runs'           => __( 'Run history', 'wp-checksum-verifier' ),
+			'wpcv_target_runs'    => __( 'Per-target results', 'wp-checksum-verifier' ),
+			'wpcv_findings'       => __( 'Findings', 'wp-checksum-verifier' ),
+			'wpcv_suppressions'   => __( 'Suppressions', 'wp-checksum-verifier' ),
+			'wpcv_file_states'    => __( 'File state baseline', 'wp-checksum-verifier' ),
+			'wpcv_update_events'  => __( 'Update events', 'wp-checksum-verifier' ),
+			'wpcv_manifest_cache' => __( 'Manifest cache', 'wp-checksum-verifier' ),
+		);
+
+		$rows        = array();
+		$total_rows  = 0;
+		$total_bytes = 0;
+
+		foreach ( $usage['tables'] as $table => $info ) {
+			$total_rows  += $info['rows'];
+			$total_bytes += $info['bytes'];
+
+			$rows[] = array(
+				'label' => $labels[ $table ] ?? $table,
+				'rows'  => number_format_i18n( $info['rows'] ),
+				'size'  => (string) size_format( $info['bytes'], 1 ),
+			);
+		}
+
+		$rows[] = array(
+			'label' => __( 'Total', 'wp-checksum-verifier' ),
+			'rows'  => number_format_i18n( $total_rows ),
+			'size'  => (string) size_format( $total_bytes, 1 ),
+		);
+
+		return $rows;
+	}
+
+	/**
+	 * 「保存しているデータ」の節(テーブルごとの行数・容量・一番古い run の日時)を描画する(v0.10.0 P1).
+	 *
+	 * 値は DB の統計(`information_schema`)から取るので「おおよそ」で、最大1日古いことがある.
+	 * 取得できない環境(権限が無いなど)では、エラーにせず「取得できません」と表示する.
+	 * 取得方法・速さの実測は `WPCV_Data_Usage` の docblock 参照.
+	 *
+	 * @return void
+	 */
+	private static function render_data_usage_section() {
+		global $wpdb;
+
+		$usage = ( new WPCV_Data_Usage( $wpdb ) )->collect();
+		$rows  = self::data_usage_rows( $usage );
+		?>
+		<h2><?php echo esc_html__( 'Stored data', 'wp-checksum-verifier' ); ?></h2>
+		<?php if ( null === $rows ) : ?>
+			<p class="description"><?php echo esc_html__( 'The amount of stored data could not be retrieved on this server.', 'wp-checksum-verifier' ); ?></p>
+		<?php else : ?>
+			<p class="description">
+				<?php echo esc_html__( 'Approximate row counts and sizes of the tables this plugin uses, from database statistics (they can be up to a day old).', 'wp-checksum-verifier' ); ?>
+			</p>
+			<table class="widefat striped" style="max-width: 640px;">
+				<thead>
+					<tr>
+						<th><?php echo esc_html__( 'Data', 'wp-checksum-verifier' ); ?></th>
+						<th><?php echo esc_html__( 'Rows (approx.)', 'wp-checksum-verifier' ); ?></th>
+						<th><?php echo esc_html__( 'Size (approx.)', 'wp-checksum-verifier' ); ?></th>
+					</tr>
+				</thead>
+				<tbody>
+					<?php foreach ( $rows as $row ) : ?>
+						<tr>
+							<td><?php echo esc_html( $row['label'] ); ?></td>
+							<td><?php echo esc_html( $row['rows'] ); ?></td>
+							<td><?php echo esc_html( $row['size'] ); ?></td>
+						</tr>
+					<?php endforeach; ?>
+				</tbody>
+			</table>
+		<?php endif; ?>
+		<p>
+			<strong><?php echo esc_html__( 'Oldest run:', 'wp-checksum-verifier' ); ?></strong>
+			<?php // 日時は UTC で保存されているので、サイトのタイムゾーンで表示する(D14). ?>
+			<?php echo esc_html( WPCV_Settings::format_datetime( $usage['oldest_run_at'] ) ); ?>
+		</p>
+		<?php
 	}
 
 	/**

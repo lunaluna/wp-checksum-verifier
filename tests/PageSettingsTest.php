@@ -10,6 +10,7 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-github-client.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-github-mappings.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-prune-job.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-data-usage.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-settings.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-run-history.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
@@ -411,5 +412,35 @@ class PageSettingsTest extends TestCase {
 
 		$this->assertStringContainsString( 'In progress', $text );
 		$this->assertStringContainsString( 'finished: —', $text );
+	}
+
+	/**
+	 * 「保存しているデータ」の表の行が、ラベル・桁区切りの行数・サイズ・合計になることを確認する(P1).
+	 *
+	 * @return void
+	 */
+	public function test_data_usage_rows_include_labels_sizes_and_total() {
+		$rows = WPCV_Page_Settings::data_usage_rows(
+			array(
+				'tables'        => array(
+					'wpcv_runs'    => array( 'rows' => 136, 'bytes' => 49152 ),
+					'wpcv_findings' => array( 'rows' => 1329, 'bytes' => 3112960 ),
+				),
+				'oldest_run_at' => '2026-09-08 14:01:03',
+			)
+		);
+
+		$this->assertSame( array( 'label' => 'Run history', 'rows' => '136', 'size' => '48.0 KB' ), $rows[0] );
+		$this->assertSame( array( 'label' => 'Findings', 'rows' => '1,329', 'size' => '3.0 MB' ), $rows[1] );
+		$this->assertSame( array( 'label' => 'Total', 'rows' => '1,465', 'size' => '3.0 MB' ), $rows[2] );
+	}
+
+	/**
+	 * テーブルの情報が取れないときは `null`(画面は「取得できません」と表示する)になることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_data_usage_rows_returns_null_when_unavailable() {
+		$this->assertNull( WPCV_Page_Settings::data_usage_rows( array( 'tables' => null, 'oldest_run_at' => null ) ) );
 	}
 }

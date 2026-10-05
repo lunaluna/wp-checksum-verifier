@@ -1133,3 +1133,51 @@ msgstr ""
 #, php-format
 msgid "Delete history older than %d months? This cannot be undone."
 msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Per-target results"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "File state baseline"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Update events"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Manifest cache"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Total"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Stored data"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "The amount of stored data could not be retrieved on this server."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Approximate row counts and sizes of the tables this plugin uses, from database statistics (they can be up to a day old)."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Data"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Rows (approx.)"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Size (approx.)"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Oldest run:"
+msgstr ""
