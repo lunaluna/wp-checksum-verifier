@@ -3,7 +3,7 @@
  * Plugin Name:       WP Checksum Verifier
  * Plugin URI:        https://github.com/lunaluna/wp-checksum-verifier
  * Description:       WordPress コア・プラグイン・テーマ・MU プラグインの checksum を日次で検証し、改ざんを検出するプラグイン.
- * Version:           0.9.2
+ * Version:           0.10.0
  * Requires at least: 6.8
  * Tested up to:      7.1
  * Requires PHP:      7.4
@@ -110,6 +110,12 @@ add_action(
 	'plugins_loaded',
 	static function () {
 		WPCV_Migrator::maybe_upgrade();
+
+		// 実行時刻の保存値の基準(UTC → サイトのタイムゾーン)の移行(v0.10.0). 変換したときだけ、
+		// 次回の WP-Cron の予約を保存値から作り直す(実行時刻は変わらないので予約時刻も変わらない見込み).
+		if ( WPCV_Migrator::maybe_migrate_run_time_basis() ) {
+			WPCV_Scheduler::reschedule();
+		}
 	}
 );
 
@@ -332,7 +338,10 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-manifest
  * ファイル末尾で登録する. 設定 `retention_months` が 0(無期限. 既定)なら何もしない.
  * `WPCV_Manifest_Cache_Cleaner` と同じ理由で、`WPCV_Plugin` 本体より前に読み込んでも問題ない.
  */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-advisory-lock.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-retention-cleaner.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-prune-job.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-data-usage.php';
 
 /**
  * Run開始時の「列挙(plan)→保存」を失敗時の後始末込みで行う共通処理
@@ -416,6 +425,7 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/functions-api.php';
 if ( defined( 'WP_CLI' ) && WP_CLI ) {
 	require_once plugin_dir_path( __FILE__ ) . 'includes/cli/class-wpcv-cli-command.php';
 	require_once plugin_dir_path( __FILE__ ) . 'includes/cli/class-wpcv-cli-bench-stat-command.php';
+	require_once plugin_dir_path( __FILE__ ) . 'includes/cli/class-wpcv-cli-prune-command.php';
 }
 
 /**

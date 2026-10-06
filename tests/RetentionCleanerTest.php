@@ -18,6 +18,7 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.p
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-github-client.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-github-mappings.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-advisory-lock.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-retention-cleaner.php';
 require_once __DIR__ . '/doubles.php';
 
@@ -163,23 +164,43 @@ class RetentionCleanerTest extends TestCase {
 	}
 
 	/**
-	 * 既定(0 = 無期限)では何も消さないことを確認する(U5).
+	 * 明示的に 0(無期限)が保存されているときは何も消さないことを確認する(U5・0.10.0 の U9).
 	 *
 	 * @return void
 	 */
-	public function test_default_keeps_everything() {
+	public function test_explicit_zero_keeps_everything() {
 		$wpdb = new WPCV_Test_Fake_WPDB();
 		$run  = self::insert_run( $wpdb, '2020-01-01 00:00:00' );
 		$tr   = self::insert_target_run( $wpdb, $run, 'plugin:a' );
 		self::insert_target_run( $wpdb, $run, 'plugin:a' );
 		self::insert_finding( $wpdb, $run, $tr, 'plugin:a', 'k1' );
 
-		// 設定を保存していない = 既定.
+		self::set_retention( 0 );
 		self::make_cleaner( $wpdb )->handle_run_terminated( 999, 'success' );
 
 		$this->assertSame( array( $run ), self::ids( $wpdb, 'runs' ) );
 		$this->assertCount( 2, $wpdb->rows['wp_wpcv_target_runs'] );
 		$this->assertCount( 1, $wpdb->rows['wp_wpcv_findings'] );
+	}
+
+	/**
+	 * 保持期間を保存していなければ既定(12 か月)で動き、期限切れの履歴が消えることを確認する(0.10.0 の U8・U9).
+	 *
+	 * 最新の照合結果(I1)は古くても残るので、同じ target の古い方の 1 件だけが消える.
+	 *
+	 * @return void
+	 */
+	public function test_default_applies_twelve_months_when_not_saved() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$run  = self::insert_run( $wpdb, '2020-01-01 00:00:00' );
+		$tr   = self::insert_target_run( $wpdb, $run, 'plugin:a' );
+		self::insert_target_run( $wpdb, $run, 'plugin:a' );
+		self::insert_finding( $wpdb, $run, $tr, 'plugin:a', 'k1' );
+
+		// 設定を保存していない = 既定(12 か月).
+		self::make_cleaner( $wpdb )->handle_run_terminated( 999, 'success' );
+
+		$this->assertCount( 1, $wpdb->rows['wp_wpcv_target_runs'] );
 	}
 
 	/**
@@ -594,5 +615,340 @@ class RetentionCleanerTest extends TestCase {
 		self::make_cleaner( $wpdb )->handle_run_terminated( $r_recent, 'success' );
 
 		$this->assertCount( 2, $wpdb->rows['wp_wpcv_target_runs'] );
+	}
+
+	/**
+	 * `prune()` を外から呼ぶと、消した件数を返し、run の終端と同じ結果になることを確認する(プラン §8.3・Step 9).
+	 *
+	 * 同じ期限切れの構成で、`handle_run_terminated()` が残す行と `prune()` が残す行が一致する.
+	 *
+	 * @return void
+	 */
+	public function test_prune_returns_counts_and_matches_run_terminated_result() {
+		$build = static function () {
+			$wpdb     = new WPCV_Test_Fake_WPDB();
+			$r_old    = self::insert_run( $wpdb, '2026-05-01 00:00:00' );
+			$r_recent = self::insert_run( $wpdb, '2026-10-02 00:00:00' );
+			$old      = self::insert_target_run( $wpdb, $r_old, 'plugin:a' );
+			self::insert_target_run( $wpdb, $r_recent, 'plugin:a' );
+			self::insert_finding( $wpdb, $r_old, $old, 'plugin:a', 'k1' );
+
+			return array( $wpdb, $r_recent );
+		};
+
+		list( $wpdb_prune ) = $build();
+		$result             = self::make_cleaner( $wpdb_prune )->prune( 3 );
+
+		$this->assertSame( 1, $result['target_runs'] );
+		$this->assertSame( 1, $result['findings'] );
+		$this->assertSame( 1, $result['runs'] );
+		$this->assertSame( 0, $result['suppressions'] );
+		$this->assertFalse( $result['remaining'] );
+
+		list( $wpdb_event, $recent_id ) = $build();
+		self::set_retention( 3 );
+		self::make_cleaner( $wpdb_event )->handle_run_terminated( 999, 'success' );
+
+		$this->assertSame( self::ids( $wpdb_event, 'target_runs' ), self::ids( $wpdb_prune, 'target_runs' ) );
+		$this->assertSame( self::ids( $wpdb_event, 'runs' ), self::ids( $wpdb_prune, 'runs' ) );
+		$this->assertSame( self::ids( $wpdb_event, 'findings' ), self::ids( $wpdb_prune, 'findings' ) );
+		$this->assertNotNull( $recent_id );
+	}
+
+	/**
+	 * `--dry-run` は何も消さず、実際に消したときと同じ件数を返すことを確認する(§8.5 #10).
+	 *
+	 * @return void
+	 */
+	public function test_prune_dry_run_counts_without_deleting() {
+		$wpdb     = new WPCV_Test_Fake_WPDB();
+		$r_old    = self::insert_run( $wpdb, '2026-05-01 00:00:00' );
+		$r_recent = self::insert_run( $wpdb, '2026-10-02 00:00:00' );
+		$old1     = self::insert_target_run( $wpdb, $r_old, 'plugin:a' );
+		self::insert_target_run( $wpdb, $r_recent, 'plugin:a' );
+		self::insert_finding( $wpdb, $r_old, $old1, 'plugin:a', 'k1' );
+		$wpdb->insert(
+			'wp_wpcv_suppressions',
+			array(
+				'expired_at' => '2026-01-01 00:00:00',
+			)
+		);
+
+		$before = array(
+			self::ids( $wpdb, 'runs' ),
+			self::ids( $wpdb, 'target_runs' ),
+			self::ids( $wpdb, 'findings' ),
+			self::ids( $wpdb, 'suppressions' ),
+		);
+
+		$dry = self::make_cleaner( $wpdb )->prune( 3, 0, true );
+
+		$this->assertSame(
+			$before,
+			array(
+				self::ids( $wpdb, 'runs' ),
+				self::ids( $wpdb, 'target_runs' ),
+				self::ids( $wpdb, 'findings' ),
+				self::ids( $wpdb, 'suppressions' ),
+			),
+			'dry-run は何も消さない'
+		);
+
+		$real = self::make_cleaner( $wpdb )->prune( 3 );
+
+		$this->assertSame( $real, $dry, 'dry-run の件数は実際に消した件数と一致する' );
+		$this->assertSame( 1, $dry['suppressions'] );
+		$this->assertSame( 1, $dry['runs'] );
+	}
+
+	/**
+	 * 保持期間が 1 未満(無期限)のときは何もせず、全件数 0 を返すことを確認する(§8.5 #1).
+	 *
+	 * @return void
+	 */
+	public function test_prune_with_unlimited_months_does_nothing() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$run  = self::insert_run( $wpdb, '2020-01-01 00:00:00' );
+		self::insert_target_run( $wpdb, $run, 'plugin:a' );
+		self::insert_target_run( $wpdb, $run, 'plugin:a' );
+
+		$result = self::make_cleaner( $wpdb )->prune( 0 );
+
+		$this->assertSame( array( 'suppressions' => 0, 'target_runs' => 0, 'findings' => 0, 'runs' => 0, 'remaining' => false, 'locked' => false ), $result );
+		$this->assertCount( 2, $wpdb->rows['wp_wpcv_target_runs'] );
+	}
+
+	/**
+	 * 期限切れが 1 回の上限(500)を超えるとき `remaining` が真になり、繰り返せば最後まで消えることを確認する(§8.5 #3).
+	 *
+	 * @return void
+	 */
+	public function test_prune_reports_remaining_and_finishes_when_repeated() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$old  = self::insert_run( $wpdb, '2026-01-01 00:00:00' );
+		$new  = self::insert_run( $wpdb, '2026-10-02 00:00:00' );
+
+		$total = WPCV_Retention_Cleaner::MAX_TARGET_RUNS_PER_CALL + 20;
+
+		// target ごとに最新の success は新しい run に 1 件ずつ(古い方が全部消える対象).
+		for ( $i = 0; $i < $total; $i++ ) {
+			self::insert_target_run( $wpdb, $old, 'plugin:p' . $i );
+			self::insert_target_run( $wpdb, $new, 'plugin:p' . $i );
+		}
+
+		$cleaner = self::make_cleaner( $wpdb );
+		$first   = $cleaner->prune( 3 );
+
+		$this->assertSame( WPCV_Retention_Cleaner::MAX_TARGET_RUNS_PER_CALL, $first['target_runs'] );
+		$this->assertTrue( $first['remaining'] );
+
+		$sum   = $first['target_runs'];
+		$calls = 1;
+
+		do {
+			$next = $cleaner->prune( 3 );
+			$sum += $next['target_runs'];
+			++$calls;
+		} while ( $next['remaining'] && $calls < 10 );
+
+		$this->assertSame( $total, $sum );
+		$this->assertFalse( $next['remaining'] );
+		$this->assertCount( $total, $wpdb->rows['wp_wpcv_target_runs'] );
+	}
+
+	/**
+	 * 同じ行を二重に消そうとしても(run の終端の自動削除と同時に走った場合)、エラーにならないことを確認する(§8.5 #5).
+	 *
+	 * @return void
+	 */
+	public function test_prune_twice_in_a_row_is_safe() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$old  = self::insert_run( $wpdb, '2026-05-01 00:00:00' );
+		$new  = self::insert_run( $wpdb, '2026-10-02 00:00:00' );
+		self::insert_target_run( $wpdb, $old, 'plugin:a' );
+		self::insert_target_run( $wpdb, $new, 'plugin:a' );
+
+		$cleaner = self::make_cleaner( $wpdb );
+		$cleaner->prune( 3 );
+		$second = $cleaner->prune( 3 );
+
+		$this->assertSame( 0, $second['target_runs'] );
+		$this->assertSame( 0, $second['runs'] );
+	}
+
+	/**
+	 * 現在時刻を指定して削除処理を作る(月末の境界のテスト用).
+	 *
+	 * @param WPCV_Test_Fake_WPDB $wpdb フェイク wpdb.
+	 * @param string              $now  現在時刻(UTC).
+	 * @return WPCV_Retention_Cleaner
+	 */
+	private static function make_cleaner_at( WPCV_Test_Fake_WPDB $wpdb, $now ) {
+		return new WPCV_Retention_Cleaner(
+			new WPCV_Run_Repository( $wpdb ),
+			new WPCV_Target_Run_Repository( $wpdb ),
+			new WPCV_Finding_Repository( $wpdb ),
+			new WPCV_Suppression_Repository( $wpdb ),
+			static function () use ( $now ) {
+				return $now;
+			}
+		);
+	}
+
+	/**
+	 * 保持期間の境界は「N か月前の同じ日」で、その月に同じ日が無ければ月末になることを確認する
+	 * (0.10.0 のコードレビュー指摘1. 29〜31日・うるう年・年またぎ).
+	 *
+	 * @return void
+	 */
+	public function test_cutoff_clamps_to_end_of_month() {
+		$cases = array(
+			// 現在時刻, 月数, 期待する境界.
+			array( '2027-05-31 10:00:00', 3, '2027-02-28 10:00:00' ),
+			array( '2028-05-31 10:00:00', 3, '2028-02-29 10:00:00' ), // うるう年.
+			array( '2027-05-31 10:00:00', 1, '2027-04-30 10:00:00' ),
+			array( '2027-03-31 10:00:00', 1, '2027-02-28 10:00:00' ),
+			array( '2027-03-30 10:00:00', 1, '2027-02-28 10:00:00' ),
+			array( '2027-03-29 10:00:00', 1, '2027-02-28 10:00:00' ),
+			array( '2028-03-29 10:00:00', 1, '2028-02-29 10:00:00' ),
+			array( '2027-12-31 23:59:59', 6, '2027-06-30 23:59:59' ),
+			array( '2027-01-31 00:00:00', 3, '2026-10-31 00:00:00' ), // 年またぎ.
+			array( '2027-02-28 00:00:00', 24, '2025-02-28 00:00:00' ),
+			array( '2028-02-29 00:00:00', 12, '2027-02-28 00:00:00' ), // うるう日の1年前.
+			array( '2026-10-03 00:00:00', 3, '2026-07-03 00:00:00' ), // 月末以外は今までと同じ.
+		);
+
+		$method = new ReflectionMethod( WPCV_Retention_Cleaner::class, 'cutoff' );
+		$method->setAccessible( true );
+
+		foreach ( $cases as $case ) {
+			list( $now, $months, $expected ) = $case;
+
+			$this->assertSame( $expected, $method->invoke( self::make_cleaner_at( new WPCV_Test_Fake_WPDB(), $now ), $months ), "{$now} - {$months} months" );
+		}
+	}
+
+	/**
+	 * 月末の削除で、境界より新しい履歴(3月1日・2日)を消さないことを確認する(レビュー指摘1の再現).
+	 *
+	 * 2027-05-31 の 3 か月保持の境界は 2027-02-28. 以前の計算(2027-03-03)では 3月1日の run も消えていた.
+	 *
+	 * @return void
+	 */
+	public function test_month_end_does_not_delete_runs_after_the_boundary() {
+		$wpdb    = new WPCV_Test_Fake_WPDB();
+		$r_feb   = self::insert_run( $wpdb, '2027-02-27 00:00:00' );
+		$r_march = self::insert_run( $wpdb, '2027-03-01 00:00:00' );
+		$r_new   = self::insert_run( $wpdb, '2027-05-30 00:00:00' );
+
+		self::insert_target_run( $wpdb, $r_feb, 'plugin:a' );
+		self::insert_target_run( $wpdb, $r_march, 'plugin:a' );
+		self::insert_target_run( $wpdb, $r_new, 'plugin:a' );
+
+		$result = self::make_cleaner_at( $wpdb, '2027-05-31 10:00:00' )->prune( 3 );
+
+		$this->assertSame( 1, $result['runs'], '2月27日の run だけが消える' );
+		$this->assertEqualsCanonicalizing( array( $r_march, $r_new ), self::ids( $wpdb, 'runs' ) );
+	}
+
+	/**
+	 * lock を渡した削除処理を作る(コードレビュー指摘2のテスト用).
+	 *
+	 * @param WPCV_Test_Fake_WPDB $wpdb      データのフェイク wpdb.
+	 * @param WPCV_Test_Fake_WPDB $lock_wpdb lock 用のフェイク wpdb(`get_var_return` で GET_LOCK の結果を決める).
+	 * @return WPCV_Retention_Cleaner
+	 */
+	private static function make_locked_cleaner( WPCV_Test_Fake_WPDB $wpdb, WPCV_Test_Fake_WPDB $lock_wpdb ) {
+		return new WPCV_Retention_Cleaner(
+			new WPCV_Run_Repository( $wpdb ),
+			new WPCV_Target_Run_Repository( $wpdb ),
+			new WPCV_Finding_Repository( $wpdb ),
+			new WPCV_Suppression_Repository( $wpdb ),
+			static function () {
+				return self::NOW;
+			},
+			new WPCV_Advisory_Lock( $lock_wpdb, 'prune' )
+		);
+	}
+
+	/**
+	 * 別の削除が lock を持っていれば、何も消さずに `locked` と `remaining` を返すことを確認する(指摘2).
+	 *
+	 * @return void
+	 */
+	public function test_prune_does_nothing_when_lock_is_taken() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$old  = self::insert_run( $wpdb, '2026-05-01 00:00:00' );
+		$new  = self::insert_run( $wpdb, '2026-10-02 00:00:00' );
+		self::insert_target_run( $wpdb, $old, 'plugin:a' );
+		self::insert_target_run( $wpdb, $new, 'plugin:a' );
+
+		$lock_wpdb                 = new WPCV_Test_Fake_WPDB();
+		$lock_wpdb->get_var_return = '0'; // GET_LOCK が取れない.
+
+		$result = self::make_locked_cleaner( $wpdb, $lock_wpdb )->prune( 3 );
+
+		$this->assertTrue( $result['locked'] );
+		$this->assertTrue( $result['remaining'] );
+		$this->assertSame( 0, $result['target_runs'] );
+		$this->assertCount( 2, $wpdb->rows['wp_wpcv_target_runs'], '何も消さない' );
+		$this->assertSame( array(), $lock_wpdb->query_calls, '取れていない lock は放さない' );
+	}
+
+	/**
+	 * lock が取れれば削除し、終わったら lock を放すことを確認する(例外のときも放す).
+	 *
+	 * @return void
+	 */
+	public function test_prune_releases_lock_after_deleting_and_on_failure() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$old  = self::insert_run( $wpdb, '2026-05-01 00:00:00' );
+		$new  = self::insert_run( $wpdb, '2026-10-02 00:00:00' );
+		self::insert_target_run( $wpdb, $old, 'plugin:a' );
+		self::insert_target_run( $wpdb, $new, 'plugin:a' );
+
+		$lock_wpdb = new WPCV_Test_Fake_WPDB();
+		$result    = self::make_locked_cleaner( $wpdb, $lock_wpdb )->prune( 3 );
+
+		$this->assertFalse( $result['locked'] );
+		$this->assertSame( 1, $result['target_runs'] );
+		$this->assertStringContainsString( 'GET_LOCK', $lock_wpdb->get_var_calls[0] );
+		$this->assertStringContainsString( "'wpcv_prune_wp_'", $lock_wpdb->get_var_calls[0] );
+		$this->assertCount( 1, $lock_wpdb->query_calls );
+		$this->assertStringContainsString( 'RELEASE_LOCK', $lock_wpdb->query_calls[0] );
+
+		// 削除が例外で止まっても lock を放す.
+		$failing                    = new WPCV_Test_Fake_WPDB();
+		$failing->query_should_fail = true;
+		$failing->delete_should_fail = true;
+		self::insert_run( $failing, '2026-05-01 00:00:00' );
+		$lock_wpdb2 = new WPCV_Test_Fake_WPDB();
+
+		$thrown = false;
+
+		try {
+			self::make_locked_cleaner( $failing, $lock_wpdb2 )->prune( 3 );
+		} catch ( RuntimeException $e ) {
+			$thrown = true;
+		}
+
+		$this->assertTrue( $thrown, '削除の失敗は例外のまま呼び出し元へ伝わる' );
+		$this->assertCount( 1, $lock_wpdb2->query_calls );
+		$this->assertStringContainsString( 'RELEASE_LOCK', $lock_wpdb2->query_calls[0] );
+	}
+
+	/**
+	 * dry-run は何も書かないので lock を取らないことを確認する(実行中の削除があっても件数を見られる).
+	 *
+	 * @return void
+	 */
+	public function test_dry_run_does_not_take_lock() {
+		$lock_wpdb                 = new WPCV_Test_Fake_WPDB();
+		$lock_wpdb->get_var_return = '0';
+
+		$result = self::make_locked_cleaner( new WPCV_Test_Fake_WPDB(), $lock_wpdb )->prune( 3, 0, true );
+
+		$this->assertFalse( $result['locked'] );
+		$this->assertSame( array(), $lock_wpdb->get_var_calls );
 	}
 }

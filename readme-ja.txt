@@ -4,7 +4,7 @@ Tags: security, checksum, integrity, malware, audit
 Requires at least: 6.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.9.2
+Stable tag: 0.10.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -19,7 +19,7 @@ GitHub Releases で配布しているプラグイン・テーマは、リポジ�
 = 検証の実行方法 =
 
 * **WP-CLI**: `wp wpcv run` で同期実行(既定)。`wp wpcv run --async` は Action Scheduler が利用可能なら非同期でキューに追加する。
-* **WP-Cron**: 設定画面で指定したUTC時刻に毎日自動実行する(プラグイン有効化と同時に有効になる)。
+* **WP-Cron**: 設定画面で指定した時刻(サイトのタイムゾーン)に毎日自動実行する(プラグイン有効化と同時に有効になる)。
 * **管理画面のボタン**: 設定画面の「今すぐ実行」ボタンで即時実行を予約する。
 * **REST API**: `POST /wp-json/wpcv/v1/run`。設定画面で発行するトークンによる認証が必要(WP-Cronを使えないマネージドホスティング等の外部スケジューラー向け)。
 

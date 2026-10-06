@@ -83,9 +83,42 @@ class WPCV_Migrator {
 		}
 
 		self::maybe_record_update_events_since();
+
+		// 新規インストール(DB バージョンが未保存)は、既定の実行時刻をそのまま現地時刻として使う
+		// (v0.10.0). 既存サイトの変換は `maybe_migrate_run_time_basis()` が `plugins_loaded` で行う
+		// (DB バージョンが上がらない更新でも動かすため、ここでは行わない).
+		if ( 0 === $stored ) {
+			self::maybe_migrate_run_time_basis( true );
+		}
+
 		self::write_stored_version( WPCV_DB_VERSION );
 
 		return true;
+	}
+
+	/**
+	 * 実行時刻の保存値の基準を「サイトのタイムゾーン」に揃える(v0.10.0. プラン §3.3・U1).
+	 *
+	 * 0.10.0 より前は `run_hour`/`run_minute` を UTC の時刻として扱っていた. `run_time_basis` が
+	 * `site` でなければ(未保存を含む)旧データ(UTC)とみなして現地の時・分に変換し、`site` にする.
+	 * DB スキーマは変わらず `wpcv_db_version` が上がらない更新でも動くよう、`maybe_upgrade()` とは
+	 * 別に `plugins_loaded` から毎回呼ぶ. 基準が保存済みなら option を1回読むだけで何もしない(冪等).
+	 *
+	 * 新規インストールかどうかは呼び出し元(`maybe_upgrade()`)が `$is_fresh_install` で渡す.
+	 * 「`run_hour` が無い = 新規」とは判定しない(設定画面を一度も保存していない既存サイトも
+	 * `run_hour` が無いため. §3.3).
+	 *
+	 * @param bool $is_fresh_install 新規インストールなら true(変換せず基準だけ `site` にする).
+	 * @return bool 既存の保存値を変換したら true(呼び出し元は次回の予約を作り直すこと).
+	 */
+	public static function maybe_migrate_run_time_basis( $is_fresh_install = false ) {
+		if ( WPCV_Settings::RUN_TIME_BASIS_SITE === WPCV_Settings::get_stored_run_time_basis() ) {
+			return false;
+		}
+
+		WPCV_Settings::adopt_site_run_time_basis( ! $is_fresh_install, WPCV_Settings::site_timezone(), time() );
+
+		return ! $is_fresh_install;
 	}
 
 	/**

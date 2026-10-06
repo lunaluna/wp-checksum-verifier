@@ -115,6 +115,17 @@ class UninstallTest extends TestCase {
 	}
 
 	/**
+	 * v0.10.0: 「古い履歴を今すぐ削除」の結果(`wpcv_prune_status`)も `delete_option()` されることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_deletes_prune_status_option() {
+		$this->run_uninstall();
+
+		$this->assertContains( 'wpcv_prune_status', $GLOBALS['_wpcv_test_delete_option_calls'] );
+	}
+
+	/**
 	 * 単一サイトでは `delete_site_option()` を一切呼ばないことを確認する
 	 * (§Step2. 単一サイトの挙動が変わっていないことの回帰確認).
 	 *

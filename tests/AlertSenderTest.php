@@ -998,8 +998,8 @@ class AlertSenderTest extends TestCase {
 		$mail = $GLOBALS['_wpcv_test_wp_mail_calls'][0];
 		$this->assertSame( array( 'ops@example.com' ), $mail['to'] );
 		$this->assertStringContainsString( '2 runs failed in a row', $mail['subject'] );
-		$this->assertStringContainsString( '#6  failed  2026-01-15 00:00:00 UTC  cron', $mail['message'] );
-		$this->assertStringContainsString( '#5  aborted  2026-01-14 00:00:00 UTC  manual', $mail['message'] );
+		$this->assertStringContainsString( '#6  failed  2026-01-15 00:00:00 +00:00  cron', $mail['message'] );
+		$this->assertStringContainsString( '#5  aborted  2026-01-14 00:00:00 +00:00  manual', $mail['message'] );
 		$this->assertStringContainsString( 'Details: http://example.com/wp-admin/admin.php?page=wpcv-runs', $mail['message'] );
 
 		$this->assertSame( 'run_failure', $captured_context['type'] );

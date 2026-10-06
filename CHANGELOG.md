@@ -2,6 +2,77 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.0] - 2026-10-06
+
+### Changed
+
+- **The daily run time is a time in the site's time zone.** It used to be a UTC
+  time (3:00 UTC by default, which is 12:00 in Japan); the original intent was
+  3:00 in the site's time zone. A fresh install now runs at 3:00 in the site's
+  time zone (Settings > General). The field's label shows the zone in use.
+  - **Sites updated from 0.9.x keep running at the same moment.** On the first
+    request after the update, the saved time is converted from UTC to the
+    site's time zone and saved (a site in Japan that ran at 3:00 UTC now shows
+    12:00). Sites that never saved a run time are converted the same way.
+    Change the time on the Settings screen if you want 3:00 local time. In a
+    zone with daylight saving time the conversion uses the offset on the day
+    of the update, so the local time is kept and the run moves by an hour in
+    UTC when daylight saving time starts or ends.
+  - Changing the site's time zone re-schedules the next run straight away
+    (the saved hours and minutes stay the same).
+  - The REST endpoint's daily due check (`POST /run`) uses the calendar day in
+    the site's time zone.
+  - On a day when the clocks go forward, a time that does not exist runs an
+    hour later; on a day when they go back, a time that occurs twice runs
+    once, at the first occurrence.
+  - On multisite the main site's time zone is used, whichever site the
+    request belongs to.
+- **Dates in the admin screens and alert emails are shown in the site's time
+  zone** (the main site's on multisite), in the same `Y-m-d H:i:s` format as
+  before, and each screen says which zone it uses. This covers the status
+  panel (the next scheduled run is no longer an ISO 8601 UTC string), the run
+  history, findings (including stat-based old/new timestamps and the
+  "emailed" time), suppressions and the GitHub rate-limit notice. Alert emails
+  show the run time with the zone's name instead of "UTC" (for example
+  `Run #12 (2026-09-26 14:45:00 Asia/Tokyo, cron)`); the subject and body given
+  to `wpcv_alert_channels` change in the same way. Everything is still stored
+  in UTC, and the REST API still returns UTC.
+- **History retention defaults to 12 months** (it was "Keep forever"). This also
+  applies to sites updated from 0.9.x that never saved a retention period; a
+  site that saved "Keep forever" keeps everything. The plugin's history started
+  in September 2026, so nothing is deleted by the update itself: the first
+  deletions under the new default happen from September 2027. An invalid saved
+  value still means "Keep forever" (it no longer falls back to the default).
+  The 12-month default is not based on a measurement; it may be revisited after
+  measuring how fast the history grows on production sites.
+
+### Added
+
+- **Stored data overview.** The Settings screen shows the approximate rows and
+  size of each of the plugin's tables, their total, and the start time of the
+  oldest run (from database statistics, so it can be up to a day old). If only
+  some of the tables can be read, the missing ones are named.
+- **`wp wpcv prune`** deletes history older than the retention period right
+  away, repeating until nothing is left, and prints the counts.
+  `--dry-run` only counts. There is no option for a different period.
+- **"Delete old history now"** on the Settings screen does the same in the
+  background (Action Scheduler actions of up to 500 per-target results each),
+  after a confirmation, and shows the progress and the result of the last
+  deletion. It cannot be used while the retention is "Keep forever". Its result
+  is stored in the `wpcv_prune_status` option, which uninstall removes.
+
+### Fixed
+
+- **History retention could delete a few days too much at the end of a month.**
+  The limit "N months ago" moved into the next month when that day did not
+  exist (3 months before 31 May was 3 March instead of 28 February). The limit
+  is now the same day N months before, or the last day of that month.
+- **Only one history deletion runs at a time.** The deletion at the end of a
+  run, `wp wpcv prune` and the "Delete old history now" button take a database
+  lock; when another one is running, the end of a run skips its deletion,
+  `wp wpcv prune` stops with a message, and the button's action tries again a
+  minute later. Clicking the button twice no longer starts two deletions.
+
 ## [0.9.2] - 2026-10-03
 
 ### Added

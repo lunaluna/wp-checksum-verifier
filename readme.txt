@@ -4,7 +4,7 @@ Tags: security, checksum, integrity, malware, audit
 Requires at least: 6.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.9.2
+Stable tag: 0.10.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -19,7 +19,7 @@ Plugins and themes distributed through GitHub Releases can be mapped to a reposi
 = Running a verification =
 
 * **WP-CLI**: `wp wpcv run` runs synchronously (the default). `wp wpcv run --async` enqueues the run via Action Scheduler when available.
-* **WP-Cron**: a daily run at a configurable UTC time (Settings screen), enabled automatically once the plugin is active.
+* **WP-Cron**: a daily run at a configurable time in the site's time zone (Settings screen), enabled automatically once the plugin is active.
 * **Admin button**: a "Run now" button on the settings screen schedules an immediate run.
 * **REST API**: `POST /wp-json/wpcv/v1/run`, authenticated with a bearer token issued from the settings screen — for external schedulers (e.g. managed hosting without WP-Cron).
 

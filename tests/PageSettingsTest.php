@@ -9,9 +9,13 @@ require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-github-client.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-github-mappings.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-prune-job.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-data-usage.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-settings.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-run-history.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
+
+require_once __DIR__ . '/doubles.php';
 
 use PHPUnit\Framework\TestCase;
 
@@ -152,6 +156,34 @@ class PageSettingsTest extends TestCase {
 	}
 
 	/**
+	 * `format_run_summary()` の最終動作の日時が、サイトのタイムゾーンで表示されることを確認する(D2).
+	 *
+	 * @return void
+	 */
+	public function test_format_run_summary_shows_last_activity_in_site_time_zone() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		$run = array(
+			'run_id'           => 1,
+			'status'           => 'running',
+			'findings_total'   => 0,
+			'last_activity_at' => '2026-10-05 18:03:34',
+			'targets'          => array(
+				'queued'  => 0,
+				'retry'   => 0,
+				'running' => 0,
+				'total'   => 0,
+			),
+		);
+
+		try {
+			$this->assertStringContainsString( 'last activity: 2026-10-06 03:03:34', WPCV_Page_Settings::format_run_summary( $run ) );
+		} finally {
+			unset( $GLOBALS['_wpcv_test_options']['timezone_string'] );
+		}
+	}
+
+	/**
 	 * `format_run_summary()` が `last_activity_at` が `null` の場合、日時の
 	 * 代わりにダッシュを表示することを確認する(target_runsが一度も
 	 * claim・finalizeされていない直後のrun等).
@@ -265,5 +297,195 @@ class PageSettingsTest extends TestCase {
 		$this->assertSame( array( 'twentytwentyfive' ), WPCV_Page_Settings::find_core_bundled_themes( $resolved, $core ) );
 		$this->assertSame( array(), WPCV_Page_Settings::find_core_bundled_themes( $resolved, null ) );
 		$this->assertSame( array(), WPCV_Page_Settings::find_core_bundled_themes( array(), $core ) );
+	}
+
+	/**
+	 * 「古い履歴を今すぐ削除」ボタンは、保持期間が無期限のとき・削除中のときに押せないことを確認する(§8.5 #1・#6).
+	 *
+	 * @return void
+	 */
+	public function test_prune_button_state_disables_when_unlimited_or_active() {
+		$unlimited = WPCV_Page_Settings::prune_button_state( 0, false );
+		$this->assertTrue( $unlimited['disabled'] );
+		$this->assertNotEmpty( $unlimited['notice'] );
+
+		$active = WPCV_Page_Settings::prune_button_state( 12, true );
+		$this->assertTrue( $active['disabled'] );
+		$this->assertNotEmpty( $active['notice'] );
+
+		$this->assertSame(
+			array(
+				'disabled' => false,
+				'notice'   => null,
+			),
+			WPCV_Page_Settings::prune_button_state( 12, false )
+		);
+	}
+
+	/**
+	 * `WPCV_Prune_Job::request()` の結果ごとに、通知の種類が決まることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_prune_result_notice_maps_each_outcome() {
+		$this->assertNull( WPCV_Page_Settings::prune_result_notice( null ) );
+
+		$expected = array(
+			WPCV_Prune_Job::RESULT_SCHEDULED       => 'success',
+			WPCV_Prune_Job::RESULT_ALREADY_RUNNING => 'info',
+			WPCV_Prune_Job::RESULT_UNLIMITED       => 'warning',
+			WPCV_Prune_Job::RESULT_INLINE          => 'success',
+		);
+
+		foreach ( $expected as $result => $type ) {
+			$notice = WPCV_Page_Settings::prune_result_notice(
+				array(
+					'result' => $result,
+					'error'  => null,
+				)
+			);
+
+			$this->assertSame( $type, $notice['type'], $result );
+			$this->assertNotSame( '', $notice['message'] );
+		}
+
+		$error = WPCV_Page_Settings::prune_result_notice(
+			array(
+				'result' => WPCV_Prune_Job::RESULT_SCHEDULED,
+				'error'  => 'enqueue_failed',
+			)
+		);
+		$this->assertSame( 'error', $error['type'] );
+	}
+
+	/**
+	 * 直近の削除の結果の文字列に、状態・サイトのタイムゾーンの日時・件数が入ることを確認する(D14).
+	 *
+	 * @return void
+	 */
+	public function test_format_prune_status_shows_state_local_time_and_counts() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		try {
+			$text = WPCV_Page_Settings::format_prune_status(
+				array(
+					'state'       => WPCV_Prune_Job::STATE_DONE,
+					'months'      => 12,
+					'started_at'  => '2026-10-05 18:00:00',
+					'finished_at' => '2026-10-05 18:00:30',
+					'totals'      => array(
+						'runs'         => 3,
+						'target_runs'  => 40,
+						'findings'     => 7,
+						'suppressions' => 1,
+					),
+				)
+			);
+		} finally {
+			unset( $GLOBALS['_wpcv_test_options']['timezone_string'] );
+		}
+
+		$this->assertStringContainsString( 'Completed', $text );
+		$this->assertStringContainsString( 'started: 2026-10-06 03:00:00', $text );
+		$this->assertStringContainsString( 'finished: 2026-10-06 03:00:30', $text );
+		$this->assertStringContainsString( '3 runs, 40 per-target results, 7 findings, 1 suppressions', $text );
+	}
+
+	/**
+	 * 終わっていない削除は、終了日時がダッシュで表示されることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_format_prune_status_shows_dash_while_running() {
+		$text = WPCV_Page_Settings::format_prune_status(
+			array(
+				'state'       => WPCV_Prune_Job::STATE_RUNNING,
+				'months'      => 12,
+				'started_at'  => '2026-10-05 18:00:00',
+				'finished_at' => null,
+				'totals'      => array(
+					'runs'         => 0,
+					'target_runs'  => 0,
+					'findings'     => 0,
+					'suppressions' => 0,
+				),
+			)
+		);
+
+		$this->assertStringContainsString( 'In progress', $text );
+		$this->assertStringContainsString( 'finished: —', $text );
+	}
+
+	/**
+	 * 「保存しているデータ」の表の行が、ラベル・桁区切りの行数・サイズ・合計になることを確認する(P1).
+	 *
+	 * @return void
+	 */
+	public function test_data_usage_rows_include_labels_sizes_and_total() {
+		$rows = WPCV_Page_Settings::data_usage_rows(
+			array(
+				'tables'        => array(
+					'wpcv_runs'    => array( 'rows' => 136, 'bytes' => 49152 ),
+					'wpcv_findings' => array( 'rows' => 1329, 'bytes' => 3112960 ),
+				),
+				'oldest_run_at' => '2026-09-08 14:01:03',
+			)
+		);
+
+		$this->assertSame( array( 'label' => 'Run history', 'rows' => '136', 'size' => '48.0 KB' ), $rows[0] );
+		$this->assertSame( array( 'label' => 'Findings', 'rows' => '1,329', 'size' => '3.0 MB' ), $rows[1] );
+		$this->assertSame( array( 'label' => 'Total', 'rows' => '1,465', 'size' => '3.0 MB' ), $rows[2] );
+	}
+
+	/**
+	 * テーブルの情報が取れないときは `null`(画面は「取得できません」と表示する)になることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_data_usage_rows_returns_null_when_unavailable() {
+		$this->assertNull( WPCV_Page_Settings::data_usage_rows( array( 'tables' => null, 'oldest_run_at' => null ) ) );
+	}
+
+	/**
+	 * 一部のテーブルが欠けたときは、警告に接頭辞つきのテーブル名が入り、合計の行は「取得できた分」と書くことを確認する(レビュー指摘4).
+	 *
+	 * @return void
+	 */
+	public function test_data_usage_warns_about_missing_tables() {
+		$GLOBALS['wpdb'] = new WPCV_Test_Fake_WPDB();
+
+		$usage = array(
+			'tables'        => array( 'wpcv_runs' => array( 'rows' => 5, 'bytes' => 16384 ) ),
+			'missing'       => array( 'wpcv_target_runs', 'wpcv_findings' ),
+			'oldest_run_at' => null,
+		);
+
+		try {
+			$notice = WPCV_Page_Settings::data_usage_missing_notice( $usage );
+		} finally {
+			unset( $GLOBALS['wpdb'] );
+		}
+
+		$this->assertStringContainsString( 'wp_wpcv_target_runs, wp_wpcv_findings', $notice );
+
+		$rows = WPCV_Page_Settings::data_usage_rows( $usage );
+		$this->assertSame( 'Total (retrieved tables only)', end( $rows )['label'] );
+	}
+
+	/**
+	 * 全部そろっていれば警告は出ず、合計の行はただの「合計」であることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_data_usage_has_no_warning_when_complete() {
+		$usage = array(
+			'tables'        => array( 'wpcv_runs' => array( 'rows' => 5, 'bytes' => 16384 ) ),
+			'missing'       => array(),
+			'oldest_run_at' => null,
+		);
+
+		$this->assertNull( WPCV_Page_Settings::data_usage_missing_notice( $usage ) );
+		$rows = WPCV_Page_Settings::data_usage_rows( $usage );
+		$this->assertSame( 'Total', end( $rows )['label'] );
 	}
 }

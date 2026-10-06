@@ -9,6 +9,7 @@ require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-error-code.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-alert-composer.php';
 
 use PHPUnit\Framework\TestCase;
@@ -25,7 +26,7 @@ class AlertComposerTest extends TestCase {
 	 * @return void
 	 */
 	protected function tearDown(): void {
-		unset( $GLOBALS['_wpcv_test_filters']['wpcv_alert_max_items'] );
+		unset( $GLOBALS['_wpcv_test_filters']['wpcv_alert_max_items'], $GLOBALS['_wpcv_test_options'] );
 		parent::tearDown();
 	}
 
@@ -258,7 +259,7 @@ class AlertComposerTest extends TestCase {
 		);
 
 		$this->assertSame(
-			"Run #12 (2026-09-26 05:45:00 UTC, cron)\n"
+			"Run #12 (2026-09-26 05:45:00 +00:00, cron)\n"
 			. "Targets: 0 verified / 0 change-tracked / 0 unverifiable / 0 failed\n"
 			. "New: 0  Resolved: 0  Continuing: 0 (already reported)\n",
 			$result['body']
@@ -425,9 +426,9 @@ class AlertComposerTest extends TestCase {
 		$lines = explode( "\n", $result['body'] );
 
 		$this->assertSame( '3 runs failed in a row:', $lines[0] );
-		$this->assertSame( '  #6  failed  2026-09-08 12:00:00 UTC  cron', $lines[1] );
-		$this->assertSame( '  #5  aborted  2026-09-08 06:00:00 UTC  manual', $lines[2] );
-		$this->assertSame( '  #4  failed  2026-09-08 00:00:00 UTC  cli', $lines[3] );
+		$this->assertSame( '  #6  failed  2026-09-08 12:00:00 +00:00  cron', $lines[1] );
+		$this->assertSame( '  #5  aborted  2026-09-08 06:00:00 +00:00  manual', $lines[2] );
+		$this->assertSame( '  #4  failed  2026-09-08 00:00:00 +00:00  cli', $lines[3] );
 		$this->assertStringContainsString( 'Details: https://example.test/wp-admin/admin.php?page=wpcv-runs', $result['body'] );
 	}
 
@@ -548,5 +549,53 @@ class AlertComposerTest extends TestCase {
 		$result = WPCV_Alert_Composer::compose( array( 'counts' => array( 'new' => 1 ) ) );
 
 		$this->assertStringNotContainsString( 'Cannot compare with the source', $result['body'] );
+	}
+
+	/**
+	 * 差分メールの Run 行の日時がサイトのタイムゾーンで、タイムゾーン名つきになることを確認する(D12).
+	 *
+	 * @return void
+	 */
+	public function test_body_run_line_uses_site_time_zone() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		$result = WPCV_Alert_Composer::compose(
+			array(
+				'run' => array(
+					'id'          => 12,
+					'finished_at' => '2026-09-26 05:45:00',
+					'run_trigger' => 'cron',
+				),
+			)
+		);
+
+		$this->assertStringStartsWith( "Run #12 (2026-09-26 14:45:00 Asia/Tokyo, cron)\n", $result['body'] );
+	}
+
+	/**
+	 * 連続失敗メールの各 run の行の日時もサイトのタイムゾーンになることを確認する(D13).
+	 *
+	 * @return void
+	 */
+	public function test_failure_streak_lines_use_site_time_zone() {
+		$GLOBALS['_wpcv_test_options']['gmt_offset'] = 9;
+
+		$result = WPCV_Alert_Composer::compose_run_failure(
+			array(
+				'site_name'     => 'Example Site',
+				'streak_length' => 1,
+				'streak_runs'   => array(
+					array(
+						'id'          => 6,
+						'status'      => 'failed',
+						'started_at'  => '2026-09-08 12:00:00',
+						'run_trigger' => 'cron',
+					),
+				),
+				'details_url'   => '',
+			)
+		);
+
+		$this->assertStringContainsString( '  #6  failed  2026-09-08 21:00:00 +09:00  cron', $result['body'] );
 	}
 }

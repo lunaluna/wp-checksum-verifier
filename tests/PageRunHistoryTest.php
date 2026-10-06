@@ -10,6 +10,7 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.p
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-error-code.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-run-history.php';
 
 use PHPUnit\Framework\TestCase;
@@ -293,5 +294,25 @@ class PageRunHistoryTest extends TestCase {
 		);
 
 		$this->assertSame( array( 'plugin:a' => true ), $ids );
+	}
+
+	/**
+	 * 実行履歴の日時(開始・終了・期限・アラート試行)が、サイトのタイムゾーンで表示され、
+	 * 空はダッシュになることを確認する(D5・D6).
+	 *
+	 * @return void
+	 */
+	public function test_display_datetime_uses_site_time_zone() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+		$method = new ReflectionMethod( 'WPCV_Page_Run_History', 'display_datetime' );
+		$method->setAccessible( true );
+
+		try {
+			$this->assertSame( '2026-10-06 03:03:34', $method->invoke( null, '2026-10-05 18:03:34' ) );
+			$this->assertSame( '—', $method->invoke( null, null ) );
+			$this->assertSame( '—', $method->invoke( null, '0000-00-00 00:00:00' ) );
+		} finally {
+			unset( $GLOBALS['_wpcv_test_options']['timezone_string'] );
+		}
 	}
 }

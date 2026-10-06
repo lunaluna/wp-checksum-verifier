@@ -439,6 +439,23 @@ if ( ! function_exists( 'as_schedule_single_action' ) ) {
 	}
 }
 
+if ( ! function_exists( 'as_has_scheduled_action' ) ) {
+	/**
+	 * Stub as_has_scheduled_action() — `$GLOBALS['_wpcv_test_as_has_scheduled'][$hook]` が真なら true
+	 * (予約済みまたは実行中のアクションがあることを表す). 呼び出しは `_wpcv_test_as_has_scheduled_calls` に記録する.
+	 *
+	 * @param string     $hook  Hook name.
+	 * @param array|null $args  Args.
+	 * @param string     $group Group.
+	 * @return bool
+	 */
+	function as_has_scheduled_action( $hook, $args = null, $group = '' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$GLOBALS['_wpcv_test_as_has_scheduled_calls'][] = array( $hook, $args, $group );
+
+		return ! empty( $GLOBALS['_wpcv_test_as_has_scheduled'][ $hook ] );
+	}
+}
+
 if ( ! function_exists( 'as_unschedule_all_actions' ) ) {
 	/**
 	 * Stub as_unschedule_all_actions() — records the call in
@@ -820,6 +837,85 @@ if ( ! function_exists( 'wp_is_large_network' ) ) {
 	 */
 	function wp_is_large_network( $using = 'sites' ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound, Generic.CodeAnalysis.UnusedFunctionParameter.Found
 		return ! empty( $GLOBALS['_wpcv_test_large_network'] );
+	}
+}
+
+if ( ! function_exists( 'wp_timezone' ) ) {
+	/**
+	 * Stub wp_timezone() — 本物(`wp_timezone_string()` + `new DateTimeZone()`)と同じ規則で、
+	 * `$GLOBALS['_wpcv_test_options']` の `timezone_string` / `gmt_offset` から組み立てる.
+	 *
+	 * @return DateTimeZone
+	 */
+	function wp_timezone() { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$timezone_string = get_option( 'timezone_string' );
+
+		if ( $timezone_string ) {
+			return new DateTimeZone( $timezone_string );
+		}
+
+		$offset  = (float) get_option( 'gmt_offset' );
+		$hours   = (int) $offset;
+		$minutes = ( $offset - $hours );
+		$sign    = ( $offset < 0 ) ? '-' : '+';
+
+		return new DateTimeZone( sprintf( '%s%02d:%02d', $sign, abs( $hours ), abs( $minutes * 60 ) ) );
+	}
+}
+
+if ( ! function_exists( 'number_format_i18n' ) ) {
+	/**
+	 * Stub number_format_i18n() — 英語のロケール(桁区切り `,`)で整形する.
+	 *
+	 * @param float $number   数.
+	 * @param int   $decimals 小数の桁数.
+	 * @return string
+	 */
+	function number_format_i18n( $number, $decimals = 0 ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		return number_format( (float) $number, $decimals );
+	}
+}
+
+if ( ! function_exists( 'size_format' ) ) {
+	/**
+	 * Stub size_format() — 本物(`wp-includes/functions.php`)と同じく 1024 区切りで B・KB・MB・GB に整形する(0 は「0 B」).
+	 *
+	 * @param int|string $bytes    バイト数.
+	 * @param int        $decimals 小数の桁数.
+	 * @return string|false
+	 */
+	function size_format( $bytes, $decimals = 0 ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		if ( 0 === $bytes ) {
+			return number_format( 0, $decimals ) . ' B';
+		}
+
+		$bytes = (float) $bytes;
+
+		foreach ( array( 'GB' => 1073741824, 'MB' => 1048576, 'KB' => 1024, 'B' => 1 ) as $unit => $size ) {
+			if ( $bytes >= $size ) {
+				return number_format( $bytes / $size, $decimals ) . ' ' . $unit;
+			}
+		}
+
+		return false;
+	}
+}
+
+if ( ! function_exists( 'wp_date' ) ) {
+	/**
+	 * Stub wp_date() — 本物と同じく timestamp を `$timezone`(省略時 `wp_timezone()`)で整形する
+	 * (月名・曜日の翻訳はしない).
+	 *
+	 * @param string            $format    書式.
+	 * @param int|null          $timestamp Unix timestamp. 省略時は現在.
+	 * @param DateTimeZone|null $timezone  タイムゾーン.
+	 * @return string
+	 */
+	function wp_date( $format, $timestamp = null, $timezone = null ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound
+		$timestamp = null === $timestamp ? time() : $timestamp;
+		$timezone  = null === $timezone ? wp_timezone() : $timezone;
+
+		return ( new DateTimeImmutable( '@' . $timestamp ) )->setTimezone( $timezone )->format( $format );
 	}
 }
 

@@ -5,7 +5,7 @@ tampering by comparing installed files against official checksum manifests
 (wp.org core/plugin checksums, and manifests built from wp.org theme zips)
 and reports unknown files not present in any manifest.
 
-> **Status**: v0.9.2. The verification engine, all planned execution model
+> **Status**: v0.10.0. The verification engine, all planned execution model
 > entry points (WP-CLI, WP-Cron, admin "Run now" button, REST API),
 > file-level chunked execution with resume, the suppression engine
 > (`exclude_target`/`exclude_path`/`allowlist_hash` plus strict mode),
@@ -18,8 +18,12 @@ and reports unknown files not present in any manifest.
 > below). v0.9 adds a history retention setting, an "Active on" column for
 > multisite findings, a filter for the required capability, a more complete
 > uninstall, and separate handling of a rejected GitHub token (see "History
-> retention", "Multisite", "Permissions" and "Uninstall" below). See
-> `CHANGELOG.md` for details.
+> retention", "Multisite", "Permissions" and "Uninstall" below). v0.10 runs
+> the daily verification at a time in the site's time zone, shows dates in the
+> admin screens and alert emails in the site's time zone, keeps 12 months of
+> history by default, and adds a stored-data overview, `wp wpcv prune` and a
+> "Delete old history now" button (see "Settings" and "History retention"
+> below). See `CHANGELOG.md` for details.
 
 ## Verification targets
 
@@ -346,7 +350,7 @@ terminates.
 | --- | --- | --- |
 | WP-CLI (sync) | `wp wpcv run` | The default; blocks until the run completes. |
 | WP-CLI (async) | `wp wpcv run --async` | Enqueues via Action Scheduler when available, otherwise falls back to sync. |
-| WP-Cron | automatic | Runs once a day at a configurable UTC time (Settings screen); self-reschedules after each run. |
+| WP-Cron | automatic | Runs once a day at a configurable time in the site's time zone (Settings screen); self-reschedules after each run. |
 | Admin button | Settings screen → "Run now" | Schedules an immediate run without blocking the request; disabled when `DISABLE_WP_CRON` is set. |
 | REST API | `POST /wp-json/wpcv/v1/run` | For external schedulers (e.g. managed hosting without WP-Cron). See below. |
 
@@ -444,9 +448,12 @@ minutes) and does not start a new run on every call:
   run's chunked execution (the same target/file-level dispatcher WP-Cron and
   WP-CLI use) for up to the configured time budget (Settings screen,
   default 20s) and returns.
-- If no run is in progress and the configured daily run time (UTC, the same
-  setting used by WP-Cron) has passed and no run has been made for today
-  yet, it starts a new run and advances it the same way.
+- If no run is in progress and the configured daily run time (in the site's
+  time zone, the same setting used by WP-Cron) has passed and no run has been
+  made for today yet, it starts a new run and advances it the same way.
+  "Today" is the calendar day in the site's time zone, so a call between local
+  midnight and the run time does not start the run even if the UTC date has
+  already changed.
 - Otherwise (not yet due, or today's run already exists) it does not start
   anything and reports the most recent run instead.
 
@@ -483,7 +490,8 @@ Requires a read-scope token. Returns `current_run` (the in-progress run, or
 `null` if none), `last_run` (the most recently completed run, or `null` if
 none yet), and `next_scheduled_at` (the next daily due time, computed from
 the Settings screen's run time regardless of which mode actually triggers
-it). Each run object includes its target-status tally (`queued`, `retry`,
+it). All timestamps in the REST API are in UTC (ISO 8601 with `+00:00`), even
+though the admin screens show them in the site's time zone. Each run object includes its target-status tally (`queued`, `retry`,
 `running`, `success`, `unverifiable`, `failed`, `skipped`, `aborted`,
 `total`), `findings_total`, `scheduled_for`, `deadline_at`,
 `last_activity_at` (the most recent target claim/finish timestamp — useful
@@ -636,6 +644,12 @@ see "GitHub Releases verification" above). It is sent once, not on every run
 while the problem continues, and such a target does not count toward the
 repeated-unverifiable alert.
 
+**Dates in emails**: the run time in an alert email is shown in the site's
+time zone, followed by the name of the zone (for example
+`Run #12 (2026-09-26 14:45:00 Asia/Tokyo, cron)`). Before 0.10.0 it was shown in
+UTC with "UTC" after it; the subject and body passed to `wpcv_alert_channels`
+changed in the same way.
+
 **Recipients and testing**: set one or more addresses in **Alert
 recipients** on the Settings screen (one per line). If it is left empty, no
 email is sent and a warning notice is shown instead of silently doing
@@ -689,7 +703,13 @@ can be changed with filters:
 
 Alongside the Settings screen (see below), the plugin adds three read/write
 screens under the same top-level "Checksum Verifier" menu (network admin
-menu on multisite):
+menu on multisite).
+
+Dates and times on every screen are shown in the site's time zone (Settings >
+General; the main site's on multisite) in the same `Y-m-d H:i:s` format as
+before, and each screen says which time zone it uses. They are stored in UTC,
+so changing the time zone changes how old records are shown as well. Before
+0.10.0 they were shown in UTC.
 
 - **Findings** — the findings for the most recent run (or a specific
   `run_id`), with the same `dimension`/`status`/`severity`/`diff_state`/
@@ -751,7 +771,8 @@ back to synchronous execution when it isn't), and the most recent
 WP-CLI-triggered run recorded on this site (this only reflects runs
 actually recorded here — it cannot detect whether WP-CLI itself is
 installed on the server). Below that, you can configure: the daily run time
-(UTC, shared by WP-Cron and the REST endpoint's due check), the REST
+(in the site's time zone, shared by WP-Cron and the REST endpoint's due check;
+see "Run time and time zone" below), the REST
 endpoint's per-request time budget, strict mode (reports readme.txt/readme.md
 changes as findings instead of suppressing them as a low-risk "soft change";
 off by default), stat-based change detection (on by default), content-hash
@@ -764,14 +785,44 @@ button (see Alerts above), the GitHub repository mappings and whether a
 GitHub token is configured (see "GitHub Releases verification" above), how
 long to keep history (see "History retention" below), and REST token
 issuance. Hours and minutes of the run time are always shown with two digits.
+The screen also shows how much data the plugin stores and has a "Delete old
+history now" button (see "History retention" below).
+
+### Run time and time zone
+
+The daily run time is a time in the site's time zone (Settings > General). The
+label of the field shows which zone is used, for example "Daily run time (site
+time zone: Asia/Tokyo)". On a fresh install the default is 3:00 in that zone.
+
+- **Sites updated from 0.9.x** keep running at the same moment as before. Until
+  0.9.x the time was a UTC time (3:00 UTC by default, which is 12:00 in Japan),
+  so on the first request after the update it is converted to the site's time
+  zone and saved (for example 3:00 UTC becomes 12:00 on a site in Japan).
+  Change it on the Settings screen if you want a different time. In a zone with
+  daylight saving time the conversion uses the offset on the day of the update,
+  so the run keeps the same local time and moves by an hour in UTC when daylight
+  saving time starts or ends.
+- **Changing the site's time zone** re-schedules the next run straight away. The
+  saved hours and minutes stay the same (3:00 stays 3:00, now in the new zone).
+- **Daylight saving time**: a time that does not exist on the day the clocks go
+  forward runs an hour later (2:30 becomes 3:30); a time that occurs twice on the
+  day the clocks go back runs once, at the first occurrence.
+- **Multisite** uses the main site's time zone for the schedule and for every
+  date shown, whichever site the screen or the request belongs to.
 
 ## History retention
 
-By default the plugin keeps the history of every run forever. **History
-retention** on the Settings screen (**Keep forever** — the default — or 3, 6,
-12 or 24 months) deletes older history. Nothing is deleted until you choose a
-period; after you do, older history is removed gradually at the end of the
-following runs.
+**History retention** on the Settings screen (**Keep forever**, or 3, 6, 12 or
+24 months) deletes older history. The default is **12 months** (before 0.10.0 it
+was Keep forever). The default also applies to sites updated from 0.9.x that
+never saved a retention period; a site where **Keep forever** was saved keeps
+everything. History older than the period is removed gradually at the end of
+the following runs. The plugin's history started in September 2026, so nothing
+is removed by the update itself.
+
+The limit is the same day N months before (at the same time of day); when that
+month is shorter, the last day of that month is used (for example 3 months
+before 31 May is 28 February, or 29 February in a leap year).
 
 The age of a record is the start time of its run. At the end of each run, up to
 500 per-target results and up to 500 run records past the limit are deleted
@@ -806,6 +857,42 @@ long-lasting finding, and stat-based findings (which are never "resolved"), are
 deleted with the rest. On multisite the history is shared by the whole
 network, so one setting covers it.
 
+### Stored data
+
+The Settings screen shows the approximate number of rows and the size of each of
+the plugin's tables, their total, and the start time of the oldest run. The
+numbers come from the database statistics (`information_schema`), not from
+counting rows, so they can be up to a day old (InnoDB statistics), and they are
+read every time the screen is shown (one query; under 1 ms on a local test
+database, not measured on shared hosting). If the server does not return them,
+the screen says the amount could not be retrieved; if only some of the seven
+tables are returned, the screen names the missing tables and labels the total
+as covering the retrieved tables only.
+
+### Deleting old history now
+
+To delete history older than the period without waiting for the following runs:
+
+- **Delete old history now** on the Settings screen (after a confirmation). The
+  deletion runs in the background as Action Scheduler actions, one batch of up
+  to 500 per-target results at a time, so the request returns at once; reload
+  the screen to see the progress and the result of the last deletion (counts,
+  start and end time). The button cannot be used while the retention is Keep
+  forever or while a deletion is in progress. Without Action Scheduler, one
+  batch is deleted at once and the rest is left to the end of the following
+  runs.
+- `wp wpcv prune` deletes everything past the period in batches until nothing is
+  left, and prints the counts. `wp wpcv prune --dry-run` only counts what would
+  be deleted (it can take a while on a large history). There is no option to use
+  a different period: change the setting instead, so the screen and what is
+  deleted always agree.
+
+Both use the same rules as the deletion at the end of a run (the "Always kept"
+list above). Only one deletion runs at a time: if another one (the end of a
+run, the button or `wp wpcv prune`) is already deleting, the end of a run skips
+its deletion, `wp wpcv prune` stops with a message, and the button's action
+tries again a minute later.
+
 One side effect: the repeated-unverifiable and repeated-run-failure alerts look
 back through history until the streak breaks. If a failure lasts longer than the
 retention period, the record of the earlier alert can age out, and the alert
@@ -818,6 +905,10 @@ The plugin treats a multisite network as one installation. Its tables are
 created once with the network's base prefix, the settings are network settings,
 the screens are in the Network Admin menu, and a verification covers every
 plugin and theme on disk, whether or not any site has it active.
+
+**Time zone.** The schedule and every date shown use the main site's time zone,
+whichever site the screen or request belongs to. Changing a sub-site's time zone
+does not change anything; changing the main site's re-schedules the next run.
 
 **Activate it network-wide.** Network activation is the supported setup.
 Activating it only on the main site also works (the Network Admin loads the
@@ -902,8 +993,9 @@ Deleting the plugin (after deactivating it) removes what it created:
 - the seven tables (runs, per-target results, findings, suppression rules, the
   stat baselines, update events and the manifest cache);
 - the options `wpcv_db_version`, `wpcv_settings`, `wpcv_rest_token_hash`,
-  `wpcv_rest_token_hash_read` and `wpcv_update_events_since` (site options on
-  multisite);
+  `wpcv_rest_token_hash_read`, `wpcv_update_events_since` and
+  `wpcv_prune_status` (the result of the last "Delete old history now"; site
+  options on multisite);
 - the transients: the GitHub rate-limit marker, the REST token failure counters
   and the self-update check cache (removed by exact name, so other plugins that
   use the same self-update library keep theirs);

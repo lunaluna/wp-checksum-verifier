@@ -2,14 +2,14 @@
 # This file is distributed under the GPLv2 or later.
 msgid ""
 msgstr ""
-"Project-Id-Version: WP Checksum Verifier 0.9.2\n"
+"Project-Id-Version: WP Checksum Verifier 0.10.0\n"
 "Report-Msgid-Bugs-To: https://wordpress.org/support/plugin/wp-checksum-verifier\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"POT-Creation-Date: 2026-10-03T09:15:16+00:00\n"
+"POT-Creation-Date: 2026-10-06T00:15:04+00:00\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "X-Generator: WP-CLI 2.12.0\n"
 "X-Domain: wp-checksum-verifier\n"
@@ -17,7 +17,7 @@ msgstr ""
 #. Plugin Name of the plugin
 #: wp-checksum-verifier.php
 #: includes/admin/class-wpcv-admin-menu.php:124
-#: includes/admin/class-wpcv-page-settings.php:153
+#: includes/admin/class-wpcv-page-settings.php:168
 msgid "WP Checksum Verifier"
 msgstr ""
 
@@ -57,14 +57,16 @@ msgstr ""
 #: includes/admin/class-wpcv-admin-menu.php:172
 #: includes/admin/class-wpcv-admin-menu.php:173
 #: includes/admin/class-wpcv-page-findings.php:101
-#: includes/admin/class-wpcv-page-run-history.php:89
-#: includes/admin/class-wpcv-page-run-history.php:245
-#: includes/admin/class-wpcv-page-run-history.php:267
+#: includes/admin/class-wpcv-page-run-history.php:91
+#: includes/admin/class-wpcv-page-run-history.php:249
+#: includes/admin/class-wpcv-page-run-history.php:271
+#: includes/admin/class-wpcv-page-settings.php:669
 msgid "Findings"
 msgstr ""
 
 #: includes/admin/class-wpcv-admin-menu.php:190
 #: includes/admin/class-wpcv-admin-menu.php:191
+#: includes/admin/class-wpcv-page-settings.php:670
 #: includes/admin/class-wpcv-page-suppressions.php:64
 msgid "Suppressions"
 msgstr ""
@@ -97,609 +99,747 @@ msgstr ""
 msgid "Open Network Admin plugins"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:105
+#: includes/admin/class-wpcv-page-findings.php:107
 msgid "The suppression rule has been created. It will apply starting with the next run."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:114
-#: includes/admin/class-wpcv-page-run-history.php:78
+#: includes/admin/class-wpcv-page-findings.php:116
+#: includes/admin/class-wpcv-page-run-history.php:80
 msgid "No runs have been recorded yet."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:138
+#: includes/admin/class-wpcv-page-findings.php:140
 msgid "Dimension"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:140
-#: includes/admin/class-wpcv-page-findings.php:151
-#: includes/admin/class-wpcv-page-findings.php:162
-#: includes/admin/class-wpcv-page-findings.php:173
+#: includes/admin/class-wpcv-page-findings.php:142
+#: includes/admin/class-wpcv-page-findings.php:153
+#: includes/admin/class-wpcv-page-findings.php:164
+#: includes/admin/class-wpcv-page-findings.php:175
 msgid "All"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:149
-#: includes/admin/class-wpcv-page-findings.php:257
-#: includes/admin/class-wpcv-page-run-history.php:84
-#: includes/admin/class-wpcv-page-run-history.php:179
-#: includes/admin/class-wpcv-page-run-history.php:264
-#: includes/admin/class-wpcv-page-run-history.php:410
-#: includes/admin/class-wpcv-page-settings.php:888
-#: includes/admin/class-wpcv-page-suppressions.php:87
+#: includes/admin/class-wpcv-page-findings.php:151
+#: includes/admin/class-wpcv-page-findings.php:259
+#: includes/admin/class-wpcv-page-run-history.php:86
+#: includes/admin/class-wpcv-page-run-history.php:183
+#: includes/admin/class-wpcv-page-run-history.php:268
+#: includes/admin/class-wpcv-page-run-history.php:414
+#: includes/admin/class-wpcv-page-settings.php:1241
+#: includes/admin/class-wpcv-page-suppressions.php:89
 msgid "Status"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:160
-#: includes/admin/class-wpcv-page-findings.php:259
+#: includes/admin/class-wpcv-page-findings.php:162
+#: includes/admin/class-wpcv-page-findings.php:261
 msgid "Severity"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:171
-#: includes/admin/class-wpcv-page-findings.php:261
-#: includes/admin/class-wpcv-page-run-history.php:199
+#: includes/admin/class-wpcv-page-findings.php:173
+#: includes/admin/class-wpcv-page-findings.php:263
+#: includes/admin/class-wpcv-page-run-history.php:203
 msgid "Diff"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:183
+#: includes/admin/class-wpcv-page-findings.php:185
 msgid "Show suppressed"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:187
+#: includes/admin/class-wpcv-page-findings.php:189
 msgid "Show closed"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:189
+#: includes/admin/class-wpcv-page-findings.php:191
 msgid "Filter"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:230
+#: includes/admin/class-wpcv-page-findings.php:232
 msgid "No findings match the current filters."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:252
-#: includes/admin/class-wpcv-page-run-history.php:262
-#: includes/admin/class-wpcv-page-run-history.php:343
-#: includes/admin/class-wpcv-page-run-history.php:408
-#: includes/admin/class-wpcv-page-suppressions.php:83
+#: includes/admin/class-wpcv-page-findings.php:254
+#: includes/admin/class-wpcv-page-run-history.php:266
+#: includes/admin/class-wpcv-page-run-history.php:347
+#: includes/admin/class-wpcv-page-run-history.php:412
+#: includes/admin/class-wpcv-page-suppressions.php:85
 msgid "Target"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:254
+#: includes/admin/class-wpcv-page-findings.php:256
 msgid "Active on"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:256
-#: includes/admin/class-wpcv-page-run-history.php:409
+#: includes/admin/class-wpcv-page-findings.php:258
+#: includes/admin/class-wpcv-page-run-history.php:413
 msgid "Path"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:258
+#: includes/admin/class-wpcv-page-findings.php:260
 msgid "Details"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:260
-#: includes/admin/class-wpcv-page-run-history.php:263
-#: includes/admin/class-wpcv-page-run-history.php:344
+#: includes/admin/class-wpcv-page-findings.php:262
+#: includes/admin/class-wpcv-page-run-history.php:267
+#: includes/admin/class-wpcv-page-run-history.php:348
 msgid "Version"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:262
+#: includes/admin/class-wpcv-page-findings.php:264
 msgid "Suppressed"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:264
-#: includes/admin/class-wpcv-page-suppressions.php:89
+#: includes/admin/class-wpcv-page-findings.php:266
+#: includes/admin/class-wpcv-page-suppressions.php:91
 msgid "Actions"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:306
+#: includes/admin/class-wpcv-page-findings.php:308
 msgid "Active on shows where each plugin or theme is active now, not when the run took place."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:325
+#: includes/admin/class-wpcv-page-findings.php:327
 msgid "Network-wide (all sites)"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:332
+#: includes/admin/class-wpcv-page-findings.php:334
 msgid "Network-enabled, but not active on any site"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:333
+#: includes/admin/class-wpcv-page-findings.php:335
 msgid "Not active on any site"
 msgstr ""
 
 #. translators: %d: number of sites in the network.
-#: includes/admin/class-wpcv-page-findings.php:338
+#: includes/admin/class-wpcv-page-findings.php:340
 #, php-format
 msgid "Not shown (the network has %d sites)"
 msgstr ""
 
 #. translators: %s: site name. The theme is the parent theme of the site's active child theme.
-#: includes/admin/class-wpcv-page-findings.php:362
+#: includes/admin/class-wpcv-page-findings.php:364
 #, php-format
 msgid "%s (parent theme)"
 msgstr ""
 
 #. translators: %d: number of sites not listed.
-#: includes/admin/class-wpcv-page-findings.php:375
+#: includes/admin/class-wpcv-page-findings.php:377
 #, php-format
 msgid "and %d more"
 msgstr ""
 
 #. translators: 1: number of changed files, 2: number of files compared, 3: sample paths.
-#: includes/admin/class-wpcv-page-findings.php:408
+#: includes/admin/class-wpcv-page-findings.php:410
 #, php-format
 msgid "%1$d of %2$d files changed (rolled up). Examples: %3$s"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:431
+#: includes/admin/class-wpcv-page-findings.php:433
 msgid "possible timestamp forgery (size changed but mtime did not)"
 msgstr ""
 
 #. translators: 1: diff state (new/continuing/event), 2: notified_at timestamp.
-#: includes/admin/class-wpcv-page-findings.php:466
+#: includes/admin/class-wpcv-page-findings.php:469
 #, php-format
 msgid "%1$s (emailed %2$s)"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:489
+#: includes/admin/class-wpcv-page-findings.php:492
 msgid "Reason (required)"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:493
+#: includes/admin/class-wpcv-page-findings.php:496
 msgid "Exclude this path"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:497
+#: includes/admin/class-wpcv-page-findings.php:500
 msgid "Approve this hash"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:501
+#: includes/admin/class-wpcv-page-findings.php:504
 msgid "Exclude entire target"
 msgstr ""
 
 #. translators: %d: suppression rule id.
-#: includes/admin/class-wpcv-page-findings.php:518
+#: includes/admin/class-wpcv-page-findings.php:521
 #, php-format
 msgid "Rule #%d"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:608
+#: includes/admin/class-wpcv-page-findings.php:611
 msgid "This finding has no hash to approve."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:627
+#: includes/admin/class-wpcv-page-findings.php:630
 msgid "Unknown action."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-findings.php:655
-#: includes/admin/class-wpcv-page-suppressions.php:272
+#: includes/admin/class-wpcv-page-findings.php:658
+#: includes/admin/class-wpcv-page-suppressions.php:274
 msgid "A reason is required."
 msgstr ""
 
 #: includes/admin/class-wpcv-page-run-history.php:75
-#: includes/admin/class-wpcv-page-run-history.php:152
+#: includes/admin/class-wpcv-page-run-history.php:154
+#: includes/admin/class-wpcv-page-settings.php:667
 msgid "Run history"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:83
+#: includes/admin/class-wpcv-page-run-history.php:85
 msgid "Run"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:85
-#: includes/admin/class-wpcv-page-run-history.php:183
+#: includes/admin/class-wpcv-page-run-history.php:87
+#: includes/admin/class-wpcv-page-run-history.php:187
 msgid "Trigger"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:86
-#: includes/admin/class-wpcv-page-run-history.php:187
+#: includes/admin/class-wpcv-page-run-history.php:88
+#: includes/admin/class-wpcv-page-run-history.php:191
 msgid "Started"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:87
-#: includes/admin/class-wpcv-page-run-history.php:191
+#: includes/admin/class-wpcv-page-run-history.php:89
+#: includes/admin/class-wpcv-page-run-history.php:195
 msgid "Finished"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:88
-#: includes/admin/class-wpcv-page-run-history.php:254
+#: includes/admin/class-wpcv-page-run-history.php:90
+#: includes/admin/class-wpcv-page-run-history.php:258
 msgid "Targets"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:90
+#: includes/admin/class-wpcv-page-run-history.php:92
 msgid "Diff (New / Resolved / Continuing)"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:91
-#: includes/admin/class-wpcv-page-run-history.php:218
+#: includes/admin/class-wpcv-page-run-history.php:93
+#: includes/admin/class-wpcv-page-run-history.php:222
 msgid "Alert"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:119
-#: includes/admin/class-wpcv-page-run-history.php:440
+#: includes/admin/class-wpcv-page-run-history.php:121
+#: includes/admin/class-wpcv-page-run-history.php:444
 msgid "« Previous"
 msgstr ""
 
 #. translators: 1: current page, 2: total pages.
-#: includes/admin/class-wpcv-page-run-history.php:125
-#: includes/admin/class-wpcv-page-run-history.php:446
+#: includes/admin/class-wpcv-page-run-history.php:127
+#: includes/admin/class-wpcv-page-run-history.php:450
 #, php-format
 msgid "Page %1$d of %2$d"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:132
-#: includes/admin/class-wpcv-page-run-history.php:453
+#: includes/admin/class-wpcv-page-run-history.php:134
+#: includes/admin/class-wpcv-page-run-history.php:457
 msgid "Next »"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:155
+#: includes/admin/class-wpcv-page-run-history.php:159
 msgid "« Back to run history"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:161
+#: includes/admin/class-wpcv-page-run-history.php:165
 msgid "This run could not be found."
 msgstr ""
 
 #. translators: %d: run id.
-#: includes/admin/class-wpcv-page-run-history.php:172
+#: includes/admin/class-wpcv-page-run-history.php:176
 #, php-format
 msgid "Run #%d"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:195
+#: includes/admin/class-wpcv-page-run-history.php:199
 msgid "Deadline"
 msgstr ""
 
 #. translators: 1: diff_status (or a dash), 2: diff attempt count.
-#: includes/admin/class-wpcv-page-run-history.php:205
+#: includes/admin/class-wpcv-page-run-history.php:209
 #, php-format
 msgid "%1$s (attempts: %2$d)"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:214
+#: includes/admin/class-wpcv-page-run-history.php:218
 msgid "New / Resolved / Continuing"
 msgstr ""
 
 #. translators: 1: alert_status (or a dash), 2: alert_attempted_at (or a dash).
-#: includes/admin/class-wpcv-page-run-history.php:224
+#: includes/admin/class-wpcv-page-run-history.php:228
 #, php-format
 msgid "%1$s (attempted: %2$s)"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:234
+#: includes/admin/class-wpcv-page-run-history.php:238
 msgid "Alert error"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:240
+#: includes/admin/class-wpcv-page-run-history.php:244
 msgid "Failed alert channels"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:248
+#: includes/admin/class-wpcv-page-run-history.php:252
 msgid "View findings for this run"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:257
+#: includes/admin/class-wpcv-page-run-history.php:261
 msgid "No targets were recorded for this run."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:265
-#: includes/admin/class-wpcv-page-run-history.php:412
-#: includes/admin/class-wpcv-page-suppressions.php:84
+#: includes/admin/class-wpcv-page-run-history.php:269
+#: includes/admin/class-wpcv-page-run-history.php:416
+#: includes/admin/class-wpcv-page-suppressions.php:86
 msgid "Reason"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:266
+#: includes/admin/class-wpcv-page-run-history.php:270
 msgid "Files"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:268
+#: includes/admin/class-wpcv-page-run-history.php:272
 msgid "Attempts"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:269
+#: includes/admin/class-wpcv-page-run-history.php:273
 msgid "Diff mode"
 msgstr ""
 
 #. translators: 1: verified files, 2: total files.
-#: includes/admin/class-wpcv-page-run-history.php:285
+#: includes/admin/class-wpcv-page-run-history.php:289
 #, php-format
 msgid "%1$d / %2$d"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:335
+#: includes/admin/class-wpcv-page-run-history.php:339
 msgid "Update events since the previous run"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:337
+#: includes/admin/class-wpcv-page-run-history.php:341
 msgid "No update events were recorded in this window."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:345
+#: includes/admin/class-wpcv-page-run-history.php:349
 msgid "Source"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:346
+#: includes/admin/class-wpcv-page-run-history.php:350
 msgid "Recorded at"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:347
+#: includes/admin/class-wpcv-page-run-history.php:351
 msgid "By"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:379
+#: includes/admin/class-wpcv-page-run-history.php:383
 msgid "Automatic (cron/WP-CLI)"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:400
+#: includes/admin/class-wpcv-page-run-history.php:404
 msgid "Findings ended in this run"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:402
+#: includes/admin/class-wpcv-page-run-history.php:406
 msgid "No findings ended in this run."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-run-history.php:411
+#: includes/admin/class-wpcv-page-run-history.php:415
 msgid "First seen in"
 msgstr ""
 
 #. translators: %s: the reason the target cannot be compared with its source.
-#: includes/admin/class-wpcv-page-run-history.php:491
+#: includes/admin/class-wpcv-page-run-history.php:495
 #, php-format
 msgid "%s — cannot be compared with the source; monitored by file-change tracking instead"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:157
+#: includes/admin/class-wpcv-page-settings.php:172
 msgid "Settings saved."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:163
+#: includes/admin/class-wpcv-page-settings.php:178
 msgid "Some GitHub repository mappings were not saved:"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:174
+#: includes/admin/class-wpcv-page-settings.php:189
 msgid "A verification run has been scheduled."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:193
-msgid "Daily run time (UTC)"
+#. translators: %s: site time zone name (e.g. Asia/Tokyo or +09:00).
+#: includes/admin/class-wpcv-page-settings.php:223
+#, php-format
+msgid "Daily run time (site time zone: %s)"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:200
-msgid "The verification run starts automatically at this time every day (UTC). External HTTP mode (below) also uses this time to decide when to start the daily run."
+#: includes/admin/class-wpcv-page-settings.php:235
+msgid "The verification run starts automatically at this time every day, in the site time zone (Settings > General). External HTTP mode (below) also uses this time to decide when to start the daily run."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:206
+#: includes/admin/class-wpcv-page-settings.php:241
 msgid "External HTTP time budget (seconds)"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:211
+#: includes/admin/class-wpcv-page-settings.php:246
 msgid "When an external scheduler calls POST /wp-json/wpcv/v1/run, this is how long (per request) it keeps advancing the run before returning. Keep it well under your host's max_execution_time."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:217
+#: includes/admin/class-wpcv-page-settings.php:252
 msgid "Strict mode"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:222
+#: includes/admin/class-wpcv-page-settings.php:257
 msgid "Report readme.txt / readme.md changes as findings instead of suppressing them."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:225
+#: includes/admin/class-wpcv-page-settings.php:260
 msgid "By default, changes limited to readme.txt/readme.md are treated as a low-risk \"soft change\" and suppressed automatically. Enable strict mode to see every difference, including those files."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:232
+#: includes/admin/class-wpcv-page-settings.php:267
 msgid "Stat-based change detection"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:237
+#: includes/admin/class-wpcv-page-settings.php:272
 msgid "Track file size and timestamps of plugins that cannot be verified against checksums, and report changes since the previous run."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:240
+#: includes/admin/class-wpcv-page-settings.php:275
 msgid "Applies to custom or premium plugins and mu-plugin loaders that have no official checksums. The first run only records a baseline. When a plugin version changes, its baseline is rebuilt without reporting changes. File contents are not read unless content-hash comparison is also enabled below."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:247
+#: includes/admin/class-wpcv-page-settings.php:282
 msgid "Content-hash comparison for custom plugins"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:252
+#: includes/admin/class-wpcv-page-settings.php:287
 msgid "Also compute a content hash for custom/premium plugins and mu-plugin loaders, and report a change even when file size and modified time stay the same."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:255
+#: includes/admin/class-wpcv-page-settings.php:290
 msgid "Detects a same-size rewrite that preserves the timestamp, which size/timestamp tracking alone cannot catch. This reads file contents on every run and adds I/O cost, so it is off by default; consider enabling it only for sites with a small number of custom plugins. Files larger than a fixed size limit fall back to size/timestamp tracking only."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:262
+#: includes/admin/class-wpcv-page-settings.php:297
 msgid "Unrecorded version change alerts"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:267
+#: includes/admin/class-wpcv-page-settings.php:302
 msgid "Alert on version changes that did not go through the WordPress updater."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:270
+#: includes/admin/class-wpcv-page-settings.php:305
 msgid "Turn this off on sites that deploy via git, FTP, or Composer, where legitimate version changes never produce an update event."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:277
+#: includes/admin/class-wpcv-page-settings.php:312
 msgid "History retention"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:288
-msgid "Delete run history, per-target results and findings older than this period. The newest verified result of each target, results still being processed, and records needed to avoid repeating an alert are always kept. The default keeps everything. After you choose a period, older history is removed gradually at the end of the following runs."
+#: includes/admin/class-wpcv-page-settings.php:323
+msgid "Delete run history, per-target results and findings older than this period. The newest verified result of each target, results still being processed, and records needed to avoid repeating an alert are always kept. The default is 12 months; choose \"Keep forever\" to keep everything. Older history is removed gradually at the end of the following runs."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:295
+#: includes/admin/class-wpcv-page-settings.php:330
 msgid "GitHub repository mappings"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:300
+#: includes/admin/class-wpcv-page-settings.php:335
 msgid "Verify a plugin or theme against the assets of its GitHub Release instead of wordpress.org. One mapping per line: plugin:{slug} or theme:{stylesheet}, then owner/repo, then optionally the start of the asset file name. The Release is found by the installed version (tag \"1.2.3\" or \"v1.2.3\"). Plugins and themes that are not listed are verified as before. Invalid lines and repeated targets are dropped when saving; comment lines (starting with #) are not kept. Directories that contain a .git entry are never compared with GitHub."
 msgstr ""
 
 #. translators: %s: comma-separated list of "target → owner/repo".
-#: includes/admin/class-wpcv-page-settings.php:308
+#: includes/admin/class-wpcv-page-settings.php:343
 #, php-format
 msgid "Also mapped by the wpcv_github_mappings filter: %s"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:317
+#: includes/admin/class-wpcv-page-settings.php:352
 msgid "Warning:"
 msgstr ""
 
 #. translators: %s: comma-separated list of theme stylesheets.
-#: includes/admin/class-wpcv-page-settings.php:322
+#: includes/admin/class-wpcv-page-settings.php:357
 #, php-format
 msgid "These themes are bundled with WordPress core, so their mappings are ignored and they are verified against wordpress.org and the core checksums: %s"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:332
+#: includes/admin/class-wpcv-page-settings.php:367
 msgid "GitHub token"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:335
+#: includes/admin/class-wpcv-page-settings.php:370
 msgid "A token is configured (WPCV_GITHUB_TOKEN or the wpcv_github_token filter). Its value is never shown or stored in the database."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:337
+#: includes/admin/class-wpcv-page-settings.php:372
 msgid "No token is configured."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:339
+#: includes/admin/class-wpcv-page-settings.php:374
 msgid "Public repositories work without one, but unauthenticated GitHub API requests have a low rate limit. For private repositories or a higher limit, define WPCV_GITHUB_TOKEN in wp-config.php."
 msgstr ""
 
-#. translators: %s: date and time (UTC).
-#: includes/admin/class-wpcv-page-settings.php:348
+#. translators: %s: date and time in the site time zone.
+#: includes/admin/class-wpcv-page-settings.php:383
 #, php-format
-msgid "The GitHub rate limit has been reached. GitHub is not contacted until %s (UTC)."
+msgid "The GitHub rate limit has been reached. GitHub is not contacted until %s."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:360
+#: includes/admin/class-wpcv-page-settings.php:395
 msgid "Alert recipients"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:365
+#: includes/admin/class-wpcv-page-settings.php:400
 msgid "Email addresses that receive an alert when new or resolved findings appear. One per line (commas and semicolons also work). Invalid addresses are dropped when saving. If empty, no alert is sent and a warning is shown in the admin screens."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:370
+#: includes/admin/class-wpcv-page-settings.php:405
 msgid "Save Changes"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:373
-#: includes/admin/class-wpcv-page-settings.php:406
+#: includes/admin/class-wpcv-page-settings.php:408
+#: includes/admin/class-wpcv-page-settings.php:441
 msgid "Send test alert"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:377
+#: includes/admin/class-wpcv-page-settings.php:412
 msgid "Test alert sent successfully."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:381
+#: includes/admin/class-wpcv-page-settings.php:416
 msgid "Alert recipients is empty. Set at least one address above and save, then try again."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:389
+#: includes/admin/class-wpcv-page-settings.php:424
 msgid "Test alert failed to send."
 msgstr ""
 
 #. translators: %s: error message from wp_mail().
-#: includes/admin/class-wpcv-page-settings.php:392
+#: includes/admin/class-wpcv-page-settings.php:427
 #, php-format
 msgid "Test alert failed to send: %s"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:404
+#: includes/admin/class-wpcv-page-settings.php:439
 msgid "Send a test email to the alert recipients above, to confirm the address is correct before relying on it."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:409
-#: includes/admin/class-wpcv-page-settings.php:420
+#: includes/admin/class-wpcv-page-settings.php:444
+#: includes/admin/class-wpcv-page-settings.php:455
 msgid "Run now"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:413
+#: includes/admin/class-wpcv-page-settings.php:448
 msgid "Start a verification run immediately instead of waiting for the daily schedule."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:429
+#: includes/admin/class-wpcv-page-settings.php:468
 msgid "REST API token (run)"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:433
-#: includes/admin/class-wpcv-page-settings.php:456
+#: includes/admin/class-wpcv-page-settings.php:472
+#: includes/admin/class-wpcv-page-settings.php:495
 msgid "New token generated. Copy it now — it will not be shown again:"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:440
+#: includes/admin/class-wpcv-page-settings.php:479
 msgid "A token is defined via the WPCV_REST_TOKEN constant and takes precedence over any token generated here."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:442
+#: includes/admin/class-wpcv-page-settings.php:481
 msgid "A token has been issued. Generating a new one immediately invalidates the previous token."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:444
+#: includes/admin/class-wpcv-page-settings.php:483
 msgid "No token has been issued yet. External systems need this token to call POST /wp-json/wpcv/v1/run."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:449
+#: includes/admin/class-wpcv-page-settings.php:488
 msgid "Generate new token"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:452
+#: includes/admin/class-wpcv-page-settings.php:491
 msgid "REST API token (read-only)"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:463
+#: includes/admin/class-wpcv-page-settings.php:502
 msgid "A read-only token has been issued. Generating a new one immediately invalidates the previous one."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:465
+#: includes/admin/class-wpcv-page-settings.php:504
 msgid "No read-only token has been issued yet. External systems need this (separate) token to call GET /wp-json/wpcv/v1/status and GET /wp-json/wpcv/v1/findings — it cannot start a run."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:470
+#: includes/admin/class-wpcv-page-settings.php:509
 msgid "Generate new read-only token"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:491
+#: includes/admin/class-wpcv-page-settings.php:552
+msgid "Could not start deleting old history. Please try again later."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:560
+msgid "Deleting old history in the background. Reload this page to see the progress."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:565
+msgid "Old history is already being deleted."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:570
+msgid "History retention is set to \"Keep forever\", so nothing was deleted."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:575
+msgid "Action Scheduler is not available, so one batch was deleted now. The rest will be removed automatically at the end of the following runs."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:593
+msgid "Choose a retention period above and save to use this."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:600
+msgid "Old history is being deleted. Reload this page to see the progress."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:621
+msgid "In progress"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:624
+msgid "Completed"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:627
+msgid "Partly finished (the rest will be removed at the end of the following runs)"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:630
+msgid "Stopped (retention was changed to \"Keep forever\")"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:633
+msgid "Failed"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:636
+msgid "Interrupted"
+msgstr ""
+
+#. translators: 1: state (e.g. Completed), 2: start time, 3: end time or a dash, 4: runs deleted, 5: per-target results deleted, 6: findings deleted, 7: suppressions deleted.
+#: includes/admin/class-wpcv-page-settings.php:641
+#, php-format
+msgid "%1$s — started: %2$s, finished: %3$s — deleted: %4$d runs, %5$d per-target results, %6$d findings, %7$d suppressions"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:668
+msgid "Per-target results"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:671
+msgid "File state baseline"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:672
+msgid "Update events"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:673
+msgid "Manifest cache"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:692
+msgid "Total"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:692
+msgid "Total (retrieved tables only)"
+msgstr ""
+
+#. translators: %s: comma-separated table names.
+#: includes/admin/class-wpcv-page-settings.php:725
+#, php-format
+msgid "Information for some tables could not be retrieved: %s. These tables may be missing. Check the database."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:746
+msgid "Stored data"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:751
+msgid "The amount of stored data could not be retrieved on this server."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:754
+msgid "Approximate row counts and sizes of the tables this plugin uses, from database statistics (they can be up to a day old)."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:759
+msgid "Data"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:760
+msgid "Rows (approx.)"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:761
+msgid "Size (approx.)"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:776
+msgid "Oldest run:"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:796
+#: includes/admin/class-wpcv-page-settings.php:823
+msgid "Delete old history now"
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:800
+msgid "Delete history older than the saved retention period right away, instead of waiting for the following runs. The newest verified result of each target, results still being processed, and records needed to avoid repeating an alert are kept. This cannot be undone."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:807
+msgid "Last deletion:"
+msgstr ""
+
+#. translators: %d: retention period in months.
+#: includes/admin/class-wpcv-page-settings.php:814
+#, php-format
+msgid "Delete history older than %d months? This cannot be undone."
+msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php:844
 msgid "WP-Cron is disabled on this site (DISABLE_WP_CRON). Use WP-CLI (`wp wpcv run`) or the REST endpoint instead."
 msgstr ""
 
 #. translators: %d: line number.
-#: includes/admin/class-wpcv-page-settings.php:618
+#: includes/admin/class-wpcv-page-settings.php:971
 #, php-format
 msgid "Line %d: the target must look like plugin:{slug} or theme:{stylesheet}. Skipped."
 msgstr ""
 
 #. translators: %d: line number.
-#: includes/admin/class-wpcv-page-settings.php:621
+#: includes/admin/class-wpcv-page-settings.php:974
 #, php-format
 msgid "Line %d: the repository must look like owner/repo. Skipped."
 msgstr ""
 
 #. translators: %d: line number.
-#: includes/admin/class-wpcv-page-settings.php:624
+#: includes/admin/class-wpcv-page-settings.php:977
 #, php-format
 msgid "Line %d: this target is already mapped on an earlier line. Skipped."
 msgstr ""
 
 #. translators: %d: line number.
-#: includes/admin/class-wpcv-page-settings.php:627
+#: includes/admin/class-wpcv-page-settings.php:980
 #, php-format
 msgid "Line %d: expected \"target owner/repo\" with an optional asset name. Skipped."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:639
+#: includes/admin/class-wpcv-page-settings.php:992
 msgid "Keep forever"
 msgstr ""
 
 #. translators: %d: number of months.
-#: includes/admin/class-wpcv-page-settings.php:644
+#: includes/admin/class-wpcv-page-settings.php:997
 #, php-format
 msgid "%d month"
 msgid_plural "%d months"
@@ -707,119 +847,125 @@ msgstr[0] ""
 msgstr[1] ""
 
 #. translators: %d: run id.
-#: includes/admin/class-wpcv-page-settings.php:835
+#: includes/admin/class-wpcv-page-settings.php:1188
 #, php-format
 msgid "A verification run (#%d) is already in progress. Please wait for it to finish."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:883
+#: includes/admin/class-wpcv-page-settings.php:1236
 msgid "Disabled (DISABLE_WP_CRON)"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:884
+#: includes/admin/class-wpcv-page-settings.php:1237
 msgid "Enabled"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:892
+#: includes/admin/class-wpcv-page-settings.php:1247
 msgid "Current run"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:896
+#: includes/admin/class-wpcv-page-settings.php:1251
 msgid "Last completed run"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:900
+#: includes/admin/class-wpcv-page-settings.php:1255
 msgid "Next scheduled run"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:904
+#: includes/admin/class-wpcv-page-settings.php:1259
 msgid "WP-Cron"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:908
+#: includes/admin/class-wpcv-page-settings.php:1263
 msgid "Action Scheduler"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:910
+#: includes/admin/class-wpcv-page-settings.php:1265
 msgid "Available"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:910
+#: includes/admin/class-wpcv-page-settings.php:1265
 msgid "Not available (async run falls back to a synchronous run)"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:914
+#: includes/admin/class-wpcv-page-settings.php:1269
 msgid "Last WP-CLI run"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:919
+#: includes/admin/class-wpcv-page-settings.php:1274
 msgid "Never observed on this site (this only reflects runs recorded here, not whether WP-CLI is installed)."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-settings.php:946
+#: includes/admin/class-wpcv-page-settings.php:1301
 msgid "None"
 msgstr ""
 
 #. translators: 1: run id, 2: status, 3: pending (queued) target count, 4: retry target count, 5: findings count, 6: last activity timestamp or dash, 7: diff summary, 8: alert status.
-#: includes/admin/class-wpcv-page-settings.php:953
+#: includes/admin/class-wpcv-page-settings.php:1308
 #, php-format
 msgid "#%1$d (%2$s) — pending: %3$d, retry: %4$d, findings: %5$d, last activity: %6$s — diff: %7$s, alert: %8$s"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-suppressions.php:68
+#: includes/admin/class-wpcv-page-suppressions.php:70
 msgid "The suppression rule has been revoked."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-suppressions.php:77
+#: includes/admin/class-wpcv-page-suppressions.php:79
 msgid "No suppression rules have been created yet."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-suppressions.php:82
+#: includes/admin/class-wpcv-page-suppressions.php:84
 msgid "Type"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-suppressions.php:85
+#: includes/admin/class-wpcv-page-suppressions.php:87
 msgid "Created by"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-suppressions.php:86
+#: includes/admin/class-wpcv-page-suppressions.php:88
 msgid "Created at"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-suppressions.php:166
+#: includes/admin/class-wpcv-page-suppressions.php:168
 msgid "Active"
 msgstr ""
 
 #. translators: 1: revoked timestamp, 2: revoke reason.
-#: includes/admin/class-wpcv-page-suppressions.php:171
+#: includes/admin/class-wpcv-page-suppressions.php:173
 #, php-format
 msgid "Revoked at %1$s (%2$s)"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-suppressions.php:191
+#: includes/admin/class-wpcv-page-suppressions.php:193
 msgid "version changed"
 msgstr ""
 
 #. translators: %d: user id.
-#: includes/admin/class-wpcv-page-suppressions.php:217
+#: includes/admin/class-wpcv-page-suppressions.php:219
 #, php-format
 msgid "User #%d"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-suppressions.php:240
+#: includes/admin/class-wpcv-page-suppressions.php:242
 msgid "Revoke reason (required, max 24 chars)"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-suppressions.php:243
+#: includes/admin/class-wpcv-page-suppressions.php:245
 msgid "Revoke"
 msgstr ""
 
-#: includes/admin/class-wpcv-page-suppressions.php:278
+#: includes/admin/class-wpcv-page-suppressions.php:280
 msgid "Invalid suppression rule id."
 msgstr ""
 
-#: includes/admin/class-wpcv-page-suppressions.php:284
+#: includes/admin/class-wpcv-page-suppressions.php:286
 msgid "This rule could not be revoked (it may already be revoked, or no longer exists)."
+msgstr ""
+
+#. translators: %s: site time zone name (e.g. Asia/Tokyo or +09:00).
+#: includes/class-wpcv-settings.php:314
+#, php-format
+msgid "Dates and times are shown in the site time zone (%s)."
 msgstr ""
 
 #. translators: 1: site name, 2: number of targets that can no longer be compared with their source.
@@ -840,85 +986,85 @@ msgstr ""
 msgid "[WPCV] %1$s: %2$s new findings, %3$s resolved"
 msgstr ""
 
-#. translators: 1: run id, 2: finished time (UTC), 3: run trigger.
-#: includes/engine/class-wpcv-alert-composer.php:218
+#. translators: 1: run id, 2: finished time in the site time zone, 3: site time zone name (e.g. Asia/Tokyo or +09:00), 4: run trigger.
+#: includes/engine/class-wpcv-alert-composer.php:219
 #, php-format
-msgid "Run #%1$s (%2$s UTC, %3$s)"
+msgid "Run #%1$s (%2$s %3$s, %4$s)"
 msgstr ""
 
 #. translators: 1: checksum verified targets, 2: change-tracked (stat) targets, 3: unverifiable targets, 4: failed targets.
-#: includes/engine/class-wpcv-alert-composer.php:227
+#: includes/engine/class-wpcv-alert-composer.php:229
 #, php-format
 msgid "Targets: %1$s verified / %2$s change-tracked / %3$s unverifiable / %4$s failed"
 msgstr ""
 
 #. translators: 1: new findings, 2: resolved findings, 3: continuing findings.
-#: includes/engine/class-wpcv-alert-composer.php:236
+#: includes/engine/class-wpcv-alert-composer.php:238
 #, php-format
 msgid "New: %1$s  Resolved: %2$s  Continuing: %3$s (already reported)"
 msgstr ""
 
 #. translators: %d: number of findings listed below.
-#: includes/engine/class-wpcv-alert-composer.php:247
+#: includes/engine/class-wpcv-alert-composer.php:249
 #, php-format
 msgid "Top %d by severity:"
 msgstr ""
 
-#: includes/engine/class-wpcv-alert-composer.php:264
+#: includes/engine/class-wpcv-alert-composer.php:266
 msgid "By target:"
 msgstr ""
 
-#: includes/engine/class-wpcv-alert-composer.php:281
+#: includes/engine/class-wpcv-alert-composer.php:283
 msgid "Resolved:"
 msgstr ""
 
-#: includes/engine/class-wpcv-alert-composer.php:295
+#: includes/engine/class-wpcv-alert-composer.php:297
 msgid "Version changed without a WordPress update:"
 msgstr ""
 
-#: includes/engine/class-wpcv-alert-composer.php:309
+#: includes/engine/class-wpcv-alert-composer.php:311
 msgid "Not verified today (baseline rebuilt after a version change):"
 msgstr ""
 
-#: includes/engine/class-wpcv-alert-composer.php:323
+#: includes/engine/class-wpcv-alert-composer.php:325
 msgid "Cannot compare with the source (the GitHub token is invalid, expired or lacks permission). These targets are monitored by file-change tracking meanwhile:"
 msgstr ""
 
-#: includes/engine/class-wpcv-alert-composer.php:326
+#: includes/engine/class-wpcv-alert-composer.php:328
 msgid "(new)"
 msgstr ""
 
-#: includes/engine/class-wpcv-alert-composer.php:329
+#: includes/engine/class-wpcv-alert-composer.php:331
 msgid "Check the GitHub token (the WPCV_GITHUB_TOKEN constant or the wpcv_github_token filter)."
 msgstr ""
 
 #. translators: %d: consecutive unverifiable count threshold.
-#: includes/engine/class-wpcv-alert-composer.php:335
+#: includes/engine/class-wpcv-alert-composer.php:337
 #, php-format
 msgid "Unverifiable %d times in a row:"
 msgstr ""
 
 #. translators: %s: number of removed targets.
-#: includes/engine/class-wpcv-alert-composer.php:349
+#: includes/engine/class-wpcv-alert-composer.php:351
 #, php-format
 msgid "Removed targets: %s"
 msgstr ""
 
 #. translators: %s: URL of the detail screen (findings or run history).
-#: includes/engine/class-wpcv-alert-composer.php:355
-#: includes/engine/class-wpcv-alert-composer.php:544
+#: includes/engine/class-wpcv-alert-composer.php:357
+#: includes/engine/class-wpcv-alert-composer.php:547
 #, php-format
 msgid "Details: %s"
 msgstr ""
 
 #. translators: 1: site name, 2: number of consecutive failed runs.
-#: includes/engine/class-wpcv-alert-composer.php:518
+#: includes/engine/class-wpcv-alert-composer.php:520
 #, php-format
 msgid "[WPCV] %1$s: %2$s runs failed in a row"
 msgstr ""
 
 #. translators: %d: number of consecutive failed runs.
-#: includes/engine/class-wpcv-alert-composer.php:527
+#: includes/engine/class-wpcv-alert-composer.php:529
 #, php-format
 msgid "%d runs failed in a row:"
 msgstr ""
@@ -1049,6 +1195,6 @@ msgstr ""
 msgid "This is a test alert from WP Checksum Verifier. If you received this message, your alert recipient setting is working correctly."
 msgstr ""
 
-#: wp-checksum-verifier.php:467
+#: wp-checksum-verifier.php:477
 msgid "GitHub"
 msgstr ""

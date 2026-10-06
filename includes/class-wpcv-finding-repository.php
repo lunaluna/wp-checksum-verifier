@@ -244,6 +244,24 @@ class WPCV_Finding_Repository {
 	}
 
 	/**
+	 * `delete_by_target_run_id_except()` が消す行数を、消さずに数える(v0.10.0: 保持期間の削除の `--dry-run` 用).
+	 *
+	 * @param int   $target_run_id 対象の target_run の id.
+	 * @param int[] $keep_ids      残す finding の id.
+	 * @return int 消すことになる finding の行数.
+	 */
+	public function count_by_target_run_id_except( $target_run_id, array $keep_ids ) {
+		$table = $this->wpdb->base_prefix . 'wpcv_findings';
+		$sql   = "SELECT id FROM {$table} WHERE target_run_id = %d";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; target_run_id is bound via prepare().
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, (int) $target_run_id ), ARRAY_A );
+		$ids  = array_diff( array_map( 'intval', array_column( is_array( $rows ) ? $rows : array(), 'id' ) ), array_map( 'intval', $keep_ids ) );
+
+		return count( $ids );
+	}
+
+	/**
 	 * 指定 target_run の finding のうち、`notified_at` を持つ行(`id`・`finding_key`・`notified_at`)を返す
 	 * (v0.9 §Step2: 保持期間の掃除が、通知の記録として残すべき行を探す.プラン §3.1.1 の I4.
 	 * v0.9.1: 他の run の通知と新旧を比べるため `notified_at` も返す).

@@ -12,7 +12,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 /**
  * 設定画面.
  *
- * 実行時刻(UTC)の変更フォームをv0.3 §Step6で、「今すぐ実行」ボタンを§Step7で、
+ * 実行時刻(v0.10.0 以降はサイトのタイムゾーン)の変更フォームをv0.3 §Step6で、「今すぐ実行」ボタンを§Step7で、
  * REST時間予算の変更フォームを§Step8で、RESTトークンの発行UIを§Step9で追加した
  * (v0.3計画の全9ステップの最後のUI追加)。§Step8のREST時間予算はv0.3.1 §Step4で
  * 廃止した(`WPCV_Settings` のクラス docblock 参照)。v0.4.0 §Step6で、外部HTTP
@@ -64,6 +64,20 @@ class WPCV_Page_Settings {
 	 * @var string
 	 */
 	const RUN_NOW_NONCE_NAME = 'wpcv_run_now_nonce';
+
+	/**
+	 * 「古い履歴を今すぐ削除」フォームの nonce action(v0.10.0).
+	 *
+	 * @var string
+	 */
+	const PRUNE_NONCE_ACTION = 'wpcv_prune_history';
+
+	/**
+	 * 「古い履歴を今すぐ削除」フォームの nonce name(v0.10.0).
+	 *
+	 * @var string
+	 */
+	const PRUNE_NONCE_NAME = 'wpcv_prune_history_nonce';
 
 	/**
 	 * Run scopeトークン発行フォームの nonce action.
@@ -132,6 +146,7 @@ class WPCV_Page_Settings {
 		$generated_run_token  = self::maybe_handle_generate_token( self::TOKEN_NONCE_NAME, self::TOKEN_NONCE_ACTION, WPCV_Rest_Token::SCOPE_RUN );
 		$generated_read_token = self::maybe_handle_generate_token( self::READ_TOKEN_NONCE_NAME, self::READ_TOKEN_NONCE_ACTION, WPCV_Rest_Token::SCOPE_READ );
 		$test_alert_result    = self::maybe_handle_send_test_alert();
+		$prune_result         = self::maybe_handle_prune();
 
 		$run_time                          = WPCV_Settings::get_run_time();
 		$external_http_time_budget_seconds = WPCV_Settings::get_external_http_time_budget_seconds();
@@ -183,6 +198,16 @@ class WPCV_Page_Settings {
 				</div>
 			<?php endif; ?>
 
+			<?php
+			// 「古い履歴を今すぐ削除」の結果(v0.10.0).
+			$prune_notice = self::prune_result_notice( $prune_result );
+			?>
+			<?php if ( null !== $prune_notice ) : ?>
+				<div class="notice notice-<?php echo esc_attr( $prune_notice['type'] ); ?> is-dismissible">
+					<p><?php echo esc_html( $prune_notice['message'] ); ?></p>
+				</div>
+			<?php endif; ?>
+
 			<?php self::render_status_panel(); ?>
 
 			<form method="post">
@@ -190,14 +215,24 @@ class WPCV_Page_Settings {
 				<table class="form-table" role="presentation">
 					<tr>
 						<th scope="row">
-							<label for="wpcv_run_hour"><?php echo esc_html__( 'Daily run time (UTC)', 'wp-checksum-verifier' ); ?></label>
+							<label for="wpcv_run_hour">
+								<?php
+								echo esc_html(
+									sprintf(
+										/* translators: %s: site time zone name (e.g. Asia/Tokyo or +09:00). */
+										__( 'Daily run time (site time zone: %s)', 'wp-checksum-verifier' ),
+										WPCV_Settings::site_timezone()->getName()
+									)
+								);
+								?>
+							</label>
 						</th>
 						<td>
 							<input type="number" min="0" max="23" step="1" name="wpcv_run_hour" id="wpcv_run_hour" value="<?php echo esc_attr( self::format_two_digits( $run_time['hour'] ) ); ?>" style="width: 4em;" />
 							:
 							<input type="number" min="0" max="59" step="1" name="wpcv_run_minute" id="wpcv_run_minute" value="<?php echo esc_attr( self::format_two_digits( $run_time['minute'] ) ); ?>" style="width: 4em;" />
 							<p class="description">
-								<?php echo esc_html__( 'The verification run starts automatically at this time every day (UTC). External HTTP mode (below) also uses this time to decide when to start the daily run.', 'wp-checksum-verifier' ); ?>
+								<?php echo esc_html__( 'The verification run starts automatically at this time every day, in the site time zone (Settings > General). External HTTP mode (below) also uses this time to decide when to start the daily run.', 'wp-checksum-verifier' ); ?>
 							</p>
 						</td>
 					</tr>
@@ -271,7 +306,7 @@ class WPCV_Page_Settings {
 							</p>
 						</td>
 					</tr>
-					<?php // v0.9 §Step2: 履歴の保持期間(プラン §3.1・U5). 既定は無期限(何も消さない). ?>
+					<?php // v0.9 §Step2: 履歴の保持期間(プラン §3.1・U5). 既定は 12 か月(v0.10.0 で無期限から変更. 無期限も選べる). ?>
 					<tr>
 						<th scope="row">
 							<label for="wpcv_retention_months"><?php echo esc_html__( 'History retention', 'wp-checksum-verifier' ); ?></label>
@@ -285,7 +320,7 @@ class WPCV_Page_Settings {
 								<?php endforeach; ?>
 							</select>
 							<p class="description">
-								<?php echo esc_html__( 'Delete run history, per-target results and findings older than this period. The newest verified result of each target, results still being processed, and records needed to avoid repeating an alert are always kept. The default keeps everything. After you choose a period, older history is removed gradually at the end of the following runs.', 'wp-checksum-verifier' ); ?>
+								<?php echo esc_html__( 'Delete run history, per-target results and findings older than this period. The newest verified result of each target, results still being processed, and records needed to avoid repeating an alert are always kept. The default is 12 months; choose "Keep forever" to keep everything. Older history is removed gradually at the end of the following runs.', 'wp-checksum-verifier' ); ?>
 							</p>
 						</td>
 					</tr>
@@ -344,9 +379,9 @@ class WPCV_Page_Settings {
 									<?php
 									echo esc_html(
 										sprintf(
-											/* translators: %s: date and time (UTC). */
-											__( 'The GitHub rate limit has been reached. GitHub is not contacted until %s (UTC).', 'wp-checksum-verifier' ),
-											gmdate( 'Y-m-d H:i:s', $github_rate_limited_until )
+											/* translators: %s: date and time in the site time zone. */
+											__( 'The GitHub rate limit has been reached. GitHub is not contacted until %s.', 'wp-checksum-verifier' ),
+											WPCV_Settings::format_datetime( (int) $github_rate_limited_until )
 										)
 									);
 									?>
@@ -426,6 +461,10 @@ class WPCV_Page_Settings {
 				?>
 			</form>
 
+			<?php self::render_data_usage_section(); ?>
+
+			<?php self::render_prune_section( $retention_months ); ?>
+
 			<h2><?php echo esc_html__( 'REST API token (run)', 'wp-checksum-verifier' ); ?></h2>
 			<?php if ( null !== $generated_run_token ) : ?>
 				<div class="notice notice-success">
@@ -470,6 +509,320 @@ class WPCV_Page_Settings {
 				<?php submit_button( __( 'Generate new read-only token', 'wp-checksum-verifier' ), 'secondary', 'wpcv_generate_read_token_submit' ); ?>
 			</form>
 		</div>
+		<?php
+	}
+
+	/**
+	 * 「古い履歴を今すぐ削除」フォームが POST されていれば、nonce・権限を確かめて削除を受け付ける(v0.10.0).
+	 *
+	 * 削除そのものは `WPCV_Prune_Job::request()` が Action Scheduler のアクションとして予約する
+	 * (リクエストの中で最後までやらない). 二重に押された場合や、保持期間が無期限の場合の扱いも
+	 * そちらが決める.
+	 *
+	 * @return array{result: string, error: string|null}|null POSTされていない・権限が無い場合は `null`.
+	 */
+	private static function maybe_handle_prune() {
+		if ( ! isset( $_POST[ self::PRUNE_NONCE_NAME ] ) ) {
+			return null;
+		}
+
+		check_admin_referer( self::PRUNE_NONCE_ACTION, self::PRUNE_NONCE_NAME );
+
+		if ( ! current_user_can( WPCV_Capability::required( WPCV_Capability::SCREEN_SETTINGS ) ) ) {
+			return null;
+		}
+
+		return WPCV_Prune_Job::request();
+	}
+
+	/**
+	 * `WPCV_Prune_Job::request()` の結果を、画面に出す通知(種類と文言)にする(`render()` から分離してテスト可能にする).
+	 *
+	 * @param array{result: string, error: string|null}|null $outcome `maybe_handle_prune()` の戻り値.
+	 * @return array{type: string, message: string}|null 表示しないなら `null`. `type` は notice の種類(success・info・warning・error).
+	 */
+	public static function prune_result_notice( $outcome ) {
+		if ( null === $outcome ) {
+			return null;
+		}
+
+		if ( null !== $outcome['error'] ) {
+			return array(
+				'type'    => 'error',
+				'message' => __( 'Could not start deleting old history. Please try again later.', 'wp-checksum-verifier' ),
+			);
+		}
+
+		switch ( $outcome['result'] ) {
+			case WPCV_Prune_Job::RESULT_SCHEDULED:
+				return array(
+					'type'    => 'success',
+					'message' => __( 'Deleting old history in the background. Reload this page to see the progress.', 'wp-checksum-verifier' ),
+				);
+			case WPCV_Prune_Job::RESULT_ALREADY_RUNNING:
+				return array(
+					'type'    => 'info',
+					'message' => __( 'Old history is already being deleted.', 'wp-checksum-verifier' ),
+				);
+			case WPCV_Prune_Job::RESULT_UNLIMITED:
+				return array(
+					'type'    => 'warning',
+					'message' => __( 'History retention is set to "Keep forever", so nothing was deleted.', 'wp-checksum-verifier' ),
+				);
+			case WPCV_Prune_Job::RESULT_INLINE:
+				return array(
+					'type'    => 'success',
+					'message' => __( 'Action Scheduler is not available, so one batch was deleted now. The rest will be removed automatically at the end of the following runs.', 'wp-checksum-verifier' ),
+				);
+		}
+
+		return null;
+	}
+
+	/**
+	 * 「古い履歴を今すぐ削除」ボタンの表示状態を判定する(v0.10.0. `run_now_button_state()` と同じ考え方).
+	 *
+	 * @param int  $retention_months 保存されている保持期間(月. 0 は無期限).
+	 * @param bool $active           削除のアクションが予約済み・実行中か.
+	 * @return array{disabled: bool, notice: string|null}
+	 */
+	public static function prune_button_state( $retention_months, $active ) {
+		if ( (int) $retention_months < 1 ) {
+			return array(
+				'disabled' => true,
+				'notice'   => __( 'Choose a retention period above and save to use this.', 'wp-checksum-verifier' ),
+			);
+		}
+
+		if ( $active ) {
+			return array(
+				'disabled' => true,
+				'notice'   => __( 'Old history is being deleted. Reload this page to see the progress.', 'wp-checksum-verifier' ),
+			);
+		}
+
+		return array(
+			'disabled' => false,
+			'notice'   => null,
+		);
+	}
+
+	/**
+	 * 直近の「古い履歴を今すぐ削除」の結果を、1行の表示文字列にする(`render_prune_section()` から分離してテスト可能にする).
+	 *
+	 * 日時は UTC で保存されているので、サイトのタイムゾーンで表示する(`WPCV_Settings::format_datetime()`).
+	 *
+	 * @param array{state: string, months: int, started_at: string, finished_at: string|null, totals: array{runs:int,target_runs:int,findings:int,suppressions:int}} $status `WPCV_Prune_Job::get_status()` の値.
+	 * @return string
+	 */
+	public static function format_prune_status( array $status ) {
+		switch ( $status['state'] ) {
+			case WPCV_Prune_Job::STATE_RUNNING:
+				$label = __( 'In progress', 'wp-checksum-verifier' );
+				break;
+			case WPCV_Prune_Job::STATE_DONE:
+				$label = __( 'Completed', 'wp-checksum-verifier' );
+				break;
+			case WPCV_Prune_Job::STATE_PARTIAL:
+				$label = __( 'Partly finished (the rest will be removed at the end of the following runs)', 'wp-checksum-verifier' );
+				break;
+			case WPCV_Prune_Job::STATE_CANCELLED:
+				$label = __( 'Stopped (retention was changed to "Keep forever")', 'wp-checksum-verifier' );
+				break;
+			case WPCV_Prune_Job::STATE_FAILED:
+				$label = __( 'Failed', 'wp-checksum-verifier' );
+				break;
+			default:
+				$label = __( 'Interrupted', 'wp-checksum-verifier' );
+		}
+
+		return sprintf(
+			/* translators: 1: state (e.g. Completed), 2: start time, 3: end time or a dash, 4: runs deleted, 5: per-target results deleted, 6: findings deleted, 7: suppressions deleted. */
+			__( '%1$s — started: %2$s, finished: %3$s — deleted: %4$d runs, %5$d per-target results, %6$d findings, %7$d suppressions', 'wp-checksum-verifier' ),
+			$label,
+			WPCV_Settings::format_datetime( $status['started_at'] ),
+			WPCV_Settings::format_datetime( $status['finished_at'] ),
+			$status['totals']['runs'],
+			$status['totals']['target_runs'],
+			$status['totals']['findings'],
+			$status['totals']['suppressions']
+		);
+	}
+
+	/**
+	 * 「保存しているデータ」の表の行を作る(`render_data_usage_section()` から分離してテスト可能にする).
+	 *
+	 * 一部のテーブルが欠けている(`missing` がある)ときは、合計の行を「取得できた分の合計」と表記する
+	 * (0.10.0 のコードレビュー指摘4. 欠けたことの警告は `data_usage_missing_notice()`).
+	 *
+	 * @param array{tables: array<string, array{rows: int, bytes: int}>|null, missing?: string[], oldest_run_at: string|null} $usage `WPCV_Data_Usage::collect()` の値.
+	 * @return array<int, array{label: string, rows: string, size: string}>|null テーブルの情報が取れていなければ `null`. 最後の行は合計.
+	 */
+	public static function data_usage_rows( array $usage ) {
+		if ( null === $usage['tables'] ) {
+			return null;
+		}
+
+		$labels = array(
+			'wpcv_runs'           => __( 'Run history', 'wp-checksum-verifier' ),
+			'wpcv_target_runs'    => __( 'Per-target results', 'wp-checksum-verifier' ),
+			'wpcv_findings'       => __( 'Findings', 'wp-checksum-verifier' ),
+			'wpcv_suppressions'   => __( 'Suppressions', 'wp-checksum-verifier' ),
+			'wpcv_file_states'    => __( 'File state baseline', 'wp-checksum-verifier' ),
+			'wpcv_update_events'  => __( 'Update events', 'wp-checksum-verifier' ),
+			'wpcv_manifest_cache' => __( 'Manifest cache', 'wp-checksum-verifier' ),
+		);
+
+		$rows        = array();
+		$total_rows  = 0;
+		$total_bytes = 0;
+
+		foreach ( $usage['tables'] as $table => $info ) {
+			$total_rows  += $info['rows'];
+			$total_bytes += $info['bytes'];
+
+			$rows[] = array(
+				'label' => $labels[ $table ] ?? $table,
+				'rows'  => number_format_i18n( $info['rows'] ),
+				'size'  => (string) size_format( $info['bytes'], 1 ),
+			);
+		}
+
+		$rows[] = array(
+			'label' => empty( $usage['missing'] ) ? __( 'Total', 'wp-checksum-verifier' ) : __( 'Total (retrieved tables only)', 'wp-checksum-verifier' ),
+			'rows'  => number_format_i18n( $total_rows ),
+			'size'  => (string) size_format( $total_bytes, 1 ),
+		);
+
+		return $rows;
+	}
+
+	/**
+	 * 一部のテーブルの情報が取れなかったときの警告文を返す(0.10.0 のコードレビュー指摘4).
+	 *
+	 * 7テーブルのうち一部だけが返らないのは、テーブルが欠けている(作成・更新の失敗、手での削除など)
+	 * 可能性が高い. 取得できた分の合計だけを出すと全部に見えるので、どのテーブルかを示して知らせる.
+	 *
+	 * @param array{tables: array<string, array{rows: int, bytes: int}>|null, missing?: string[], oldest_run_at: string|null} $usage `WPCV_Data_Usage::collect()` の値.
+	 * @return string|null 欠けたテーブルが無ければ `null`.
+	 */
+	public static function data_usage_missing_notice( array $usage ) {
+		if ( empty( $usage['missing'] ) ) {
+			return null;
+		}
+
+		global $wpdb;
+
+		$prefix = ( is_object( $wpdb ) && isset( $wpdb->base_prefix ) ) ? (string) $wpdb->base_prefix : '';
+		$names  = array();
+
+		foreach ( $usage['missing'] as $table ) {
+			$names[] = $prefix . $table;
+		}
+
+		return sprintf(
+			/* translators: %s: comma-separated table names. */
+			__( 'Information for some tables could not be retrieved: %s. These tables may be missing. Check the database.', 'wp-checksum-verifier' ),
+			implode( ', ', $names )
+		);
+	}
+
+	/**
+	 * 「保存しているデータ」の節(テーブルごとの行数・容量・一番古い run の日時)を描画する(v0.10.0 P1).
+	 *
+	 * 値は DB の統計(`information_schema`)から取るので「おおよそ」で、最大1日古いことがある.
+	 * 取得できない環境(権限が無いなど)では、エラーにせず「取得できません」と表示する.
+	 * 取得方法・速さの実測は `WPCV_Data_Usage` の docblock 参照.
+	 *
+	 * @return void
+	 */
+	private static function render_data_usage_section() {
+		global $wpdb;
+
+		$usage          = ( new WPCV_Data_Usage( $wpdb ) )->collect();
+		$rows           = self::data_usage_rows( $usage );
+		$missing_notice = self::data_usage_missing_notice( $usage );
+		?>
+		<h2><?php echo esc_html__( 'Stored data', 'wp-checksum-verifier' ); ?></h2>
+		<?php if ( null !== $missing_notice ) : ?>
+			<div class="notice notice-warning inline"><p><?php echo esc_html( $missing_notice ); ?></p></div>
+		<?php endif; ?>
+		<?php if ( null === $rows ) : ?>
+			<p class="description"><?php echo esc_html__( 'The amount of stored data could not be retrieved on this server.', 'wp-checksum-verifier' ); ?></p>
+		<?php else : ?>
+			<p class="description">
+				<?php echo esc_html__( 'Approximate row counts and sizes of the tables this plugin uses, from database statistics (they can be up to a day old).', 'wp-checksum-verifier' ); ?>
+			</p>
+			<table class="widefat striped" style="max-width: 640px;">
+				<thead>
+					<tr>
+						<th><?php echo esc_html__( 'Data', 'wp-checksum-verifier' ); ?></th>
+						<th><?php echo esc_html__( 'Rows (approx.)', 'wp-checksum-verifier' ); ?></th>
+						<th><?php echo esc_html__( 'Size (approx.)', 'wp-checksum-verifier' ); ?></th>
+					</tr>
+				</thead>
+				<tbody>
+					<?php foreach ( $rows as $row ) : ?>
+						<tr>
+							<td><?php echo esc_html( $row['label'] ); ?></td>
+							<td><?php echo esc_html( $row['rows'] ); ?></td>
+							<td><?php echo esc_html( $row['size'] ); ?></td>
+						</tr>
+					<?php endforeach; ?>
+				</tbody>
+			</table>
+		<?php endif; ?>
+		<p>
+			<strong><?php echo esc_html__( 'Oldest run:', 'wp-checksum-verifier' ); ?></strong>
+			<?php // 日時は UTC で保存されているので、サイトのタイムゾーンで表示する(D14). ?>
+			<?php echo esc_html( WPCV_Settings::format_datetime( $usage['oldest_run_at'] ) ); ?>
+		</p>
+		<?php
+	}
+
+	/**
+	 * 「古い履歴を今すぐ削除」の節(説明・直近の結果・ボタン)を描画する(v0.10.0).
+	 *
+	 * ボタンは確認のダイアログを出す(削除は元に戻せないため). 画面の保持期間のプルダウンを変えて
+	 * 保存していない場合は、保存済みの値で消す.
+	 *
+	 * @param int $retention_months 保存されている保持期間(月).
+	 * @return void
+	 */
+	private static function render_prune_section( $retention_months ) {
+		$state  = self::prune_button_state( $retention_months, WPCV_Prune_Job::is_active() );
+		$status = WPCV_Prune_Job::get_status();
+		?>
+		<h2><?php echo esc_html__( 'Delete old history now', 'wp-checksum-verifier' ); ?></h2>
+		<form method="post">
+			<?php wp_nonce_field( self::PRUNE_NONCE_ACTION, self::PRUNE_NONCE_NAME ); ?>
+			<p class="description">
+				<?php echo esc_html__( 'Delete history older than the saved retention period right away, instead of waiting for the following runs. The newest verified result of each target, results still being processed, and records needed to avoid repeating an alert are kept. This cannot be undone.', 'wp-checksum-verifier' ); ?>
+			</p>
+			<?php if ( $state['notice'] ) : ?>
+				<p class="description"><?php echo esc_html( $state['notice'] ); ?></p>
+			<?php endif; ?>
+			<?php if ( null !== $status ) : ?>
+				<p>
+					<strong><?php echo esc_html__( 'Last deletion:', 'wp-checksum-verifier' ); ?></strong>
+					<?php echo esc_html( self::format_prune_status( $status ) ); ?>
+				</p>
+			<?php endif; ?>
+			<?php
+			$confirm_message = sprintf(
+				/* translators: %d: retention period in months. */
+				__( 'Delete history older than %d months? This cannot be undone.', 'wp-checksum-verifier' ),
+				(int) $retention_months
+			);
+			$attributes = array( 'onclick' => 'return confirm(' . wp_json_encode( $confirm_message ) . ');' );
+
+			if ( $state['disabled'] ) {
+				$attributes['disabled'] = 'disabled';
+			}
+
+			submit_button( __( 'Delete old history now', 'wp-checksum-verifier' ), 'secondary', 'wpcv_prune_history_submit', true, $attributes );
+			?>
+		</form>
 		<?php
 	}
 
@@ -576,7 +929,7 @@ class WPCV_Page_Settings {
 
 		// v0.9 §Step2: 保持期間. セレクトボックスは常に値が送られるので、キーが無いとき
 		// (このフォーム以外からの POST)だけは既存の値を変えない. 選択肢以外の値は
-		// `update_retention_months()` が既定(0 = 無期限)に倒す.
+		// `update_retention_months()` が無期限(0)に倒す.
 		if ( isset( $_POST['wpcv_retention_months'] ) ) {
 			WPCV_Settings::update_retention_months( absint( wp_unslash( $_POST['wpcv_retention_months'] ) ) );
 		}
@@ -886,6 +1239,8 @@ class WPCV_Page_Settings {
 		$last_cli_run = WPCV_Plugin::run_repository()->find_most_recent_by_trigger( 'cli' );
 		?>
 		<h2><?php echo esc_html__( 'Status', 'wp-checksum-verifier' ); ?></h2>
+		<?php // 日時はサイトのタイムゾーンで表示する(v0.10.0). 以前の UTC 表示と混同しないよう注記を添える. ?>
+		<p class="description"><?php echo esc_html( WPCV_Settings::datetime_notice() ); ?></p>
 		<table class="widefat" style="max-width: 640px;">
 			<tbody>
 				<tr>
@@ -898,7 +1253,7 @@ class WPCV_Page_Settings {
 				</tr>
 				<tr>
 					<th scope="row"><?php echo esc_html__( 'Next scheduled run', 'wp-checksum-verifier' ); ?></th>
-					<td><?php echo esc_html( (string) $status['next_scheduled_at'] ); ?></td>
+					<td><?php echo esc_html( WPCV_Settings::format_datetime( (string) $status['next_scheduled_at'] ) ); ?></td>
 				</tr>
 				<tr>
 					<th scope="row"><?php echo esc_html__( 'WP-Cron', 'wp-checksum-verifier' ); ?></th>
@@ -917,7 +1272,7 @@ class WPCV_Page_Settings {
 						echo esc_html(
 							null === $last_cli_run
 								? __( 'Never observed on this site (this only reflects runs recorded here, not whether WP-CLI is installed).', 'wp-checksum-verifier' )
-								: (string) $last_cli_run['started_at']
+								: WPCV_Settings::format_datetime( (string) $last_cli_run['started_at'] )
 						);
 						?>
 					</td>
@@ -956,7 +1311,7 @@ class WPCV_Page_Settings {
 			(int) $targets['queued'],
 			(int) $targets['retry'],
 			(int) $run['findings_total'],
-			null === $run['last_activity_at'] ? '—' : (string) $run['last_activity_at'],
+			WPCV_Settings::format_datetime( $run['last_activity_at'] ),
 			WPCV_Page_Run_History::format_diff_summary( $run ),
 			WPCV_Page_Run_History::format_alert_status( $run )
 		);

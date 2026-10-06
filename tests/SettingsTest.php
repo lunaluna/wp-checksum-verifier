@@ -35,6 +35,23 @@ class SettingsTest extends TestCase {
 	}
 
 	/**
+	 * 各テストの後に、他のテストファイルへ状態を残さないよう掃除する.
+	 *
+	 * タイムゾーンのテストが `_wpcv_test_options`(timezone_string・gmt_offset)と
+	 * `_wpcv_test_is_multisite` を残すと、全体スイートで後続のテストが影響を受ける.
+	 *
+	 * @return void
+	 */
+	protected function tearDown(): void {
+		unset(
+			$GLOBALS['_wpcv_test_is_multisite'],
+			$GLOBALS['_wpcv_test_options'],
+			$GLOBALS['_wpcv_test_site_options']
+		);
+		parent::tearDown();
+	}
+
+	/**
 	 * 未保存の状態では既定値(03:00 UTC)が返ることを確認する.
 	 *
 	 * @return void
@@ -442,13 +459,36 @@ class SettingsTest extends TestCase {
 	// ------------------------------------------------------------------
 
 	/**
-	 * 未保存の状態では無期限(0)が返ることを確認する(プラン U5: 利用者が選ぶまで何も消さない).
+	 * 保存値が無ければ 12 か月になること(U8・U9. 新規インストールも、設定画面を保存していない既存サイトも)を確認する.
 	 *
 	 * @return void
 	 */
-	public function test_retention_months_defaults_to_unlimited() {
+	public function test_retention_months_defaults_to_twelve_when_unset() {
+		$this->assertSame( 12, WPCV_Settings::get_retention_months() );
+		$this->assertSame( 12, WPCV_Settings::defaults()['retention_months'] );
+		$this->assertContains( WPCV_Settings::DEFAULT_RETENTION_MONTHS, WPCV_Settings::RETENTION_MONTHS_CHOICES );
+	}
+
+	/**
+	 * 明示的に 0(無期限)が保存されているサイトは、12 か月にならず無期限のままであることを確認する(U9).
+	 *
+	 * @return void
+	 */
+	public function test_explicit_zero_retention_stays_unlimited() {
+		$GLOBALS['_wpcv_test_options'][ WPCV_Settings::OPTION_NAME ] = array( 'retention_months' => 0 );
+
 		$this->assertSame( 0, WPCV_Settings::get_retention_months() );
-		$this->assertSame( 0, WPCV_Settings::defaults()['retention_months'] );
+	}
+
+	/**
+	 * 保持期間を保存していない設定(他の項目だけ保存済み)でも 12 か月になることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_retention_default_applies_when_only_other_settings_are_stored() {
+		$GLOBALS['_wpcv_test_options'][ WPCV_Settings::OPTION_NAME ] = array( 'run_hour' => 5 );
+
+		$this->assertSame( 12, WPCV_Settings::get_retention_months() );
 	}
 
 	/**
@@ -472,7 +512,7 @@ class SettingsTest extends TestCase {
 	 */
 	public function test_update_retention_months_falls_back_to_unlimited_for_invalid_value() {
 		foreach ( array( -1, 5, 999, 'abc', null ) as $invalid ) {
-			WPCV_Settings::update_retention_months( 12 );
+			WPCV_Settings::update_retention_months( 6 );
 			WPCV_Settings::update_retention_months( $invalid );
 
 			$this->assertSame( 0, WPCV_Settings::get_retention_months() );
@@ -510,5 +550,167 @@ class SettingsTest extends TestCase {
 			WPCV_Settings::get_run_time()
 		);
 		$this->assertSame( 6, WPCV_Settings::get_retention_months() );
+	}
+
+	/**
+	 * 単一サイトで `timezone_string` があれば、それがそのまま使われることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_site_timezone_uses_timezone_string_on_single_site() {
+		$GLOBALS['_wpcv_test_is_multisite']              = false;
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		$this->assertSame( 'Asia/Tokyo', WPCV_Settings::site_timezone()->getName() );
+	}
+
+	/**
+	 * `timezone_string` が空で `gmt_offset` だけのとき、`+09:00` の形になることを確認する(#4).
+	 *
+	 * @return void
+	 */
+	public function test_site_timezone_falls_back_to_gmt_offset() {
+		$GLOBALS['_wpcv_test_is_multisite']          = false;
+		$GLOBALS['_wpcv_test_options']['gmt_offset'] = 9;
+
+		$this->assertSame( '+09:00', WPCV_Settings::site_timezone()->getName() );
+	}
+
+	/**
+	 * 30 分ずれ(`gmt_offset = 5.5`)と負のオフセット(-3.5)が正しく組み立てられることを確認する(#5).
+	 *
+	 * @return void
+	 */
+	public function test_site_timezone_handles_half_hour_offsets() {
+		$GLOBALS['_wpcv_test_is_multisite']          = false;
+		$GLOBALS['_wpcv_test_options']['gmt_offset'] = 5.5;
+		$this->assertSame( '+05:30', WPCV_Settings::site_timezone()->getName() );
+
+		$GLOBALS['_wpcv_test_options']['gmt_offset'] = -3.5;
+		$this->assertSame( '-03:30', WPCV_Settings::site_timezone()->getName() );
+	}
+
+	/**
+	 * 何も設定されていなければ UTC(`+00:00`)になることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_site_timezone_defaults_to_utc_offset() {
+		$GLOBALS['_wpcv_test_is_multisite'] = false;
+
+		$this->assertSame( '+00:00', WPCV_Settings::site_timezone()->getName() );
+	}
+
+	/**
+	 * マルチサイトでは `get_blog_option()` 経由(メインサイト)で読むことを確認する(#11).
+	 *
+	 * スタブの `get_blog_option()` は blog を分離しないため、ここでは「multisite でも
+	 * 同じ規則で組み立てられる」ことと、timezone_string・gmt_offset 両方の分岐を見る.
+	 *
+	 * @return void
+	 */
+	public function test_site_timezone_reads_main_site_options_on_multisite() {
+		$GLOBALS['_wpcv_test_is_multisite']               = true;
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'America/New_York';
+		$this->assertSame( 'America/New_York', WPCV_Settings::site_timezone()->getName() );
+
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = '';
+		$GLOBALS['_wpcv_test_options']['gmt_offset']      = 5.5;
+		$this->assertSame( '+05:30', WPCV_Settings::site_timezone()->getName() );
+	}
+
+	/**
+	 * `run_time_basis` は未保存なら `null`、不正な値も `null`、`update_run_time()` 後は `site` になることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_stored_run_time_basis_lifecycle() {
+		$this->assertNull( WPCV_Settings::get_stored_run_time_basis() );
+
+		$GLOBALS['_wpcv_test_options'][ WPCV_Settings::OPTION_NAME ] = array( 'run_time_basis' => 'bogus' );
+		$this->assertNull( WPCV_Settings::get_stored_run_time_basis() );
+
+		WPCV_Settings::update_run_time( 3, 0 );
+		$this->assertSame( 'site', WPCV_Settings::get_stored_run_time_basis() );
+	}
+
+	/**
+	 * `defaults()` に `run_time_basis` を含めないこと(含めると未保存の旧データを見分けられない)を確認する.
+	 *
+	 * @return void
+	 */
+	public function test_defaults_do_not_include_run_time_basis() {
+		$this->assertArrayNotHasKey( 'run_time_basis', WPCV_Settings::defaults() );
+	}
+
+	/**
+	 * `format_datetime()`: UTC の保存値が現地時刻になり、日付も変わることを確認する(プラン §4 #16).
+	 *
+	 * @return void
+	 */
+	public function test_format_datetime_converts_utc_to_site_time() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		$this->assertSame( '2026-10-06 03:03:34', WPCV_Settings::format_datetime( '2026-10-05 18:03:34' ) );
+	}
+
+	/**
+	 * Unix timestamp(int)も現地時刻で表示できることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_format_datetime_accepts_unix_timestamp() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		$this->assertSame( '2026-10-06 03:03:34', WPCV_Settings::format_datetime( gmmktime( 18, 3, 34, 10, 5, 2026 ) ) );
+	}
+
+	/**
+	 * 夏時間をまたいだ古い記録は、その時点のオフセットで表示されることを確認する(#17).
+	 *
+	 * @return void
+	 */
+	public function test_format_datetime_uses_offset_at_that_time() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'America/New_York';
+
+		$this->assertSame( '2026-07-01 08:00:00', WPCV_Settings::format_datetime( '2026-07-01 12:00:00' ) );
+		$this->assertSame( '2026-01-15 07:00:00', WPCV_Settings::format_datetime( '2026-01-15 12:00:00' ) );
+	}
+
+	/**
+	 * タイムゾーンを変えると、保存値は同じでも新しいタイムゾーンで表示されることを確認する(#18).
+	 *
+	 * @return void
+	 */
+	public function test_format_datetime_follows_timezone_change() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+		$this->assertSame( '2026-10-06 03:00:00', WPCV_Settings::format_datetime( '2026-10-05 18:00:00' ) );
+
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Europe/London';
+		$this->assertSame( '2026-10-05 19:00:00', WPCV_Settings::format_datetime( '2026-10-05 18:00:00' ) );
+	}
+
+	/**
+	 * 空・0000-00-00・不正・0 以下は例外や 1970 年を出さずダッシュになることを確認する(#19).
+	 *
+	 * @return void
+	 */
+	public function test_format_datetime_returns_dash_for_empty_or_invalid() {
+		foreach ( array( null, '', '   ', '0000-00-00 00:00:00', 'not a date', 0, -5 ) as $value ) {
+			$this->assertSame( '—', WPCV_Settings::format_datetime( $value ), var_export( $value, true ) );
+		}
+	}
+
+	/**
+	 * マルチサイトでもメインサイトのタイムゾーンで表示され、注記に名前が出ることを確認する(#20).
+	 *
+	 * @return void
+	 */
+	public function test_format_datetime_and_notice_use_main_site_timezone_on_multisite() {
+		$GLOBALS['_wpcv_test_is_multisite']               = true;
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		$this->assertSame( '2026-10-06 03:00:00', WPCV_Settings::format_datetime( '2026-10-05 18:00:00' ) );
+		$this->assertStringContainsString( 'Asia/Tokyo', WPCV_Settings::datetime_notice() );
 	}
 }

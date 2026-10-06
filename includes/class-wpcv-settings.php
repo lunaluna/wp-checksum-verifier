@@ -40,21 +40,39 @@ class WPCV_Settings {
 	const OPTION_NAME = 'wpcv_settings';
 
 	/**
-	 * 既定の実行時(UTC).
+	 * 既定の実行時(サイトのタイムゾーン. v0.10.0 で UTC から変更).
 	 *
 	 * 計画時点(v0.3)でユーザーと確認済みの仮値(実装セッションへの申し送り参照)。
 	 * 実地運用でのアクセス傾向(負荷の低い時間帯)を見て見直す余地がある.
+	 * 本来の設計意図は「サイトのタイムゾーンでの 3:00」だったが、v0.9.2 までは UTC の
+	 * 3:00 として動いていた(日本では 12:00). 新規インストールだけが現地 3:00 になり、
+	 * 既存サイトは `run_time_basis` の移行で実行時刻を保つ(プラン U1).
 	 *
 	 * @var int
 	 */
 	const DEFAULT_RUN_HOUR = 3;
 
 	/**
-	 * 既定の実行分(UTC).
+	 * 既定の実行分(サイトのタイムゾーン).
 	 *
 	 * @var int
 	 */
 	const DEFAULT_RUN_MINUTE = 0;
+
+	/**
+	 * `run_time_basis` の値: 保存されている `run_hour`/`run_minute` はサイトのタイムゾーンの時刻(v0.10.0 以降).
+	 *
+	 * @var string
+	 */
+	const RUN_TIME_BASIS_SITE = 'site';
+
+	/**
+	 * `run_time_basis` の値: 保存されている `run_hour`/`run_minute` は UTC の時刻(v0.9.2 まで.
+	 * 値を持たない旧データはこれとみなす).
+	 *
+	 * @var string
+	 */
+	const RUN_TIME_BASIS_UTC = 'utc';
 
 	/**
 	 * 外部HTTPモード(v0.4.0 §Step6。`WPCV_Rest_Run_Controller`)がdispatcherを
@@ -141,19 +159,36 @@ class WPCV_Settings {
 	 * 保持期間(月)の選択肢(v0.9 §Step2). 0 は無期限(何も消さない).
 	 *
 	 * 3・6・12・24 は暫定の選択肢(未実測). 本番の増加量は 2026-10-29 ごろに測れる(v0.9 プラン §2).
-	 * 選択肢以外の値は保存・読み取りのどちらでも既定(0)に倒す: 汚れた値で意図せず履歴を消さないため.
+	 * 選択肢以外の値は保存・読み取りのどちらでも `RETENTION_MONTHS_FALLBACK`(0 = 無期限)に倒す:
+	 * 汚れた値で意図せず履歴を消さないため.
 	 *
 	 * @var int[]
 	 */
 	const RETENTION_MONTHS_CHOICES = array( 0, 3, 6, 12, 24 );
 
 	/**
-	 * 保持期間(月)の既定値(v0.9 プラン U5). 0 = 無期限. 利用者が選ぶまで何も削除しない
-	 * (既定を有限にすると、今ある履歴が利用者に黙って消えるため).
+	 * 保持期間(月)の既定値. v0.10.0 から 12 か月(0.9.x までは 0 = 無期限だった).
+	 *
+	 * Background: v0.9 では「既定を有限にすると、今ある履歴が利用者に黙って消える」ため無期限にしていたが、
+	 * DB のデータが増え続ける問題が見つかり、2026-10-06 にユーザーが 12 か月への変更を決めた
+	 * (0.10.0 プラン U8). 保存値が無いサイトにも効かせる(U9): 設定画面を保存していない既存サイトも
+	 * 12 か月になる. 明示的に 0 が保存されているサイトは無期限のまま. 履歴は 2026-09 以降のもの
+	 * なので、更新してすぐに消える履歴は無い(最初の削除は 2027-09 以降).
+	 * 12 か月は未実測の値で、本番の増加量の実測(2026-10-29 ごろ)の後に見直す余地がある.
 	 *
 	 * @var int
 	 */
-	const DEFAULT_RETENTION_MONTHS = 0;
+	const DEFAULT_RETENTION_MONTHS = 12;
+
+	/**
+	 * 保持期間(月)の不正な値の戻り先. 0 = 無期限.
+	 *
+	 * 既定値(`DEFAULT_RETENTION_MONTHS`)とは別にしている. 既定が有限になったため、「不正な値 → 既定」
+	 * のままだと、汚れた値で意図せず履歴を削除してしまう(v0.9 の「汚れた値で消さない」という意図に反する).
+	 *
+	 * @var int
+	 */
+	const RETENTION_MONTHS_FALLBACK = 0;
 
 	/**
 	 * 既定値.
@@ -191,7 +226,137 @@ class WPCV_Settings {
 	}
 
 	/**
-	 * 実行時刻(UTC)を返す.
+	 * このプラグインが「サイトのタイムゾーン」として使うタイムゾーンを返す(v0.10.0).
+	 *
+	 * 単一サイトでは `wp_timezone()` をそのまま使う. マルチサイトでは設定・WP-Cron の
+	 * 予約・検出結果がネットワークで1つのため、サブサイトの設定ではなく**メインサイトの**
+	 * `timezone_string` / `gmt_offset` を使う(プラン U4). `switch_to_blog()` は使わず
+	 * `get_blog_option()` で読むので、呼び出し元がどのサイトでも(REST がサブサイトの URL で
+	 * 呼ばれても)同じ値になる. 組み立て規則は `wp_timezone_string()`
+	 * (`wp-includes/functions.php`)と同じ: `timezone_string` があればそれ、無ければ
+	 * `gmt_offset` から `+09:00` の形を作る.
+	 *
+	 * @return DateTimeZone
+	 */
+	public static function site_timezone() {
+		if ( ! is_multisite() ) {
+			return wp_timezone();
+		}
+
+		$main_site_id    = get_main_site_id();
+		$timezone_string = get_blog_option( $main_site_id, 'timezone_string' );
+
+		if ( $timezone_string ) {
+			return new DateTimeZone( $timezone_string );
+		}
+
+		// 30 分ずれ(5.5 など)も扱うため、整数部と小数部に分けて +05:30 の形にする.
+		$offset  = (float) get_blog_option( $main_site_id, 'gmt_offset' );
+		$hours   = (int) $offset;
+		$minutes = ( $offset - $hours );
+
+		$sign = ( $offset < 0 ) ? '-' : '+';
+
+		return new DateTimeZone( sprintf( '%s%02d:%02d', $sign, abs( $hours ), abs( $minutes * 60 ) ) );
+	}
+
+	/**
+	 * 表示用の日時の書式(U7: 今までと同じ `Y-m-d H:i:s`. 「設定 > 一般」の書式には従わない).
+	 *
+	 * @var string
+	 */
+	const DISPLAY_DATETIME_FORMAT = 'Y-m-d H:i:s';
+
+	/**
+	 * DB に UTC で保存している日時を、サイトのタイムゾーンの表示用文字列にする(v0.10.0. プラン §3.6).
+	 *
+	 * 管理画面とアラートメールの日時はこの関数に集約する. 保存は UTC のままで、表示のときだけ変える.
+	 * UTC の `Y-m-d H:i:s` 文字列を timestamp にするときは、サーバーの既定タイムゾーンに左右されないよう
+	 * 明示的に UTC で解釈する. `int` は Unix timestamp とみなす(ファイルの ctime・mtime など).
+	 * `wp_date()` は timestamp ごとにオフセットを決めるので、夏時間をまたいだ古い記録もその時点の
+	 * オフセットで表示される(組み合わせ表 #17). タイムゾーンは `site_timezone()`(マルチサイトでは
+	 * メインサイト. U4)なので、どのサイトの画面・メールでも同じ値になる.
+	 *
+	 * @param string|int|null $value UTC の `Y-m-d H:i:s` 文字列、または Unix timestamp.
+	 * @return string 表示用の文字列. 空・`0000-00-00 00:00:00`・不正な値・1970 年以前は `—`.
+	 */
+	public static function format_datetime( $value ) {
+		if ( is_int( $value ) ) {
+			$timestamp = $value;
+		} elseif ( is_string( $value ) && '' !== trim( $value ) && 0 !== strpos( $value, '0000-00-00' ) ) {
+			try {
+				$timestamp = ( new DateTimeImmutable( trim( $value ), new DateTimeZone( 'UTC' ) ) )->getTimestamp();
+			} catch ( Exception $e ) {
+				return '—';
+			}
+		} else {
+			return '—';
+		}
+
+		// 0 以下は「未設定が 1970 年として出る」事故を避けて表示しない.
+		if ( $timestamp <= 0 ) {
+			return '—';
+		}
+
+		return (string) wp_date( self::DISPLAY_DATETIME_FORMAT, $timestamp, self::site_timezone() );
+	}
+
+	/**
+	 * 「日時はこのタイムゾーンで表示している」という注記を返す(v0.10.0).
+	 *
+	 * 以前の UTC 表示と見比べて混乱しないよう、日時を出す画面に添える.
+	 *
+	 * @return string エスケープ前の文字列.
+	 */
+	public static function datetime_notice() {
+		return sprintf(
+			/* translators: %s: site time zone name (e.g. Asia/Tokyo or +09:00). */
+			__( 'Dates and times are shown in the site time zone (%s).', 'wp-checksum-verifier' ),
+			self::site_timezone()->getName()
+		);
+	}
+
+	/**
+	 * 指定したタイムゾーンの「`$date` の `$hour:$minute`」の Unix timestamp を返す(v0.10.0).
+	 *
+	 * 日付と時刻を**文字列で組み立てて**から解釈する. 既存の `DateTime` に `setTime()` で時刻を
+	 * 当てると、夏時間で2回ある時刻(秋の 01:30 など)が元のオブジェクトのオフセットに引きずられて
+	 * 2回目になることがあるため(テストで確認). 文字列から作ると、存在しない時刻は1時間後ろ、
+	 * 2回ある時刻は1回目(夏時間側)になる(PHP 8.4.4 で実測. プラン §2・U2).
+	 *
+	 * @param string       $date     `Y-m-d` 形式の現地の日付.
+	 * @param int          $hour     時(0-23).
+	 * @param int          $minute   分(0-59).
+	 * @param DateTimeZone $timezone 現地のタイムゾーン.
+	 * @return int
+	 */
+	public static function timestamp_in_timezone( $date, $hour, $minute, DateTimeZone $timezone ) {
+		return ( new DateTimeImmutable( sprintf( '%s %02d:%02d:00', $date, (int) $hour, (int) $minute ), $timezone ) )->getTimestamp();
+	}
+
+	/**
+	 * `$timestamp` が属する現地の暦日を `Y-m-d` で返し、`$days` 日ずらした日付も返せる(v0.10.0).
+	 *
+	 * 秒数を足さず日付で進める(夏時間の切り替え日は1日が 23/25 時間のため). 日付だけ進めるので、
+	 * 正午に寄せてから動かし、0 時付近の夏時間の影響を避ける.
+	 *
+	 * @param int          $timestamp Unix timestamp.
+	 * @param DateTimeZone $timezone  現地のタイムゾーン.
+	 * @param int          $days      進める日数(負も可. 既定 0).
+	 * @return string
+	 */
+	public static function local_date( $timestamp, DateTimeZone $timezone, $days = 0 ) {
+		$local = ( new DateTimeImmutable( '@' . (int) $timestamp ) )->setTimezone( $timezone )->setTime( 12, 0, 0 );
+
+		if ( 0 !== (int) $days ) {
+			$local = $local->modify( sprintf( '%+d day', (int) $days ) );
+		}
+
+		return $local->format( 'Y-m-d' );
+	}
+
+	/**
+	 * 実行時刻(サイトのタイムゾーン)を返す.
 	 *
 	 * @return array{hour:int,minute:int}
 	 */
@@ -205,7 +370,10 @@ class WPCV_Settings {
 	}
 
 	/**
-	 * 実行時刻(UTC)を保存する.
+	 * 実行時刻(サイトのタイムゾーン)を保存する.
+	 *
+	 * 保存する時刻は常にサイトのタイムゾーンの時刻なので、`run_time_basis` も `site` にする
+	 * (移行前の旧データに設定画面から保存した場合も、以後は現地時刻として扱う).
 	 *
 	 * @param int $hour   時. 範囲外(0-23 外)は clamp する.
 	 * @param int $minute 分. 範囲外(0-59 外)は clamp する.
@@ -214,8 +382,68 @@ class WPCV_Settings {
 	public static function update_run_time( $hour, $minute ) {
 		$settings = self::get_all();
 
-		$settings['run_hour']   = self::clamp_int( $hour, 0, 23 );
-		$settings['run_minute'] = self::clamp_int( $minute, 0, 59 );
+		$settings['run_hour']       = self::clamp_int( $hour, 0, 23 );
+		$settings['run_minute']     = self::clamp_int( $minute, 0, 59 );
+		$settings['run_time_basis'] = self::RUN_TIME_BASIS_SITE;
+
+		return self::write_option( $settings );
+	}
+
+	/**
+	 * 保存されている `run_time_basis` を返す(v0.10.0). 保存されていなければ `null`.
+	 *
+	 * `defaults()` には含めない. 含めると「未保存(旧データ = UTC)」と「保存済みの site」を
+	 * 区別できなくなり、移行(`WPCV_Migrator::maybe_migrate_run_time_basis()`)が
+	 * 旧データを見分けられないため.
+	 *
+	 * @return string|null `RUN_TIME_BASIS_SITE` / `RUN_TIME_BASIS_UTC`. それ以外・未保存は `null`.
+	 */
+	public static function get_stored_run_time_basis() {
+		$stored = self::read_option();
+
+		if ( ! is_array( $stored ) || ! isset( $stored['run_time_basis'] ) ) {
+			return null;
+		}
+
+		return in_array( $stored['run_time_basis'], array( self::RUN_TIME_BASIS_SITE, self::RUN_TIME_BASIS_UTC ), true )
+			? $stored['run_time_basis']
+			: null;
+	}
+
+	/**
+	 * 保存済みの実行時刻の基準を `site` にする. 必要なら UTC の時・分を現地の時・分に変換する(v0.10.0).
+	 *
+	 * 既存の保存値は UTC の時刻として動いていた(日本で 03:00 なら現地 12:00). 実行時刻を保つため
+	 * (プラン U1)、`$convert_from_utc` が真なら**移行した時点のオフセット**で現地の時・分に直す.
+	 * 夏時間のある地域では、切り替えをまたぐと UTC で見た実行時刻が1時間ずれる(現地の時刻は保たれる).
+	 * 時・分が未保存のサイト(設定画面を一度も保存していない)も既定の UTC 3:00 を同じ規則で変換して保存する.
+	 * 新規インストールは変換せず基準だけ `site` にする(既定の 3:00 をそのまま現地 3:00 として使う).
+	 *
+	 * @param bool         $convert_from_utc 真なら UTC の時・分を現地へ変換する. 偽なら基準だけ site にする.
+	 * @param DateTimeZone $timezone         変換に使う現地のタイムゾーン.
+	 * @param int          $now_timestamp    オフセットを決める時点(Unix timestamp. テストで注入する).
+	 * @return bool 保存の戻り値.
+	 */
+	public static function adopt_site_run_time_basis( $convert_from_utc, DateTimeZone $timezone, $now_timestamp ) {
+		$settings = self::get_all();
+
+		if ( $convert_from_utc ) {
+			// 移行した日の「UTC のその時刻」を現地の時刻に直す. 日付は今日のもので、オフセットだけを使う.
+			$utc_at = gmmktime(
+				self::clamp_int( $settings['run_hour'], 0, 23 ),
+				self::clamp_int( $settings['run_minute'], 0, 59 ),
+				0,
+				(int) gmdate( 'n', $now_timestamp ),
+				(int) gmdate( 'j', $now_timestamp ),
+				(int) gmdate( 'Y', $now_timestamp )
+			);
+			$local  = ( new DateTimeImmutable( '@' . $utc_at ) )->setTimezone( $timezone );
+
+			$settings['run_hour']   = (int) $local->format( 'G' );
+			$settings['run_minute'] = (int) $local->format( 'i' );
+		}
+
+		$settings['run_time_basis'] = self::RUN_TIME_BASIS_SITE;
 
 		return self::write_option( $settings );
 	}
@@ -460,8 +688,9 @@ class WPCV_Settings {
 	/**
 	 * 保持期間(月)を返す(v0.9 §Step2). 0 は無期限.
 	 *
-	 * 保存済みの値が選択肢(`RETENTION_MONTHS_CHOICES`)以外(手動での書き換え等)なら、
-	 * 既定(0 = 無期限)として扱う.
+	 * 値が保存されていなければ既定(`DEFAULT_RETENTION_MONTHS` = 12). 保存済みの値が選択肢
+	 * (`RETENTION_MONTHS_CHOICES`)以外(手動での書き換え等)なら、無期限(`RETENTION_MONTHS_FALLBACK`)
+	 * として扱う: 汚れた値で意図せず履歴を消さないため.
 	 *
 	 * @return int
 	 */
@@ -471,13 +700,13 @@ class WPCV_Settings {
 
 		return in_array( (int) $months, self::RETENTION_MONTHS_CHOICES, true )
 			? (int) $months
-			: self::DEFAULT_RETENTION_MONTHS;
+			: self::RETENTION_MONTHS_FALLBACK;
 	}
 
 	/**
 	 * 保持期間(月)を保存する.
 	 *
-	 * @param int $months `RETENTION_MONTHS_CHOICES` のいずれか. それ以外は既定(0 = 無期限)として保存する.
+	 * @param int $months `RETENTION_MONTHS_CHOICES` のいずれか. それ以外は無期限(0)として保存する.
 	 * @return bool `update_option()`/`update_site_option()` の戻り値.
 	 */
 	public static function update_retention_months( $months ) {
@@ -485,7 +714,7 @@ class WPCV_Settings {
 
 		$settings['retention_months'] = in_array( (int) $months, self::RETENTION_MONTHS_CHOICES, true )
 			? (int) $months
-			: self::DEFAULT_RETENTION_MONTHS;
+			: self::RETENTION_MONTHS_FALLBACK;
 
 		return self::write_option( $settings );
 	}

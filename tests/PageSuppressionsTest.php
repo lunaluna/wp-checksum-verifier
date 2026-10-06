@@ -8,6 +8,7 @@
 require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-suppressions.php';
 
 use PHPUnit\Framework\TestCase;
@@ -128,5 +129,26 @@ class PageSuppressionsTest extends TestCase {
 		$this->assertStringContainsString( '2026-09-30 10:00:00', $label );
 		$this->assertStringContainsString( 'version changed', $label );
 		$this->assertStringNotContainsString( 'version_changed', $label );
+	}
+
+	/**
+	 * 抑制の「取り消し・失効」の日時がサイトのタイムゾーンで表示されることを確認する(D11).
+	 *
+	 * @return void
+	 */
+	public function test_status_label_shows_expired_at_in_site_time_zone() {
+		$GLOBALS['_wpcv_test_options']['timezone_string'] = 'Asia/Tokyo';
+
+		try {
+			$label = WPCV_Page_Suppressions::status_label(
+				array(
+					'expired_at'     => '2026-09-11 10:00:00',
+					'expired_reason' => 'no longer needed',
+				)
+			);
+			$this->assertStringContainsString( '2026-09-11 19:00:00', $label );
+		} finally {
+			unset( $GLOBALS['_wpcv_test_options']['timezone_string'] );
+		}
 	}
 }

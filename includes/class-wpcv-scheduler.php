@@ -69,7 +69,37 @@ class WPCV_Scheduler {
 		add_action( self::HOOK, array( __CLASS__, 'handle_event' ) );
 		add_action( self::MANUAL_HOOK, array( __CLASS__, 'handle_manual_event' ) );
 
+		// サイトのタイムゾーンが変わったら、予約済みの次回分をすぐ予約し直す(v0.10.0. プラン U3).
+		// 一般設定の保存は timezone_string と gmt_offset の一方または両方を更新するため、4つとも見る
+		// (`add_option_*` は option が初めて作られるとき. `wp-includes/option.php` の
+		// `do_action( "update_option_{$option}" )` / `do_action( "add_option_{$option}" )`).
+		// コールバックは引数を使わないので accepted_args は 0.
+		foreach ( array( 'timezone_string', 'gmt_offset' ) as $option_name ) {
+			add_action( 'update_option_' . $option_name, array( __CLASS__, 'handle_timezone_change' ), 10, 0 );
+			add_action( 'add_option_' . $option_name, array( __CLASS__, 'handle_timezone_change' ), 10, 0 );
+		}
+
 		self::ensure_scheduled();
+	}
+
+	/**
+	 * タイムゾーン関連の option(`timezone_string`・`gmt_offset`)が変わったときに、次回の予約を作り直す.
+	 *
+	 * 保存されている時・分は変えない(「現地 3:00」のまま、新しいタイムゾーンの 3:00 になる).
+	 * マルチサイトではメインサイトの option の変更だけを見る(プラン U4. サブサイトのタイムゾーン変更では
+	 * 何もしない. 予約はメインサイトの cron にしか無く、時刻もメインサイトのタイムゾーンで決まるため).
+	 * 一般設定の1回の保存で2つの option が変わると2回呼ばれるが、`reschedule()` は冪等なので問題ない.
+	 * 実行中の run には影響しない(deadline・lease は UTC の絶対時刻のまま. `reschedule()` は
+	 * 定時イベントを消して作り直すだけ).
+	 *
+	 * @return void
+	 */
+	public static function handle_timezone_change() {
+		if ( ! is_main_site() ) {
+			return;
+		}
+
+		self::reschedule();
 	}
 
 	/**
@@ -196,27 +226,38 @@ class WPCV_Scheduler {
 	}
 
 	/**
-	 * `$now_timestamp` 以降で最初に訪れる `$hour:$minute`(UTC)の Unix timestamp を返す.
+	 * `$now_timestamp` 以降で最初に訪れる `$hour:$minute`(サイトのタイムゾーン)の Unix timestamp を返す.
 	 *
 	 * 当日のその時刻がまだ来ていなければ当日、既に過ぎていれば翌日を返す
 	 * (WP-Cron の単発イベントは過去時刻でもすぐ発火する仕様のため、常に未来の
 	 * 時刻を返す必要がある).
 	 *
-	 * @param int $now_timestamp 基準時刻(Unix timestamp). テストで固定注入するため引数化.
-	 * @param int $hour          時(UTC. 0-23).
-	 * @param int $minute        分(UTC. 0-59).
+	 * v0.10.0 で UTC 基準からサイトのタイムゾーン基準に変えた(プラン §3.2). 「翌日」は
+	 * `+ DAY_IN_SECONDS` ではなく、日付を1日進めてから時刻を設定し直す. 夏時間の切り替え日は
+	 * 1日が 23/25 時間になるため、秒数を足すと現地の時刻がずれるから. 夏時間で存在しない時刻は
+	 * 1時間後ろに、2回ある時刻は1回目(夏時間側)になる(PHP の `DateTime` の挙動. PHP 8.4.4 で実測.
+	 * PHP 7.4〜8.0 はテストで確かめる).
+	 *
+	 * @param int               $now_timestamp 基準時刻(Unix timestamp). テストで固定注入するため引数化.
+	 * @param int               $hour          時(サイトのタイムゾーン. 0-23).
+	 * @param int               $minute        分(サイトのタイムゾーン. 0-59).
+	 * @param DateTimeZone|null $timezone      基準のタイムゾーン. 省略時は `WPCV_Settings::site_timezone()`.
 	 * @return int
 	 */
-	public static function next_timestamp_after( $now_timestamp, $hour, $minute ) {
-		$today_at_time = gmmktime(
-			$hour,
-			$minute,
-			0,
-			(int) gmdate( 'n', $now_timestamp ),
-			(int) gmdate( 'j', $now_timestamp ),
-			(int) gmdate( 'Y', $now_timestamp )
-		);
+	public static function next_timestamp_after( $now_timestamp, $hour, $minute, $timezone = null ) {
+		if ( null === $timezone ) {
+			$timezone = WPCV_Settings::site_timezone();
+		}
 
-		return ( $today_at_time > $now_timestamp ) ? $today_at_time : $today_at_time + DAY_IN_SECONDS;
+		// 現地の「今日」の日付に、現地の時・分を当てる(文字列から作る理由は
+		// `WPCV_Settings::timestamp_in_timezone()` 参照).
+		$today_at_time = WPCV_Settings::timestamp_in_timezone( WPCV_Settings::local_date( $now_timestamp, $timezone ), $hour, $minute, $timezone );
+
+		if ( $today_at_time > $now_timestamp ) {
+			return $today_at_time;
+		}
+
+		// 翌日: 日付を進めてから時刻を設定する(夏時間の切り替え日でもずれない).
+		return WPCV_Settings::timestamp_in_timezone( WPCV_Settings::local_date( $now_timestamp, $timezone, 1 ), $hour, $minute, $timezone );
 	}
 }
