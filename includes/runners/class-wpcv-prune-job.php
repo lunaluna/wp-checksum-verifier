@@ -50,6 +50,28 @@ class WPCV_Prune_Job {
 	const STATUS_OPTION = 'wpcv_prune_status';
 
 	/**
+	 * 受け付け(`request()`)の advisory lock を待つ秒数.
+	 *
+	 * 受け付けの中は数クエリ(予約の確認・状態の保存・予約)だけで、すぐ終わる. 未実測:
+	 * `WPCV_Run_Repository::LOCK_TIMEOUT_SECONDS`(5秒. これも未実測の初期値)と同じにした.
+	 *
+	 * @var int
+	 */
+	const REQUEST_LOCK_TIMEOUT_SECONDS = 5;
+
+	/**
+	 * 別の削除が実行中で lock が取れなかったとき、次のアクションを遅らせる秒数.
+	 *
+	 * Action Scheduler の定期実行の間隔(`ActionScheduler_QueueRunner::WP_CRON_SCHEDULE` =
+	 * `every_minute`. 60 秒. 同梱版のソースで確認)に合わせた. 1回の削除は上限 500 件で 190〜404 ms
+	 * (`WPCV_Retention_Cleaner::MAX_TARGET_RUNS_PER_CALL` の実測)なので、たいていは次の回に取れる.
+	 * 競合がどのくらい続くかは未実測.
+	 *
+	 * @var int
+	 */
+	const LOCKED_RETRY_DELAY_SECONDS = 60;
+
+	/**
 	 * `request()` の戻り値の `result`: 削除アクションを予約した.
 	 *
 	 * @var string
@@ -158,6 +180,33 @@ class WPCV_Prune_Job {
 			);
 		}
 
+		// 「確認 → 状態の保存 → 予約」を advisory lock で直列化する(v0.10.0. コードレビュー指摘2).
+		// 二重クリックなどで同時に届いた2つ目は、1つ目の予約を見て「すでに削除中」になる.
+		global $wpdb;
+
+		$lock = new WPCV_Advisory_Lock( $wpdb, 'prune_request' );
+
+		if ( ! $lock->acquire( self::REQUEST_LOCK_TIMEOUT_SECONDS ) ) {
+			return array(
+				'result' => self::RESULT_ALREADY_RUNNING,
+				'error'  => null,
+			);
+		}
+
+		try {
+			return self::request_locked( $months );
+		} finally {
+			$lock->release();
+		}
+	}
+
+	/**
+	 * `request()` の本体(受け付けの lock を取った状態で呼ぶ).
+	 *
+	 * @param int $months 保持期間(月. 1 以上).
+	 * @return array{result: string, error: string|null}
+	 */
+	private static function request_locked( $months ) {
 		if ( self::is_active() ) {
 			return array(
 				'result' => self::RESULT_ALREADY_RUNNING,
@@ -220,6 +269,24 @@ class WPCV_Prune_Job {
 			$status['finished_at'] = gmdate( 'Y-m-d H:i:s' );
 			self::write_status( $status );
 			throw $e;
+		}
+
+		// 別の削除(run の終わりの自動削除・`wp wpcv prune`)が実行中で lock が取れなかった(コードレビュー指摘2).
+		// 何も消していないので件数は足さず、少し待ってから次のアクションで続ける.
+		if ( ! empty( $result['locked'] ) ) {
+			$status['state'] = self::STATE_RUNNING;
+			self::write_status( $status );
+
+			$scheduled = function_exists( 'as_schedule_single_action' )
+				? (int) as_schedule_single_action( time() + self::LOCKED_RETRY_DELAY_SECONDS, self::HOOK, array(), self::GROUP )
+				: 0;
+
+			if ( $scheduled <= 0 ) {
+				$status['state']       = self::STATE_FAILED;
+				$status['finished_at'] = gmdate( 'Y-m-d H:i:s' );
+				self::write_status( $status );
+			}
+			return;
 		}
 
 		$status['totals'] = self::add_counts( $status['totals'], $result );
@@ -286,6 +353,14 @@ class WPCV_Prune_Job {
 			return array(
 				'result' => self::RESULT_INLINE,
 				'error'  => 'prune_failed',
+			);
+		}
+
+		// 別の削除が実行中で lock が取れなかった. 状態は書き換えず、「すでに削除中」として返す.
+		if ( ! empty( $result['locked'] ) ) {
+			return array(
+				'result' => self::RESULT_ALREADY_RUNNING,
+				'error'  => null,
 			);
 		}
 

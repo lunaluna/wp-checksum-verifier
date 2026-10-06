@@ -535,7 +535,10 @@ class WPCV_Plugin {
 	 */
 	public static function retention_cleaner() {
 		if ( null === self::$retention_cleaner ) {
-			self::$retention_cleaner = new WPCV_Retention_Cleaner( self::run_repository(), self::target_run_repository(), self::finding_repository(), self::suppression_repository() );
+			global $wpdb;
+
+			// 削除を単一所有にする advisory lock を渡す(v0.10.0. コードレビュー指摘2. `WPCV_Advisory_Lock` 参照).
+			self::$retention_cleaner = new WPCV_Retention_Cleaner( self::run_repository(), self::target_run_repository(), self::finding_repository(), self::suppression_repository(), null, new WPCV_Advisory_Lock( $wpdb, 'prune' ) );
 		}
 
 		return self::$retention_cleaner;

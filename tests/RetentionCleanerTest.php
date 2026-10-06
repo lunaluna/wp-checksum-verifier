@@ -18,6 +18,7 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.p
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/sources/class-wpcv-github-client.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-github-mappings.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-advisory-lock.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-retention-cleaner.php';
 require_once __DIR__ . '/doubles.php';
 
@@ -713,7 +714,7 @@ class RetentionCleanerTest extends TestCase {
 
 		$result = self::make_cleaner( $wpdb )->prune( 0 );
 
-		$this->assertSame( array( 'suppressions' => 0, 'target_runs' => 0, 'findings' => 0, 'runs' => 0, 'remaining' => false ), $result );
+		$this->assertSame( array( 'suppressions' => 0, 'target_runs' => 0, 'findings' => 0, 'runs' => 0, 'remaining' => false, 'locked' => false ), $result );
 		$this->assertCount( 2, $wpdb->rows['wp_wpcv_target_runs'] );
 	}
 
@@ -848,5 +849,106 @@ class RetentionCleanerTest extends TestCase {
 
 		$this->assertSame( 1, $result['runs'], '2月27日の run だけが消える' );
 		$this->assertEqualsCanonicalizing( array( $r_march, $r_new ), self::ids( $wpdb, 'runs' ) );
+	}
+
+	/**
+	 * lock を渡した削除処理を作る(コードレビュー指摘2のテスト用).
+	 *
+	 * @param WPCV_Test_Fake_WPDB $wpdb      データのフェイク wpdb.
+	 * @param WPCV_Test_Fake_WPDB $lock_wpdb lock 用のフェイク wpdb(`get_var_return` で GET_LOCK の結果を決める).
+	 * @return WPCV_Retention_Cleaner
+	 */
+	private static function make_locked_cleaner( WPCV_Test_Fake_WPDB $wpdb, WPCV_Test_Fake_WPDB $lock_wpdb ) {
+		return new WPCV_Retention_Cleaner(
+			new WPCV_Run_Repository( $wpdb ),
+			new WPCV_Target_Run_Repository( $wpdb ),
+			new WPCV_Finding_Repository( $wpdb ),
+			new WPCV_Suppression_Repository( $wpdb ),
+			static function () {
+				return self::NOW;
+			},
+			new WPCV_Advisory_Lock( $lock_wpdb, 'prune' )
+		);
+	}
+
+	/**
+	 * 別の削除が lock を持っていれば、何も消さずに `locked` と `remaining` を返すことを確認する(指摘2).
+	 *
+	 * @return void
+	 */
+	public function test_prune_does_nothing_when_lock_is_taken() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$old  = self::insert_run( $wpdb, '2026-05-01 00:00:00' );
+		$new  = self::insert_run( $wpdb, '2026-10-02 00:00:00' );
+		self::insert_target_run( $wpdb, $old, 'plugin:a' );
+		self::insert_target_run( $wpdb, $new, 'plugin:a' );
+
+		$lock_wpdb                 = new WPCV_Test_Fake_WPDB();
+		$lock_wpdb->get_var_return = '0'; // GET_LOCK が取れない.
+
+		$result = self::make_locked_cleaner( $wpdb, $lock_wpdb )->prune( 3 );
+
+		$this->assertTrue( $result['locked'] );
+		$this->assertTrue( $result['remaining'] );
+		$this->assertSame( 0, $result['target_runs'] );
+		$this->assertCount( 2, $wpdb->rows['wp_wpcv_target_runs'], '何も消さない' );
+		$this->assertSame( array(), $lock_wpdb->query_calls, '取れていない lock は放さない' );
+	}
+
+	/**
+	 * lock が取れれば削除し、終わったら lock を放すことを確認する(例外のときも放す).
+	 *
+	 * @return void
+	 */
+	public function test_prune_releases_lock_after_deleting_and_on_failure() {
+		$wpdb = new WPCV_Test_Fake_WPDB();
+		$old  = self::insert_run( $wpdb, '2026-05-01 00:00:00' );
+		$new  = self::insert_run( $wpdb, '2026-10-02 00:00:00' );
+		self::insert_target_run( $wpdb, $old, 'plugin:a' );
+		self::insert_target_run( $wpdb, $new, 'plugin:a' );
+
+		$lock_wpdb = new WPCV_Test_Fake_WPDB();
+		$result    = self::make_locked_cleaner( $wpdb, $lock_wpdb )->prune( 3 );
+
+		$this->assertFalse( $result['locked'] );
+		$this->assertSame( 1, $result['target_runs'] );
+		$this->assertStringContainsString( 'GET_LOCK', $lock_wpdb->get_var_calls[0] );
+		$this->assertStringContainsString( "'wpcv_prune_wp_'", $lock_wpdb->get_var_calls[0] );
+		$this->assertCount( 1, $lock_wpdb->query_calls );
+		$this->assertStringContainsString( 'RELEASE_LOCK', $lock_wpdb->query_calls[0] );
+
+		// 削除が例外で止まっても lock を放す.
+		$failing                    = new WPCV_Test_Fake_WPDB();
+		$failing->query_should_fail = true;
+		$failing->delete_should_fail = true;
+		self::insert_run( $failing, '2026-05-01 00:00:00' );
+		$lock_wpdb2 = new WPCV_Test_Fake_WPDB();
+
+		$thrown = false;
+
+		try {
+			self::make_locked_cleaner( $failing, $lock_wpdb2 )->prune( 3 );
+		} catch ( RuntimeException $e ) {
+			$thrown = true;
+		}
+
+		$this->assertTrue( $thrown, '削除の失敗は例外のまま呼び出し元へ伝わる' );
+		$this->assertCount( 1, $lock_wpdb2->query_calls );
+		$this->assertStringContainsString( 'RELEASE_LOCK', $lock_wpdb2->query_calls[0] );
+	}
+
+	/**
+	 * dry-run は何も書かないので lock を取らないことを確認する(実行中の削除があっても件数を見られる).
+	 *
+	 * @return void
+	 */
+	public function test_dry_run_does_not_take_lock() {
+		$lock_wpdb                 = new WPCV_Test_Fake_WPDB();
+		$lock_wpdb->get_var_return = '0';
+
+		$result = self::make_locked_cleaner( new WPCV_Test_Fake_WPDB(), $lock_wpdb )->prune( 3, 0, true );
+
+		$this->assertFalse( $result['locked'] );
+		$this->assertSame( array(), $lock_wpdb->get_var_calls );
 	}
 }

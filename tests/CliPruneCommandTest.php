@@ -13,6 +13,7 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-advisory-lock.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-retention-cleaner.php';
 require_once dirname( __DIR__ ) . '/includes/cli/class-wpcv-cli-prune-command.php';
 require_once __DIR__ . '/doubles.php';
@@ -170,6 +171,28 @@ class CliPruneCommandTest extends TestCase {
 		( new WPCV_CLI_Prune_Command( $cleaner ) )->__invoke( array(), array() );
 
 		$this->assertStringContainsString( 'db error', $GLOBALS['_wpcv_test_wp_cli_calls']['error'][0] );
+		$this->assertArrayNotHasKey( 'success', $GLOBALS['_wpcv_test_wp_cli_calls'] );
+	}
+
+	/**
+	 * 別の削除が実行中(lock が取れない)なら、エラーで止めて成功とは表示しないことを確認する(指摘2).
+	 *
+	 * @return void
+	 */
+	public function test_stops_with_error_when_another_prune_is_running() {
+		$GLOBALS['_wpcv_test_options'][ WPCV_Settings::OPTION_NAME ] = array( 'retention_months' => 12 );
+
+		$first            = self::result( 1, 500, 100, true );
+		$locked           = self::result( 0, 0, 0, true );
+		$locked['locked'] = true;
+
+		$cleaner = $this->createMock( WPCV_Retention_Cleaner::class );
+		$cleaner->expects( $this->exactly( 2 ) )->method( 'prune' )->willReturnOnConsecutiveCalls( $first, $locked );
+
+		( new WPCV_CLI_Prune_Command( $cleaner ) )->__invoke( array(), array() );
+
+		$this->assertStringContainsString( '実行中', $GLOBALS['_wpcv_test_wp_cli_calls']['error'][0] );
+		$this->assertStringContainsString( 'target_runs: 500', $GLOBALS['_wpcv_test_wp_cli_calls']['error'][0], 'ここまでの合計を出す' );
 		$this->assertArrayNotHasKey( 'success', $GLOBALS['_wpcv_test_wp_cli_calls'] );
 	}
 }

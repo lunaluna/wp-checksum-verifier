@@ -43,6 +43,7 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-runner-async.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-update-event-repository.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-update-event-matcher.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-advisory-lock.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-retention-cleaner.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-prune-job.php';
 require_once __DIR__ . '/doubles.php';
@@ -66,6 +67,9 @@ class PruneJobTest extends TestCase {
 		parent::setUp();
 		$this->reset_globals();
 		wpcv_test_inject_retention_cleaner();
+
+		// `request()` の受け付けの lock(GET_LOCK)用. 既定は取得成功('1').
+		$GLOBALS['wpdb'] = new WPCV_Test_Fake_WPDB();
 	}
 
 	/**
@@ -93,7 +97,10 @@ class PruneJobTest extends TestCase {
 			$GLOBALS['_wpcv_test_as_enqueue_return_zero'],
 			$GLOBALS['_wpcv_test_as_has_scheduled'],
 			$GLOBALS['_wpcv_test_as_has_scheduled_calls'],
-			$GLOBALS['_wpcv_test_action_scheduler_initialized']
+			$GLOBALS['_wpcv_test_action_scheduler_initialized'],
+			$GLOBALS['_wpcv_test_as_schedule_single_calls'],
+			$GLOBALS['_wpcv_test_as_schedule_single_return_zero'],
+			$GLOBALS['wpdb']
 		);
 	}
 
@@ -385,5 +392,96 @@ class PruneJobTest extends TestCase {
 
 		$this->assertSame( array( '', array(), WPCV_Prune_Job::GROUP ), $GLOBALS['_wpcv_test_as_unschedule_all_calls'][0] );
 		unset( $GLOBALS['_wpcv_test_as_unschedule_all_calls'] );
+	}
+
+	/**
+	 * 受け付けの lock が取れない(別の受け付けが進行中)ときは、予約せず「すでに削除中」を返すことを確認する(指摘2).
+	 *
+	 * @return void
+	 */
+	public function test_request_returns_already_running_when_request_lock_is_taken() {
+		$this->set_retention( 12 );
+		$this->enable_action_scheduler();
+		$GLOBALS['wpdb']->get_var_return = '0';
+
+		$this->assertSame( WPCV_Prune_Job::RESULT_ALREADY_RUNNING, WPCV_Prune_Job::request()['result'] );
+		$this->assertArrayNotHasKey( '_wpcv_test_as_enqueue_calls', $GLOBALS );
+		$this->assertNull( WPCV_Prune_Job::get_status(), '状態も書き換えない' );
+	}
+
+	/**
+	 * 受け付けは lock を取り、「確認 → 予約」の後で必ず放すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_request_takes_and_releases_request_lock() {
+		$this->set_retention( 12 );
+		$this->enable_action_scheduler();
+
+		WPCV_Prune_Job::request();
+
+		$this->assertStringContainsString( "GET_LOCK('wpcv_prune_request_wp_', 5)", $GLOBALS['wpdb']->get_var_calls[0] );
+		$this->assertStringContainsString( "RELEASE_LOCK('wpcv_prune_request_wp_')", end( $GLOBALS['wpdb']->query_calls ) );
+	}
+
+	/**
+	 * アクションの実行時に別の削除が lock を持っていれば、件数を足さずに 60 秒後へ予約し直すことを確認する(指摘2).
+	 *
+	 * @return void
+	 */
+	public function test_run_action_retries_later_when_prune_is_locked() {
+		$this->set_retention( 12 );
+		$this->enable_action_scheduler();
+		$locked              = self::result( 0, 0, true );
+		$locked['locked']    = true;
+		$this->inject_cleaner( array( $locked ) );
+
+		$before = time();
+		WPCV_Prune_Job::run_action();
+
+		$this->assertArrayNotHasKey( '_wpcv_test_as_enqueue_calls', $GLOBALS, 'すぐには予約しない' );
+		$this->assertCount( 1, $GLOBALS['_wpcv_test_as_schedule_single_calls'] );
+		list( $timestamp, $hook, , $group ) = $GLOBALS['_wpcv_test_as_schedule_single_calls'][0];
+		$this->assertSame( WPCV_Prune_Job::HOOK, $hook );
+		$this->assertSame( 'wpcv', $group );
+		$this->assertGreaterThanOrEqual( $before + WPCV_Prune_Job::LOCKED_RETRY_DELAY_SECONDS, $timestamp );
+
+		$GLOBALS['_wpcv_test_as_has_scheduled'][ WPCV_Prune_Job::HOOK ] = true;
+		$status = WPCV_Prune_Job::get_status();
+		$this->assertSame( WPCV_Prune_Job::STATE_RUNNING, $status['state'] );
+		$this->assertSame( 0, $status['totals']['findings'], '何も消していないので件数を足さない' );
+	}
+
+	/**
+	 * 予約し直しに失敗したら、止まったまま「実行中」に見せないよう failed にすることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_run_action_marks_failed_when_retry_cannot_be_scheduled() {
+		$this->set_retention( 12 );
+		$this->enable_action_scheduler();
+		$GLOBALS['_wpcv_test_as_schedule_single_return_zero'] = true;
+		$locked           = self::result( 0, 0, true );
+		$locked['locked'] = true;
+		$this->inject_cleaner( array( $locked ) );
+
+		WPCV_Prune_Job::run_action();
+
+		$this->assertSame( WPCV_Prune_Job::STATE_FAILED, WPCV_Prune_Job::get_status()['state'] );
+	}
+
+	/**
+	 * Action Scheduler が無くその場で消すとき、lock が取れなければ状態を変えず「すでに削除中」を返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_inline_returns_already_running_when_prune_is_locked() {
+		$this->set_retention( 12 );
+		$locked           = self::result( 0, 0, true );
+		$locked['locked'] = true;
+		$this->inject_cleaner( array( $locked ) );
+
+		$this->assertSame( WPCV_Prune_Job::RESULT_ALREADY_RUNNING, WPCV_Prune_Job::request()['result'] );
+		$this->assertNull( WPCV_Prune_Job::get_status() );
 	}
 }

@@ -338,6 +338,7 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-manifest
  * ファイル末尾で登録する. 設定 `retention_months` が 0(無期限. 既定)なら何もしない.
  * `WPCV_Manifest_Cache_Cleaner` と同じ理由で、`WPCV_Plugin` 本体より前に読み込んでも問題ない.
  */
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-advisory-lock.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-retention-cleaner.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-prune-job.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-wpcv-data-usage.php';

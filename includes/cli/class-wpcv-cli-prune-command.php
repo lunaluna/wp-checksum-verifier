@@ -89,6 +89,13 @@ class WPCV_CLI_Prune_Command {
 			for ( $i = 0; $i < self::MAX_ITERATIONS; $i++ ) {
 				$result = $cleaner->prune( $months, 0, $dry_run );
 
+				// 別の削除(run の終わりの自動削除・管理画面のジョブ)が実行中で、lock が取れなかった
+				// (v0.10.0. コードレビュー指摘2). 同時に消すと DB の負荷が倍になるので、ここで止める.
+				if ( ! empty( $result['locked'] ) ) {
+					WP_CLI::error( '別の削除(実行の終わりの自動削除、または管理画面の「古い履歴を今すぐ削除」)が実行中です. 終わってからもう一度実行してください. ここまでの合計: ' . self::format_counts( $total ) );
+					return;
+				}
+
 				foreach ( array_keys( $total ) as $key ) {
 					$total[ $key ] += $result[ $key ];
 				}

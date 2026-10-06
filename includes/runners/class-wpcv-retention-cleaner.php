@@ -107,6 +107,14 @@ class WPCV_Retention_Cleaner {
 	private $now;
 
 	/**
+	 * 削除を単一所有にする advisory lock(v0.10.0. コードレビュー指摘2). `null` なら lock を取らない
+	 * (テスト用. 本番の `WPCV_Plugin::retention_cleaner()` は必ず渡す).
+	 *
+	 * @var WPCV_Advisory_Lock|null
+	 */
+	private $lock;
+
+	/**
 	 * コンストラクタ.
 	 *
 	 * @param WPCV_Run_Repository         $run_repository         `wpcv_runs` の永続化層.
@@ -114,13 +122,15 @@ class WPCV_Retention_Cleaner {
 	 * @param WPCV_Finding_Repository     $finding_repository     `wpcv_findings` の永続化層.
 	 * @param WPCV_Suppression_Repository $suppression_repository `wpcv_suppressions` の永続化層.
 	 * @param callable|null               $now                    現在時刻を返す. 省略時は `gmdate( 'Y-m-d H:i:s' )`.
+	 * @param WPCV_Advisory_Lock|null     $lock                   削除を単一所有にする lock. 省略時は lock を取らない.
 	 */
 	public function __construct(
 		WPCV_Run_Repository $run_repository,
 		WPCV_Target_Run_Repository $target_run_repository,
 		WPCV_Finding_Repository $finding_repository,
 		WPCV_Suppression_Repository $suppression_repository,
-		?callable $now = null
+		?callable $now = null,
+		?WPCV_Advisory_Lock $lock = null
 	) {
 		$this->run_repository         = $run_repository;
 		$this->target_run_repository  = $target_run_repository;
@@ -129,6 +139,7 @@ class WPCV_Retention_Cleaner {
 		$this->now                    = $now ?? static function () {
 			return gmdate( 'Y-m-d H:i:s' );
 		};
+		$this->lock                   = $lock;
 	}
 
 	/**
@@ -152,6 +163,8 @@ class WPCV_Retention_Cleaner {
 		}
 
 		try {
+			// 別の削除(`wp wpcv prune`・管理画面のジョブ)が実行中で lock が取れなければ、何もせずに終わる
+			// (戻り値の `locked`). 消えなかった分は、次の run の終わりか、実行中の削除が消す.
 			$this->prune( $months, (int) $run_id );
 		} catch ( Throwable $e ) {
 			// クラス docblock 参照: 掃除の失敗で run の確定を妨げない.
@@ -173,11 +186,17 @@ class WPCV_Retention_Cleaner {
 	 * 呼び出しごとに少なくとも1件消えるので、`remaining` が偽になるまで繰り返せば必ず終わる.
 	 * `$dry_run` が真のときは、何も消さず、上限も置かずに最後まで数える(件数が多いと時間がかかる).
 	 *
+	 * 単一所有(v0.10.0. コードレビュー指摘2): 実際に消すときは advisory lock(`prune`)を待たずに取り、
+	 * 取れなければ何も消さずに `locked` を真にして返す. run の終わりの自動削除・`wp wpcv prune`・
+	 * 管理画面のジョブが同時に同じ候補を走査して DB の負荷を倍にしたり、進行状況を食い違わせたり
+	 * しないため. 呼び出し元ごとの扱いは各呼び出し元を参照. dry-run は何も書かないので lock を取らない.
+	 *
 	 * @param int  $months            保持期間(月. 1 未満なら何もしない).
 	 * @param int  $terminated_run_id 今終わった run の id(差分処理の前なので、消してはいけない側に入れる).
 	 *                                CLI・管理画面からは 0(無し)で呼ぶ.
 	 * @param bool $dry_run           真なら何も消さず、消す件数だけを返す.
-	 * @return array{suppressions:int, target_runs:int, findings:int, runs:int, remaining:bool} 消した(`$dry_run` では消すことになる)件数.
+	 * @return array{suppressions:int, target_runs:int, findings:int, runs:int, remaining:bool, locked:bool} 消した(`$dry_run` では消すことになる)件数.
+	 *         `locked` は、別の削除が実行中で lock が取れず、何もしなかったこと(このとき `remaining` も真).
 	 *
 	 * @throws RuntimeException 削除に失敗した場合(各 Repository が投げる).
 	 */
@@ -188,12 +207,41 @@ class WPCV_Retention_Cleaner {
 			'findings'     => 0,
 			'runs'         => 0,
 			'remaining'    => false,
+			'locked'       => false,
 		);
 
 		if ( (int) $months < 1 ) {
 			return $result;
 		}
 
+		if ( $dry_run || null === $this->lock ) {
+			return $this->prune_unlocked( (int) $months, (int) $terminated_run_id, (bool) $dry_run, $result );
+		}
+
+		if ( ! $this->lock->acquire( 0 ) ) {
+			$result['locked']    = true;
+			$result['remaining'] = true; // 消せていないので、続きがある扱いにする.
+
+			return $result;
+		}
+
+		try {
+			return $this->prune_unlocked( (int) $months, (int) $terminated_run_id, false, $result );
+		} finally {
+			$this->lock->release();
+		}
+	}
+
+	/**
+	 * `prune()` の本体(lock の外側の判定は `prune()` が行う).
+	 *
+	 * @param int   $months            保持期間(月. 1 以上).
+	 * @param int   $terminated_run_id 今終わった run の id(無ければ 0).
+	 * @param bool  $dry_run           真なら何も消さずに数える.
+	 * @param array $result            件数を足し込む結果(`prune()` が初期化したもの).
+	 * @return array{suppressions:int, target_runs:int, findings:int, runs:int, remaining:bool, locked:bool}
+	 */
+	private function prune_unlocked( $months, $terminated_run_id, $dry_run, array $result ) {
 		$cutoff = $this->cutoff( (int) $months );
 
 		// 期限切れの suppression は、run の有無に関わらず消す.
