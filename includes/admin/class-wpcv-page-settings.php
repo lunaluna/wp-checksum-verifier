@@ -652,7 +652,10 @@ class WPCV_Page_Settings {
 	/**
 	 * 「保存しているデータ」の表の行を作る(`render_data_usage_section()` から分離してテスト可能にする).
 	 *
-	 * @param array{tables: array<string, array{rows: int, bytes: int}>|null, oldest_run_at: string|null} $usage `WPCV_Data_Usage::collect()` の値.
+	 * 一部のテーブルが欠けている(`missing` がある)ときは、合計の行を「取得できた分の合計」と表記する
+	 * (0.10.0 のコードレビュー指摘4. 欠けたことの警告は `data_usage_missing_notice()`).
+	 *
+	 * @param array{tables: array<string, array{rows: int, bytes: int}>|null, missing?: string[], oldest_run_at: string|null} $usage `WPCV_Data_Usage::collect()` の値.
 	 * @return array<int, array{label: string, rows: string, size: string}>|null テーブルの情報が取れていなければ `null`. 最後の行は合計.
 	 */
 	public static function data_usage_rows( array $usage ) {
@@ -686,12 +689,42 @@ class WPCV_Page_Settings {
 		}
 
 		$rows[] = array(
-			'label' => __( 'Total', 'wp-checksum-verifier' ),
+			'label' => empty( $usage['missing'] ) ? __( 'Total', 'wp-checksum-verifier' ) : __( 'Total (retrieved tables only)', 'wp-checksum-verifier' ),
 			'rows'  => number_format_i18n( $total_rows ),
 			'size'  => (string) size_format( $total_bytes, 1 ),
 		);
 
 		return $rows;
+	}
+
+	/**
+	 * 一部のテーブルの情報が取れなかったときの警告文を返す(0.10.0 のコードレビュー指摘4).
+	 *
+	 * 7テーブルのうち一部だけが返らないのは、テーブルが欠けている(作成・更新の失敗、手での削除など)
+	 * 可能性が高い. 取得できた分の合計だけを出すと全部に見えるので、どのテーブルかを示して知らせる.
+	 *
+	 * @param array{tables: array<string, array{rows: int, bytes: int}>|null, missing?: string[], oldest_run_at: string|null} $usage `WPCV_Data_Usage::collect()` の値.
+	 * @return string|null 欠けたテーブルが無ければ `null`.
+	 */
+	public static function data_usage_missing_notice( array $usage ) {
+		if ( empty( $usage['missing'] ) ) {
+			return null;
+		}
+
+		global $wpdb;
+
+		$prefix = ( is_object( $wpdb ) && isset( $wpdb->base_prefix ) ) ? (string) $wpdb->base_prefix : '';
+		$names  = array();
+
+		foreach ( $usage['missing'] as $table ) {
+			$names[] = $prefix . $table;
+		}
+
+		return sprintf(
+			/* translators: %s: comma-separated table names. */
+			__( 'Information for some tables could not be retrieved: %s. These tables may be missing. Check the database.', 'wp-checksum-verifier' ),
+			implode( ', ', $names )
+		);
 	}
 
 	/**
@@ -706,10 +739,14 @@ class WPCV_Page_Settings {
 	private static function render_data_usage_section() {
 		global $wpdb;
 
-		$usage = ( new WPCV_Data_Usage( $wpdb ) )->collect();
-		$rows  = self::data_usage_rows( $usage );
+		$usage          = ( new WPCV_Data_Usage( $wpdb ) )->collect();
+		$rows           = self::data_usage_rows( $usage );
+		$missing_notice = self::data_usage_missing_notice( $usage );
 		?>
 		<h2><?php echo esc_html__( 'Stored data', 'wp-checksum-verifier' ); ?></h2>
+		<?php if ( null !== $missing_notice ) : ?>
+			<div class="notice notice-warning inline"><p><?php echo esc_html( $missing_notice ); ?></p></div>
+		<?php endif; ?>
 		<?php if ( null === $rows ) : ?>
 			<p class="description"><?php echo esc_html__( 'The amount of stored data could not be retrieved on this server.', 'wp-checksum-verifier' ); ?></p>
 		<?php else : ?>

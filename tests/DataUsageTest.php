@@ -186,4 +186,42 @@ class DataUsageTest extends TestCase {
 		$this->assertSame( array( 'wpcv_runs' ), array_keys( $usage['tables'] ) );
 		$this->assertNull( $usage['oldest_run_at'], '空文字は run が無い扱い' );
 	}
+
+	/**
+	 * 7テーブルのうち一部だけが返らなかったとき、`missing` に欠けたテーブルが入ることを確認する(レビュー指摘4).
+	 *
+	 * @return void
+	 */
+	public function test_collect_reports_missing_tables() {
+		$wpdb = $this->make_wpdb(
+			array(
+				array( 'name' => 'wp_wpcv_runs', 'row_count' => '5', 'data_bytes' => '16384', 'index_bytes' => '0' ),
+				array( 'name' => 'wp_wpcv_findings', 'row_count' => '9', 'data_bytes' => '16384', 'index_bytes' => '0' ),
+			),
+			null
+		);
+
+		$usage = ( new WPCV_Data_Usage( $wpdb ) )->collect();
+
+		$this->assertSame(
+			array( 'wpcv_target_runs', 'wpcv_suppressions', 'wpcv_file_states', 'wpcv_update_events', 'wpcv_manifest_cache' ),
+			$usage['missing']
+		);
+	}
+
+	/**
+	 * 全部そろっていれば `missing` は空、何も返らなければ(権限が無いのか区別できないので)空のままであることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_missing_is_empty_when_complete_or_unavailable() {
+		$rows = array();
+
+		foreach ( WPCV_Data_Usage::TABLES as $table ) {
+			$rows[] = array( 'name' => 'wp_' . $table, 'row_count' => '1', 'data_bytes' => '1', 'index_bytes' => '0' );
+		}
+
+		$this->assertSame( array(), ( new WPCV_Data_Usage( $this->make_wpdb( $rows, null ) ) )->collect()['missing'] );
+		$this->assertSame( array(), ( new WPCV_Data_Usage( $this->make_wpdb( array(), null ) ) )->collect()['missing'] );
+	}
 }

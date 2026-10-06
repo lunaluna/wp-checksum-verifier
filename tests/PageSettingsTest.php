@@ -15,6 +15,8 @@ require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-settings.php'
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-run-history.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-diff-status.php';
 
+require_once __DIR__ . '/doubles.php';
+
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -442,5 +444,48 @@ class PageSettingsTest extends TestCase {
 	 */
 	public function test_data_usage_rows_returns_null_when_unavailable() {
 		$this->assertNull( WPCV_Page_Settings::data_usage_rows( array( 'tables' => null, 'oldest_run_at' => null ) ) );
+	}
+
+	/**
+	 * 一部のテーブルが欠けたときは、警告に接頭辞つきのテーブル名が入り、合計の行は「取得できた分」と書くことを確認する(レビュー指摘4).
+	 *
+	 * @return void
+	 */
+	public function test_data_usage_warns_about_missing_tables() {
+		$GLOBALS['wpdb'] = new WPCV_Test_Fake_WPDB();
+
+		$usage = array(
+			'tables'        => array( 'wpcv_runs' => array( 'rows' => 5, 'bytes' => 16384 ) ),
+			'missing'       => array( 'wpcv_target_runs', 'wpcv_findings' ),
+			'oldest_run_at' => null,
+		);
+
+		try {
+			$notice = WPCV_Page_Settings::data_usage_missing_notice( $usage );
+		} finally {
+			unset( $GLOBALS['wpdb'] );
+		}
+
+		$this->assertStringContainsString( 'wp_wpcv_target_runs, wp_wpcv_findings', $notice );
+
+		$rows = WPCV_Page_Settings::data_usage_rows( $usage );
+		$this->assertSame( 'Total (retrieved tables only)', end( $rows )['label'] );
+	}
+
+	/**
+	 * 全部そろっていれば警告は出ず、合計の行はただの「合計」であることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_data_usage_has_no_warning_when_complete() {
+		$usage = array(
+			'tables'        => array( 'wpcv_runs' => array( 'rows' => 5, 'bytes' => 16384 ) ),
+			'missing'       => array(),
+			'oldest_run_at' => null,
+		);
+
+		$this->assertNull( WPCV_Page_Settings::data_usage_missing_notice( $usage ) );
+		$rows = WPCV_Page_Settings::data_usage_rows( $usage );
+		$this->assertSame( 'Total', end( $rows )['label'] );
 	}
 }

@@ -1181,3 +1181,13 @@ msgstr ""
 #: includes/admin/class-wpcv-page-settings.php
 msgid "Oldest run:"
 msgstr ""
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Total (retrieved tables only)"
+msgstr ""
+
+#. translators: %s: comma-separated table names.
+#: includes/admin/class-wpcv-page-settings.php
+#, php-format
+msgid "Information for some tables could not be retrieved: %s. These tables may be missing. Check the database."
+msgstr ""

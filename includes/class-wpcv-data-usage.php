@@ -68,13 +68,25 @@ class WPCV_Data_Usage {
 	 *
 	 * @return array{
 	 *     tables: array<string, array{rows: int, bytes: int}>|null,
+	 *     missing: string[],
 	 *     oldest_run_at: string|null
 	 * } `tables` は `information_schema` から取れなければ `null`(テーブルが1つも返らない場合を含む).
-	 *   キーは接頭辞なしのテーブル名(`TABLES` の要素). `oldest_run_at` は run が無ければ `null`(UTC).
+	 *   キーは接頭辞なしのテーブル名(`TABLES` の要素). `missing` は、ほかのテーブルは返ったのに返らなかった
+	 *   テーブル(接頭辞なし. 0.10.0 のコードレビュー指摘4). 一部だけが欠けた状態を、取得できた分の合計だけで
+	 *   「全部」に見せないため. `tables` が `null` のときは、権限が無いのかテーブルが無いのか区別できないので空.
+	 *   `oldest_run_at` は run が無ければ `null`(UTC).
 	 */
 	public function collect() {
+		$tables  = $this->collect_tables();
+		$missing = array();
+
+		if ( null !== $tables ) {
+			$missing = array_values( array_diff( self::TABLES, array_keys( $tables ) ) );
+		}
+
 		return array(
-			'tables'        => $this->collect_tables(),
+			'tables'        => $tables,
+			'missing'       => $missing,
 			'oldest_run_at' => $this->oldest_run_at(),
 		);
 	}

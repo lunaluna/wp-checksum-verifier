@@ -1406,3 +1406,13 @@ msgstr "サイズ(概算)"
 #: includes/admin/class-wpcv-page-settings.php
 msgid "Oldest run:"
 msgstr "一番古い実行:"
+
+#: includes/admin/class-wpcv-page-settings.php
+msgid "Total (retrieved tables only)"
+msgstr "合計(取得できた分)"
+
+#. translators: %s: comma-separated table names.
+#: includes/admin/class-wpcv-page-settings.php
+#, php-format
+msgid "Information for some tables could not be retrieved: %s. These tables may be missing. Check the database."
+msgstr "一部のテーブルの情報を取得できませんでした: %s。これらのテーブルが無くなっている可能性があります。データベースを確認してください。"
