@@ -17,6 +17,7 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-advisory-lock.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-retention-cleaner.php';
 require_once dirname( __DIR__ ) . '/includes/cli/class-wpcv-cli-prune-command.php';
 require_once __DIR__ . '/doubles.php';
+require_once __DIR__ . '/stub-retention-cleaner.php';
 
 // require の直後(他のテストの setUp が `_wpcv_test_wp_cli_calls` を掃除するより前)に、
 // `wp wpcv prune` の登録を記録しておく.
@@ -58,19 +59,6 @@ class CliPruneCommandTest extends TestCase {
 	}
 
 	/**
-	 * `prune()` を差し替えた削除処理を作る.
-	 *
-	 * @param array[] $results `prune()` が順に返す結果.
-	 * @return WPCV_Retention_Cleaner|\PHPUnit\Framework\MockObject\MockObject
-	 */
-	private function make_cleaner( array $results ) {
-		$cleaner = $this->createMock( WPCV_Retention_Cleaner::class );
-		$cleaner->method( 'prune' )->willReturnOnConsecutiveCalls( ...$results );
-
-		return $cleaner;
-	}
-
-	/**
 	 * 件数の結果を作る.
 	 *
 	 * @param int  $runs      run の件数.
@@ -109,11 +97,11 @@ class CliPruneCommandTest extends TestCase {
 	public function test_unlimited_retention_does_nothing() {
 		$GLOBALS['_wpcv_test_options'][ WPCV_Settings::OPTION_NAME ] = array( 'retention_months' => 0 );
 
-		$cleaner = $this->createMock( WPCV_Retention_Cleaner::class );
-		$cleaner->expects( $this->never() )->method( 'prune' );
+		$cleaner = new WPCV_Test_Stub_Retention_Cleaner();
 
 		( new WPCV_CLI_Prune_Command( $cleaner ) )->__invoke( array(), array() );
 
+		$this->assertSame( array(), $cleaner->calls, 'prune() を呼ばない' );
 		$this->assertStringContainsString( '無期限', $GLOBALS['_wpcv_test_wp_cli_calls']['success'][0] );
 		$this->assertArrayNotHasKey( 'error', $GLOBALS['_wpcv_test_wp_cli_calls'] );
 	}
@@ -126,10 +114,11 @@ class CliPruneCommandTest extends TestCase {
 	public function test_dry_run_calls_prune_once_with_dry_run_flag() {
 		$GLOBALS['_wpcv_test_options'][ WPCV_Settings::OPTION_NAME ] = array( 'retention_months' => 6 );
 
-		$cleaner = $this->createMock( WPCV_Retention_Cleaner::class );
-		$cleaner->expects( $this->once() )->method( 'prune' )->with( 6, 0, true )->willReturn( self::result( 3, 10, 7 ) );
+		$cleaner = new WPCV_Test_Stub_Retention_Cleaner( array( self::result( 3, 10, 7 ) ) );
 
 		( new WPCV_CLI_Prune_Command( $cleaner ) )->__invoke( array(), array( 'dry-run' => true ) );
+
+		$this->assertSame( array( array( 6, 0, true ) ), $cleaner->calls, 'dry-run 付きで1回だけ呼ぶ' );
 
 		$message = $GLOBALS['_wpcv_test_wp_cli_calls']['success'][0];
 		$this->assertStringContainsString( 'dry-run', $message );
@@ -144,14 +133,17 @@ class CliPruneCommandTest extends TestCase {
 	public function test_repeats_until_no_remaining_and_sums_counts() {
 		$GLOBALS['_wpcv_test_options'][ WPCV_Settings::OPTION_NAME ] = array( 'retention_months' => 12 );
 
-		$cleaner = $this->createMock( WPCV_Retention_Cleaner::class );
-		$cleaner->expects( $this->exactly( 3 ) )->method( 'prune' )->with( 12, 0, false )->willReturnOnConsecutiveCalls(
-			self::result( 1, 500, 100, true ),
-			self::result( 1, 500, 100, true ),
-			self::result( 2, 40, 5, false )
+		$cleaner = new WPCV_Test_Stub_Retention_Cleaner(
+			array(
+				self::result( 1, 500, 100, true ),
+				self::result( 1, 500, 100, true ),
+				self::result( 2, 40, 5, false ),
+			)
 		);
 
 		( new WPCV_CLI_Prune_Command( $cleaner ) )->__invoke( array(), array() );
+
+		$this->assertSame( array_fill( 0, 3, array( 12, 0, false ) ), $cleaner->calls );
 
 		$this->assertCount( 2, $GLOBALS['_wpcv_test_wp_cli_calls']['line'] );
 		$this->assertStringContainsString( 'runs: 4, target_runs: 1040, findings: 205', $GLOBALS['_wpcv_test_wp_cli_calls']['success'][0] );
@@ -165,8 +157,7 @@ class CliPruneCommandTest extends TestCase {
 	public function test_failure_is_reported_as_error() {
 		$GLOBALS['_wpcv_test_options'][ WPCV_Settings::OPTION_NAME ] = array( 'retention_months' => 12 );
 
-		$cleaner = $this->createMock( WPCV_Retention_Cleaner::class );
-		$cleaner->method( 'prune' )->willThrowException( new RuntimeException( 'db error' ) );
+		$cleaner = new WPCV_Test_Stub_Retention_Cleaner( array( new RuntimeException( 'db error' ) ) );
 
 		( new WPCV_CLI_Prune_Command( $cleaner ) )->__invoke( array(), array() );
 
@@ -186,10 +177,11 @@ class CliPruneCommandTest extends TestCase {
 		$locked           = self::result( 0, 0, 0, true );
 		$locked['locked'] = true;
 
-		$cleaner = $this->createMock( WPCV_Retention_Cleaner::class );
-		$cleaner->expects( $this->exactly( 2 ) )->method( 'prune' )->willReturnOnConsecutiveCalls( $first, $locked );
+		$cleaner = new WPCV_Test_Stub_Retention_Cleaner( array( $first, $locked ) );
 
 		( new WPCV_CLI_Prune_Command( $cleaner ) )->__invoke( array(), array() );
+
+		$this->assertCount( 2, $cleaner->calls, 'lock が取れなかった時点で止める' );
 
 		$this->assertStringContainsString( '実行中', $GLOBALS['_wpcv_test_wp_cli_calls']['error'][0] );
 		$this->assertStringContainsString( 'target_runs: 500', $GLOBALS['_wpcv_test_wp_cli_calls']['error'][0], 'ここまでの合計を出す' );

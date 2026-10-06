@@ -47,6 +47,7 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-advisory-lock.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-retention-cleaner.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-prune-job.php';
 require_once __DIR__ . '/doubles.php';
+require_once __DIR__ . '/stub-retention-cleaner.php';
 
 use PHPUnit\Framework\TestCase;
 
@@ -126,12 +127,11 @@ class PruneJobTest extends TestCase {
 	/**
 	 * `prune()` の結果を順に返す削除処理を差し込む.
 	 *
-	 * @param array[] $results 返す結果.
-	 * @return \PHPUnit\Framework\MockObject\MockObject
+	 * @param array<int, array|Throwable> $results 返す結果(または投げる例外).
+	 * @return WPCV_Test_Stub_Retention_Cleaner
 	 */
 	private function inject_cleaner( array $results ) {
-		$cleaner = $this->createMock( WPCV_Retention_Cleaner::class );
-		$cleaner->method( 'prune' )->willReturnOnConsecutiveCalls( ...$results );
+		$cleaner = new WPCV_Test_Stub_Retention_Cleaner( $results );
 		wpcv_test_inject_retention_cleaner( $cleaner );
 
 		return $cleaner;
@@ -289,12 +289,11 @@ class PruneJobTest extends TestCase {
 	 */
 	public function test_run_action_stops_when_retention_becomes_unlimited() {
 		$this->set_retention( 0 );
-		$cleaner = $this->createMock( WPCV_Retention_Cleaner::class );
-		$cleaner->expects( $this->never() )->method( 'prune' );
-		wpcv_test_inject_retention_cleaner( $cleaner );
+		$cleaner = $this->inject_cleaner( array() );
 
 		WPCV_Prune_Job::run_action();
 
+		$this->assertSame( array(), $cleaner->calls, '何も消さない' );
 		$this->assertSame( WPCV_Prune_Job::STATE_CANCELLED, WPCV_Prune_Job::get_status()['state'] );
 	}
 
@@ -305,22 +304,14 @@ class PruneJobTest extends TestCase {
 	 */
 	public function test_run_action_uses_current_retention_each_time() {
 		$this->enable_action_scheduler();
-		$cleaner = $this->createMock( WPCV_Retention_Cleaner::class );
-		$cleaner->expects( $this->exactly( 2 ) )->method( 'prune' )->willReturnCallback(
-			function ( $months ) {
-				static $call = 0;
-				++$call;
-				$this->assertSame( 1 === $call ? 24 : 3, $months );
-
-				return self::result( 0, 1, 1 === $call );
-			}
-		);
-		wpcv_test_inject_retention_cleaner( $cleaner );
+		$cleaner = $this->inject_cleaner( array( self::result( 0, 1, true ), self::result( 0, 1, false ) ) );
 
 		$this->set_retention( 24 );
 		WPCV_Prune_Job::run_action();
 		$this->set_retention( 3 );
 		WPCV_Prune_Job::run_action();
+
+		$this->assertSame( array( 24, 3 ), array_column( $cleaner->calls, 0 ), '毎回、その時点の保持期間で消す' );
 	}
 
 	/**
@@ -330,9 +321,7 @@ class PruneJobTest extends TestCase {
 	 */
 	public function test_run_action_records_failure_and_rethrows() {
 		$this->set_retention( 12 );
-		$cleaner = $this->createMock( WPCV_Retention_Cleaner::class );
-		$cleaner->method( 'prune' )->willThrowException( new RuntimeException( 'db error' ) );
-		wpcv_test_inject_retention_cleaner( $cleaner );
+		$this->inject_cleaner( array( new RuntimeException( 'db error' ) ) );
 
 		try {
 			WPCV_Prune_Job::run_action();
