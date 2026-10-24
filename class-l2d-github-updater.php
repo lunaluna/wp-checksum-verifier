@@ -266,9 +266,15 @@ class L2dwpghul_GitHub_Updater {
 	 *
 	 * 通常は build-zip.sh の規約(zip 内ルートディレクトリ名 = スラッグ)により
 	 * 発生しないが、他人が作った zip 命名にも耐えるための多層防御として追加する。
-	 * extract_zip_url() の fail closed(スラッグ前方一致必須)が第一の防壁で、
+	 * extract_zip_url() の fail closed(アセット名の完全一致必須)が第一の防壁で、
 	 * これは第二の防壁。$hook_extra['plugin'] が自分の basename のときだけ
 	 * 働かせ、他プラグインの更新を壊さないようにする.
+	 *
+	 * リネームの前に、展開されたディレクトリにプラグインのメインファイルがあることも確認する.
+	 * 単体更新(Plugin_Upgrader::upgrade())ではコアがパッケージの中身を検査しないため、
+	 * 無関係な ZIP が展開されてプラグインが置き換わるのを、ここで止める.
+	 * Plugin Name ヘッダーの照合はしない(不一致でも続行するなら防御にならず、
+	 * 本番で error_log() を出す前例もないため).
 	 *
 	 * @param string|WP_Error $source        リネーム前のソースディレクトリパス.
 	 * @param string          $remote_source  展開直後のリモートソースパス(未使用).
@@ -285,13 +291,22 @@ class L2dwpghul_GitHub_Updater {
 			return $source;
 		}
 
+		global $wp_filesystem;
+
+		// 展開されたディレクトリ直下にメインファイルが無ければ、置き換えを中止する.
+		// $source === $desired_source の早期 return より前に判定する(リネーム不要でも確認するため).
+		if ( ! $wp_filesystem->exists( trailingslashit( $source ) . basename( $this->plugin_file ) ) ) {
+			return new WP_Error(
+				'l2dwpghul_invalid_package',
+				sprintf( 'パッケージに %s が含まれていないため、更新を中止しました.', basename( $this->plugin_file ) )
+			);
+		}
+
 		$desired_source = trailingslashit( dirname( untrailingslashit( $source ) ) ) . $this->slug . '/';
 
 		if ( $source === $desired_source ) {
 			return $source;
 		}
-
-		global $wp_filesystem;
 
 		if ( ! $wp_filesystem->move( $source, $desired_source, true ) ) {
 			return new WP_Error(
@@ -338,37 +353,165 @@ class L2dwpghul_GitHub_Updater {
 			return false;
 		}
 
+		// トークンを付けて送る前に、送信先が自分のリポジトリの Assets API であることを確認する.
+		// 一時ファイルの作成や HTTP 通信より前に判定する. false を返すとコアが同じ URL を
+		// 認証なしで取りに行くため、拒否は WP_Error で返す. メッセージには URL を含めない.
+		if ( ! $this->is_allowed_asset_api_url( $package ) ) {
+			return new WP_Error( 'l2dwpghul_invalid_package_url', 'パッケージの URL が許可された形式ではないため、ダウンロードを中止しました.' );
+		}
+
 		$tmpfname = wp_tempnam( $this->slug );
 
 		if ( ! $tmpfname ) {
 			return new WP_Error( 'l2dwpghul_no_tempfile', '一時ファイルを作成できませんでした.' );
 		}
 
+		// 1 回目: Assets API へトークン付きで送る. redirection を 0 にして、リダイレクトを
+		// WordPress(Requests)に自動で追わせない. Requests はリダイレクト時に元のリクエスト
+		// ヘッダー(= Authorization)をそのまま次のリクエストへ渡し、外す処理が無いため
+		// (WordPress 7.1.2 同梱の Requests 2.0.17 の実ソースで確認)、トークンが
+		// リダイレクト先へ漏れるのを防ぐ目的で手動で追う. redirection が 0 のとき
+		// 3xx はエラーにならず、そのままレスポンスとして返る.
 		$response = $this->http_get(
 			$package,
 			array(
-				'timeout'  => 300,
-				'stream'   => true,
-				'filename' => $tmpfname,
-				'headers'  => array(
+				'timeout'     => 300,
+				'redirection' => 0,
+				'stream'      => true,
+				'filename'    => $tmpfname,
+				'headers'     => array(
 					'Authorization' => 'Bearer ' . $this->token,
 					'Accept'        => 'application/octet-stream',
 				),
 			)
 		);
 
+		// 失敗時は一時ファイルを必ず削除する. コアの download_url() は失敗時に unlink() するが、
+		// upgrader_pre_download で短絡したこの経路ではコアが消してくれないため、ここで消す.
+		// 成功時は消さない(展開後にコアが $download !== $package の場合に削除する).
 		if ( is_wp_error( $response ) ) {
+			wp_delete_file( $tmpfname );
 			return $response;
 		}
 
-		if ( 200 !== (int) wp_remote_retrieve_response_code( $response ) ) {
+		$code = (int) wp_remote_retrieve_response_code( $response );
+
+		// 3xx: 署名付き URL(release-assets.githubusercontent.com)へのリダイレクト.
+		// Location を検証したうえで、Authorization を付けずに取りに行く.
+		if ( $code >= 300 && $code < 400 ) {
+			$location = wp_remote_retrieve_header( $response, 'location' );
+
+			if ( ! $this->is_safe_redirect_location( $location ) ) {
+				wp_delete_file( $tmpfname );
+				return new WP_Error( 'l2dwpghul_invalid_redirect', 'ダウンロード先のリダイレクトが不正なため、ダウンロードを中止しました.' );
+			}
+
+			// 2 回目: トークンなし. 署名付き URL なので User-Agent だけで足りる見込み
+			// (Accept が要るかは実機確認の対象). reject_unsafe_urls を true にして、コアの
+			// download_url()(wp_safe_remote_get)と同様にリダイレクト先も検査させる.
+			// 2 回目以降のリダイレクトは WordPress の既定に任せる(トークンを付けていないので漏れない).
+			// 同じファイルへ書くと 'wb' で上書きされ、1 回目の 3xx の小さな本文は消える.
+			$response = $this->http_get(
+				$location,
+				array(
+					'timeout'            => 300,
+					'stream'             => true,
+					'filename'           => $tmpfname,
+					'reject_unsafe_urls' => true,
+					'headers'            => array(
+						'User-Agent' => 'l2d-wp-github-update-lib/' . $this->slug,
+					),
+				)
+			);
+
+			if ( is_wp_error( $response ) ) {
+				wp_delete_file( $tmpfname );
+				return $response;
+			}
+
+			$code = (int) wp_remote_retrieve_response_code( $response );
+		}
+
+		if ( 200 !== $code ) {
+			wp_delete_file( $tmpfname );
 			return new WP_Error(
 				'l2dwpghul_download_failed',
-				sprintf( 'パッケージのダウンロードに失敗しました(HTTP %d).', wp_remote_retrieve_response_code( $response ) )
+				sprintf( 'パッケージのダウンロードに失敗しました(HTTP %d).', $code )
 			);
 		}
 
+		// 200 でも中身が空のファイルは壊れた ZIP になるだけなので失敗として扱う.
+		clearstatcache( true, $tmpfname );
+		$size = filesize( $tmpfname );
+		if ( false === $size || 0 === $size ) {
+			wp_delete_file( $tmpfname );
+			return new WP_Error( 'l2dwpghul_empty_download', 'ダウンロードしたパッケージが空でした.' );
+		}
+
 		return $tmpfname;
+	}
+
+	/**
+	 * リダイレクト先(Location ヘッダー)として追ってよい値かを判定する.
+	 *
+	 * 許可するのは、スキームが https でホストを持つ絶対 URL だけ. 相対パスの Location は
+	 * 検証が複雑になるため拒否する(GitHub は絶対 URL を返すことを実測で確認済み).
+	 * 追った先でトークンは送らないので、ホストの許可リストは設けない(署名付き URL の
+	 * ドメインは GitHub 側の都合で変わりうるため).
+	 *
+	 * @param mixed $location Location ヘッダーの値.
+	 * @return bool 追ってよければ true.
+	 */
+	private function is_safe_redirect_location( $location ) {
+		if ( ! is_string( $location ) || '' === $location ) {
+			return false;
+		}
+
+		$parts = wp_parse_url( $location );
+
+		return is_array( $parts )
+			&& isset( $parts['scheme'], $parts['host'] )
+			&& 'https' === strtolower( $parts['scheme'] )
+			&& '' !== $parts['host'];
+	}
+
+	/**
+	 * Authorization ヘッダー付きで取得してよい URL かを判定する.
+	 *
+	 * 許可するのは「https://api.github.com/repos/{github_repo}/releases/assets/{数値 ID}」だけ.
+	 * $package は upgrader_pre_download に渡される値で、他のフィルタや改ざんされたキャッシュ由来の
+	 * 任意の URL になりうるため、トークンの送信先を厳密に絞る. ホストは完全一致で比較し
+	 * (api.github.com.evil.example のような前方一致の抜けを防ぐ)、ポート・ユーザー情報・
+	 * クエリ・フラグメント・末尾スラッシュも許さない. owner/repo は GitHub 側で大文字小文字を
+	 * 区別しないため、小文字にそろえて設定値と比較する.
+	 *
+	 * @param mixed $url 判定する URL.
+	 * @return bool 許可された形式なら true.
+	 */
+	private function is_allowed_asset_api_url( $url ) {
+		if ( ! is_string( $url ) ) {
+			return false;
+		}
+
+		$parts = wp_parse_url( $url );
+
+		if ( ! is_array( $parts ) ) {
+			return false;
+		}
+
+		if ( isset( $parts['user'] ) || isset( $parts['pass'] ) || isset( $parts['port'] ) || isset( $parts['query'] ) || isset( $parts['fragment'] ) ) {
+			return false;
+		}
+
+		if ( ! isset( $parts['scheme'], $parts['host'], $parts['path'] ) || 'https' !== strtolower( $parts['scheme'] ) || 'api.github.com' !== strtolower( $parts['host'] ) ) {
+			return false;
+		}
+
+		if ( 1 !== preg_match( '#^/repos/([^/]+)/([^/]+)/releases/assets/[0-9]+$#', $parts['path'], $matches ) ) {
+			return false;
+		}
+
+		return strtolower( $matches[1] . '/' . $matches[2] ) === strtolower( (string) $this->github_repo );
 	}
 
 	/**
@@ -449,7 +592,9 @@ class L2dwpghul_GitHub_Updater {
 			? $this->pick_first_non_draft_release( $body )
 			: $body;
 
-		if ( ! is_array( $release_data ) || empty( $release_data['tag_name'] ) ) {
+		// 型まで検証する. tag_name が配列などだと normalize_version() の (string) キャストで
+		// "Array" + 警告になり、壊れたバージョンがキャッシュされてしまうため.
+		if ( ! is_array( $release_data ) || ! isset( $release_data['tag_name'] ) || ! is_string( $release_data['tag_name'] ) || '' === $release_data['tag_name'] ) {
 			return null;
 		}
 
@@ -461,8 +606,8 @@ class L2dwpghul_GitHub_Updater {
 		return array(
 			'version'      => self::normalize_version( $release_data['tag_name'] ),
 			'zip_url'      => $zip_url,
-			'notes'        => isset( $release_data['body'] ) ? (string) $release_data['body'] : '',
-			'published_at' => isset( $release_data['published_at'] ) ? (string) $release_data['published_at'] : '',
+			'notes'        => ( isset( $release_data['body'] ) && is_string( $release_data['body'] ) ) ? $release_data['body'] : '',
+			'published_at' => ( isset( $release_data['published_at'] ) && is_string( $release_data['published_at'] ) ) ? $release_data['published_at'] : '',
 		);
 	}
 
@@ -527,34 +672,69 @@ class L2dwpghul_GitHub_Updater {
 	 * Bearer トークンを認識しない)、Assets API + Accept: application/octet-stream
 	 * が必要なことを Step A8 で実機確認した.
 	 *
+	 * 選択規則(1.3.0 で厳格化。更新元の GitHub アカウントが侵害されても、意図しない ZIP を
+	 * 拾いにくくするため):
+	 * - 文字列の $pattern: アセット名が「{$pattern}.{タグの版}.zip」と大文字小文字を含めて
+	 *   完全一致するものだけが候補. 版は tag_name から normalize_version() で求める
+	 *   (先頭の v は除く). 正規表現の semver ではなく文字列の完全一致にしているのは、
+	 *   "1.0.0-RC14" や "1.5.2.1" のように semver に収まらない正規のタグも通すため.
+	 *   版の一致の検証も兼ねる.
+	 * - callable の $pattern: $name を渡した戻り値が真のものが候補. callable を使う理由は
+	 *   「命名規約が違う」ことなので、版の一致は検証しない.
+	 * - 候補がちょうど 1 件のときだけその URL を返す. 0 件・2 件以上は null
+	 *   (GitHub は同じ Release に同名アセットを置けないので、文字列では 2 件以上は起きない
+	 *   見込み. 防御として「先頭を採用」はしない).
+	 *
 	 * @param array           $body        GitHub API のレスポンスボディ（デコード済み連想配列）.
-	 * @param string|callable $pattern     文字列なら前方一致文字列として扱い、
+	 * @param string|callable $pattern     文字列なら上記の完全一致のスラッグ部分、
 	 *                                     callable なら $name を渡した戻り値の真偽で判定する.
 	 * @param bool            $use_api_url true なら asset.url を、false なら
 	 *                                     asset.browser_download_url を返す.
-	 * @return string|null 見つかった ZIP の URL。見つからなければ null.
+	 * @return string|null 一意に決まった ZIP の URL。見つからない・複数一致なら null.
 	 */
 	public static function extract_zip_url( $body, $pattern, $use_api_url = false ) {
-		foreach ( (array) ( isset( $body['assets'] ) ? $body['assets'] : array() ) as $asset ) {
-			$url_field    = $use_api_url ? 'url' : 'browser_download_url';
-			$download_url = isset( $asset[ $url_field ] ) ? $asset[ $url_field ] : '';
+		// assets が配列でなければ(文字列など)、(array) キャストで配列化せず候補なしとして扱う.
+		if ( ! is_array( $body ) || ! isset( $body['assets'] ) || ! is_array( $body['assets'] ) ) {
+			return null;
+		}
 
-			if ( empty( $download_url ) ) {
+		$expected_name = null;
+
+		if ( ! is_callable( $pattern ) ) {
+			// 文字列のときは版が決まらないと期待するアセット名を作れないため、候補なしとする.
+			if ( ! isset( $body['tag_name'] ) || ! is_string( $body['tag_name'] ) || '' === $body['tag_name'] ) {
+				return null;
+			}
+			$expected_name = $pattern . '.' . self::normalize_version( $body['tag_name'] ) . '.zip';
+		}
+
+		$candidates = array();
+
+		foreach ( $body['assets'] as $asset ) {
+			// 各アセットは配列で、name / URL は文字列のときだけ使う(型の崩れた要素は候補に数えない).
+			if ( ! is_array( $asset ) ) {
 				continue;
 			}
 
-			$name = isset( $asset['name'] ) ? (string) $asset['name'] : '';
+			$url_field    = $use_api_url ? 'url' : 'browser_download_url';
+			$download_url = ( isset( $asset[ $url_field ] ) && is_string( $asset[ $url_field ] ) ) ? $asset[ $url_field ] : '';
 
-			$matches = is_callable( $pattern )
+			if ( '' === $download_url ) {
+				continue;
+			}
+
+			$name = ( isset( $asset['name'] ) && is_string( $asset['name'] ) ) ? $asset['name'] : '';
+
+			$matches = null === $expected_name
 				? (bool) call_user_func( $pattern, $name )
-				: ( 0 === strpos( $name, (string) $pattern ) && '.zip' === substr( $name, -4 ) );
+				: $name === $expected_name;
 
 			if ( $matches ) {
-				return $download_url;
+				$candidates[] = $download_url;
 			}
 		}
 
-		return null;
+		return 1 === count( $candidates ) ? $candidates[0] : null;
 	}
 
 	/**
