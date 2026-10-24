@@ -6,6 +6,7 @@
  */
 
 require_once __DIR__ . '/wp-stubs.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-finding-key.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-matcher.php';
 require_once __DIR__ . '/doubles.php';
 
@@ -239,6 +240,78 @@ class SuppressionMatcherTest extends TestCase {
 
 			$this->assertNull( WPCV_Suppression_Matcher::find_matching_allowlist_hash_rule( $finding, array( $rule ) ) );
 		}
+	}
+
+	/**
+	 * `core:_scan` の finding では、ルールの version と finding の version が違っても
+	 * 承認が効くことを確認する(v0.11.0 項目2. 本体を更新しても、承認したファイルは
+	 * 中身が変わるまで通知されない).
+	 *
+	 * @return void
+	 */
+	public function test_find_matching_allowlist_hash_rule_ignores_version_for_core_scan() {
+		$finding = wpcv_test_make_finding(
+			array(
+				'target_id'      => 'core:_scan',
+				'slug'           => '_scan',
+				'status'         => 'added',
+				'version'        => '7.2-beta1',
+				'hash_algorithm' => 'sha256',
+				'expected_hash'  => null,
+				'actual_hash'    => str_repeat( 'b', 64 ),
+				'path'           => '.user.ini',
+			)
+		);
+
+		$rule = array(
+			'id'             => 12,
+			'pattern'        => '.user.ini',
+			'expected_hash'  => str_repeat( 'b', 64 ),
+			'hash_algorithm' => 'sha256',
+			'version'        => '7.1.3',
+		);
+
+		$matched = WPCV_Suppression_Matcher::find_matching_allowlist_hash_rule( $finding, array( $rule ) );
+
+		$this->assertNotNull( $matched );
+		$this->assertSame( 12, $matched['id'] );
+	}
+
+	/**
+	 * `core:_scan` でも、中身(ハッシュ)が違えば承認が効かず、version が欠けたルールは
+	 * 今までどおり読み飛ばすことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_find_matching_allowlist_hash_rule_for_core_scan_still_requires_hash_and_version_field() {
+		$finding = wpcv_test_make_finding(
+			array(
+				'target_id'      => 'core:_scan',
+				'slug'           => '_scan',
+				'status'         => 'added',
+				'version'        => '7.2-beta1',
+				'hash_algorithm' => 'sha256',
+				'expected_hash'  => null,
+				'actual_hash'    => str_repeat( 'b', 64 ),
+				'path'           => '.user.ini',
+			)
+		);
+
+		$other_hash = array(
+			'pattern'        => '.user.ini',
+			'expected_hash'  => str_repeat( 'c', 64 ),
+			'hash_algorithm' => 'sha256',
+			'version'        => '7.2-beta1',
+		);
+		$no_version = array(
+			'pattern'        => '.user.ini',
+			'expected_hash'  => str_repeat( 'b', 64 ),
+			'hash_algorithm' => 'sha256',
+			'version'        => '',
+		);
+
+		$this->assertNull( WPCV_Suppression_Matcher::find_matching_allowlist_hash_rule( $finding, array( $other_hash ) ) );
+		$this->assertNull( WPCV_Suppression_Matcher::find_matching_allowlist_hash_rule( $finding, array( $no_version ) ) );
 	}
 
 	/**

@@ -47,8 +47,12 @@ if ( ! defined( 'ABSPATH' ) ) {
  *
  * テーマ照合(v0.7プラン§3.1・U3)のマニフェストキャッシュ用に
  * `wpcv_manifest_cache` テーブルを新設したため、v0.7 §Step1で7へ更新した.
+ *
+ * `core:_scan` の差分キー(`finding_key`)から version を外したため、v0.11.0 §Step2で8へ
+ * 更新した. スキーマは変わらず、保存済みの行のキーを計算し直す移行処理だけを行う
+ * (`WPCV_Migrator::recompute_core_scan_finding_keys()` 参照).
  */
-define( 'WPCV_DB_VERSION', 7 );
+define( 'WPCV_DB_VERSION', 8 );
 
 /**
  * Public API contract のバージョン. 後方互換を維持する契約(§10).

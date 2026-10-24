@@ -122,6 +122,14 @@ class WPCV_Suppression_Matcher {
 	 * versionが変われば再承認が必要、というv0.6のversion-change失効を見据えた
 	 * 意図的な設計).
 	 *
+	 * ただし `core:_scan` の finding では version を比べない(v0.11.0 項目2).
+	 * `core:_scan` は差分のキーにも version を含めない(`WPCV_Finding_Key::ignores_version()`)ので、
+	 * 本体を更新しても同じファイルは「継続」になる. ここで version を比べ続けると、
+	 * 承認したファイルが本体の更新のたびにまた通知されてしまう. `core:_scan` の
+	 * target_run は version を持たず `version_changed` にならないため、D9 の失効
+	 * (`expire_allowlist_hash_rules_with_different_version()`)も起きない.
+	 * ルールの version 列は今までどおり保存する(画面の表示用).
+	 *
 	 * @param array $finding 判定対象の finding.
 	 * @param array $rules   `allowlist_hash` ルールの配列.
 	 * @return array|null 一致するルールが無ければ null.
@@ -135,12 +143,16 @@ class WPCV_Suppression_Matcher {
 			return null;
 		}
 
+		$ignores_version = WPCV_Finding_Key::ignores_version( isset( $finding['target_id'] ) ? $finding['target_id'] : '' );
+
 		foreach ( $rules as $rule ) {
+			// version が空のルールは、`core:_scan` でも今までどおり読み飛ばす(ルールを作る
+			// ときに version は必ず保存される. 欠けた行は壊れたデータとして扱う).
 			if ( empty( $rule['pattern'] ) || empty( $rule['expected_hash'] ) || empty( $rule['hash_algorithm'] ) || empty( $rule['version'] ) ) {
 				continue;
 			}
 
-			if ( (string) $rule['version'] !== (string) $finding['version'] ) {
+			if ( ! $ignores_version && (string) $rule['version'] !== (string) $finding['version'] ) {
 				continue;
 			}
 

@@ -8,6 +8,7 @@
 require_once __DIR__ . '/wp-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-migrator.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-finding-key.php';
 require_once __DIR__ . '/doubles.php';
 
 use PHPUnit\Framework\TestCase;
@@ -866,5 +867,132 @@ class MigratorTest extends TestCase {
 		$this->assertTrue( WPCV_Migrator::maybe_migrate_run_time_basis() );
 		$this->assertSame( array( 'hour' => 12, 'minute' => 0 ), WPCV_Settings::get_run_time() );
 		$this->assertSame( 'site', $GLOBALS['_wpcv_test_site_options']['wpcv_settings']['run_time_basis'] );
+	}
+
+	/**
+	 * `core:_scan` の保存済みの行のキーを、version を含めない式で計算し直すことを確認する
+	 * (v0.11.0 項目2. DB version 8).
+	 *
+	 * 終わった行(`ended_in_run_id` あり)も対象にする. キーが NULL の行(schema v4 より前)と、
+	 * `core:_scan` 以外の行は触らない.
+	 *
+	 * @return void
+	 */
+	public function test_recompute_core_scan_finding_keys_rewrites_only_core_scan_rows_with_key() {
+		$wpdb            = new WPCV_Test_Fake_WPDB();
+		$GLOBALS['wpdb'] = $wpdb;
+		$table           = $wpdb->base_prefix . 'wpcv_findings';
+		$old_key         = str_repeat( 'a', 64 );
+
+		// 0.10 までの式で保存された行(キーに本体の version が入っていた). 中身は同じで、本体の
+		// version だけが違う2行.
+		$live  = $this->insert_finding_row( $wpdb, 'core:_scan', '7.1.3', '.user.ini', $old_key, null );
+		$ended = $this->insert_finding_row( $wpdb, 'core:_scan', '7.1.2', '.user.ini', str_repeat( 'b', 64 ), 42 );
+		// キーの無い古い行と、`core:_scan` 以外の行.
+		$no_key = $this->insert_finding_row( $wpdb, 'core:_scan', '6.8', 'old.php', null, null );
+		$plugin = $this->insert_finding_row( $wpdb, 'plugin:acme', '1.0', 'acme.php', $old_key, null );
+
+		$this->assertSame( 2, WPCV_Migrator::recompute_core_scan_finding_keys() );
+
+		$expected = WPCV_Finding_Key::compute( 'core:_scan', '', '.user.ini', 'added', 'sha256', null, str_repeat( 'f', 64 ) );
+
+		$this->assertSame( $expected, $wpdb->rows[ $table ][ $live ]['finding_key'] );
+		// 本体の version が違っても、同じファイル・同じ中身なら同じキーになる.
+		$this->assertSame( $expected, $wpdb->rows[ $table ][ $ended ]['finding_key'] );
+		$this->assertNull( $wpdb->rows[ $table ][ $no_key ]['finding_key'] );
+		$this->assertSame( $old_key, $wpdb->rows[ $table ][ $plugin ]['finding_key'] );
+		// 表示用の version 列は変えない.
+		$this->assertSame( '7.1.3', $wpdb->rows[ $table ][ $live ]['version'] );
+	}
+
+	/**
+	 * 計算し直しが要るのは、既存のインストールで DB version が 8 より古いときだけであることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_needs_core_scan_key_recompute_only_for_existing_installs_before_v8() {
+		$this->assertFalse( WPCV_Migrator::needs_core_scan_key_recompute( 0 ) );
+		$this->assertTrue( WPCV_Migrator::needs_core_scan_key_recompute( 1 ) );
+		$this->assertTrue( WPCV_Migrator::needs_core_scan_key_recompute( 7 ) );
+		$this->assertFalse( WPCV_Migrator::needs_core_scan_key_recompute( 8 ) );
+		$this->assertFalse( WPCV_Migrator::needs_core_scan_key_recompute( 9 ) );
+	}
+
+	/**
+	 * 2回目以降は書き換える行が無い(冪等)ことを確認する(途中で止まってやり直しても害が無い).
+	 *
+	 * @return void
+	 */
+	public function test_recompute_core_scan_finding_keys_is_idempotent() {
+		$wpdb            = new WPCV_Test_Fake_WPDB();
+		$GLOBALS['wpdb'] = $wpdb;
+
+		$this->insert_finding_row( $wpdb, 'core:_scan', '7.1.3', '.user.ini', str_repeat( 'a', 64 ), null );
+
+		$this->assertSame( 1, WPCV_Migrator::recompute_core_scan_finding_keys() );
+		$this->assertSame( 0, WPCV_Migrator::recompute_core_scan_finding_keys() );
+	}
+
+	/**
+	 * 1回の読み取りの上限(500行)を超える行も、すべて計算し直すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_recompute_core_scan_finding_keys_processes_all_batches() {
+		$wpdb            = new WPCV_Test_Fake_WPDB();
+		$GLOBALS['wpdb'] = $wpdb;
+		$count           = WPCV_Migrator::RECOMPUTE_KEY_BATCH_SIZE + 3;
+
+		for ( $i = 0; $i < $count; $i++ ) {
+			$this->insert_finding_row( $wpdb, 'core:_scan', '7.1.3', "file-{$i}.php", str_repeat( 'a', 64 ), null );
+		}
+
+		$this->assertSame( $count, WPCV_Migrator::recompute_core_scan_finding_keys() );
+	}
+
+	/**
+	 * 書き換えに失敗したら false を返すことを確認する(呼び出し元の `maybe_upgrade()` は DB version を
+	 * 進めず、次のリクエストでやり直す).
+	 *
+	 * @return void
+	 */
+	public function test_recompute_core_scan_finding_keys_returns_false_when_update_fails() {
+		$wpdb            = new WPCV_Test_Fake_WPDB();
+		$GLOBALS['wpdb'] = $wpdb;
+
+		$this->insert_finding_row( $wpdb, 'core:_scan', '7.1.3', '.user.ini', str_repeat( 'a', 64 ), null );
+		$wpdb->update_should_fail = true;
+
+		$this->assertFalse( WPCV_Migrator::recompute_core_scan_finding_keys() );
+	}
+
+	/**
+	 * テスト用の `wpcv_findings` の行を1件入れ、その id を返す(added・sha256・中身のハッシュは固定).
+	 *
+	 * @param WPCV_Test_Fake_WPDB $wpdb            フェイク wpdb.
+	 * @param string              $target_id       target_id.
+	 * @param string              $version         version 列の値.
+	 * @param string              $path            path.
+	 * @param string|null         $finding_key     保存済みのキー(NULL なら schema v4 より前の行).
+	 * @param int|null            $ended_in_run_id 終わった run の id(終わっていなければ null).
+	 * @return int
+	 */
+	private function insert_finding_row( WPCV_Test_Fake_WPDB $wpdb, $target_id, $version, $path, $finding_key, $ended_in_run_id ) {
+		$wpdb->insert(
+			$wpdb->base_prefix . 'wpcv_findings',
+			array(
+				'target_id'       => $target_id,
+				'version'         => $version,
+				'path'            => $path,
+				'status'          => 'added',
+				'hash_algorithm'  => 'sha256',
+				'expected_hash'   => null,
+				'actual_hash'     => str_repeat( 'f', 64 ),
+				'finding_key'     => $finding_key,
+				'ended_in_run_id' => $ended_in_run_id,
+			)
+		);
+
+		return $wpdb->insert_id;
 	}
 }
