@@ -8,8 +8,8 @@ name: Release
 
 on:
   push:
+    # タグは素のバージョン番号(0.11.0)にする. v 付きのタグ(v0.11.0)では動かさない.
     tags:
-      - 'v[0-9]*'
       - '[0-9]*'
   workflow_dispatch:
     inputs:
