@@ -41,6 +41,25 @@ class WPCV_Migrator {
 	const UPDATE_EVENTS_SINCE_OPTION = 'wpcv_update_events_since';
 
 	/**
+	 * `core:_scan` の差分キーから version を外した DB version(v0.11.0 項目2).
+	 *
+	 * 保存済みの DB version がこれより古ければ、`recompute_core_scan_finding_keys()` を実行する.
+	 *
+	 * @var int
+	 */
+	const CORE_SCAN_VERSIONLESS_KEY_DB_VERSION = 8;
+
+	/**
+	 * `recompute_core_scan_finding_keys()` が1回に読む行数.
+	 *
+	 * 他の finding のバッチ処理(`WPCV_Diff_Dispatcher::DEFAULT_BATCH_SIZE` など)と同じ 500 にした.
+	 * test-armfu.local の実 DB(2026-10-24)では、対象の行は 328 件で1回に収まる.
+	 *
+	 * @var int
+	 */
+	const RECOMPUTE_KEY_BATCH_SIZE = 500;
+
+	/**
 	 * 保存されている DB バージョンが WPCV_DB_VERSION より古ければスキーマを更新する.
 	 *
 	 * プラグイン有効化時に加え、`plugins_loaded` にもフックする(自動更新で
@@ -84,6 +103,14 @@ class WPCV_Migrator {
 
 		self::maybe_record_update_events_since();
 
+		// v0.11.0(DB version 8): `core:_scan` の差分キーから version を外したので、保存済みの行の
+		// キーを新しい式で計算し直す(`recompute_core_scan_finding_keys()` 参照). 新規インストール
+		// (0)には行が無い. 失敗したら version を進めず、次のリクエストでやり直す(何度やっても同じ
+		// 値になるので、途中で止まっても害は無い).
+		if ( self::needs_core_scan_key_recompute( $stored ) && false === self::recompute_core_scan_finding_keys() ) {
+			return false;
+		}
+
 		// 新規インストール(DB バージョンが未保存)は、既定の実行時刻をそのまま現地時刻として使う
 		// (v0.10.0). 既存サイトの変換は `maybe_migrate_run_time_basis()` が `plugins_loaded` で行う
 		// (DB バージョンが上がらない更新でも動かすため、ここでは行わない).
@@ -119,6 +146,93 @@ class WPCV_Migrator {
 		WPCV_Settings::adopt_site_run_time_basis( ! $is_fresh_install, WPCV_Settings::site_timezone(), time() );
 
 		return ! $is_fresh_install;
+	}
+
+	/**
+	 * 保存済みの DB version から、`recompute_core_scan_finding_keys()` が要るかを返す(v0.11.0 項目2).
+	 *
+	 * 新規インストール(0)は計算し直す行が無いので要らない. 8 以上はすでに新しい式で保存している.
+	 * `maybe_upgrade()` の中に直接書くと、今の `WPCV_DB_VERSION`(8)では「常に真」の比較になり
+	 * PHPStan が指摘するため、関数に分けてテストで値ごとに確かめる.
+	 *
+	 * @param int $stored_version 保存済みの DB version.
+	 * @return bool
+	 */
+	public static function needs_core_scan_key_recompute( $stored_version ) {
+		return $stored_version > 0 && $stored_version < self::CORE_SCAN_VERSIONLESS_KEY_DB_VERSION;
+	}
+
+	/**
+	 * `core:_scan` の finding の `finding_key` を、今の式(`WPCV_Finding_Key::compute()`)で計算し直す
+	 * (v0.11.0 項目2. DB version 7 → 8).
+	 *
+	 * 0.11.0 から `core:_scan` のキーに version を含めない. 計算し直さないと、更新後の最初の run で
+	 * 保存済みの行(古い式)と今回の行(新しい式)のキーが合わず、今ある検出がすべて
+	 * 「解消+新規」として通知されてしまう.
+	 *
+	 * 対象は `core:_scan` のうち `finding_key` がある行すべて. 終わった行(`ended_in_run_id` あり)も含める.
+	 * 過去の通知の照会(`WPCV_Finding_Repository::find_last_notified_at_by_keys()`)と保持期間の
+	 * 掃除(`WPCV_Retention_Cleaner`)は、終わった行のキーも読む. 終わった行だけ古い式のまま残すと、
+	 * 移行の前に解消したファイルがまた現れたとき、通知済みかの判定が移行の後とずれる.
+	 * 全行をそろえると、最初から 0.11.0 の式だったのと同じ状態になる. 行数は少ない
+	 * (test-armfu.local の実 DB で 476 行中 328 行. 2026-10-24).
+	 * `finding_key` が NULL の行(schema v4 より前に保存した行)は、今までどおり計算しない.
+	 *
+	 * 何度実行しても同じ値になる(冪等). 値が変わる行だけを書き換える.
+	 *
+	 * @return int|false 書き換えた行数. 書き換えに失敗したら false.
+	 */
+	public static function recompute_core_scan_finding_keys() {
+		global $wpdb;
+
+		$table    = $wpdb->base_prefix . 'wpcv_findings';
+		$sql      = "SELECT id, target_id, version, path, status, hash_algorithm, expected_hash, actual_hash, finding_key FROM {$table}
+			WHERE target_id = %s AND finding_key IS NOT NULL AND id > %d ORDER BY id ASC LIMIT %d";
+		$after_id = 0;
+		$updated  = 0;
+
+		do {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via prepare() below.
+			$rows = $wpdb->get_results( $wpdb->prepare( $sql, WPCV_Finding_Key::VERSIONLESS_TARGET_ID, $after_id, self::RECOMPUTE_KEY_BATCH_SIZE ), ARRAY_A );
+			$rows = is_array( $rows ) ? $rows : array();
+			// 読んだ行数が上限と同じなら、続きがありうる(ループの条件に使う).
+			$has_more = self::RECOMPUTE_KEY_BATCH_SIZE === count( $rows );
+
+			foreach ( $rows as $row ) {
+				$after_id = (int) $row['id'];
+
+				$key = WPCV_Finding_Key::compute(
+					$row['target_id'],
+					$row['version'],
+					$row['path'],
+					$row['status'],
+					$row['hash_algorithm'],
+					$row['expected_hash'],
+					$row['actual_hash']
+				);
+
+				if ( $key === $row['finding_key'] ) {
+					continue;
+				}
+
+				// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- 移行処理の1回限りの書き換え.
+				$result = $wpdb->update(
+					$table,
+					array( 'finding_key' => $key ),
+					array( 'id' => (int) $row['id'] ),
+					array( '%s' ),
+					array( '%d' )
+				);
+
+				if ( false === $result ) {
+					return false;
+				}
+
+				++$updated;
+			}
+		} while ( $has_more );
+
+		return $updated;
 	}
 
 	/**
@@ -419,7 +533,9 @@ class WPCV_Migrator {
 ) {$charset_collate};";
 
 		// §5.5: path 単位の検出結果. version を差分キーに含めることで、バージョン
-		// 世代ごとの比較(§8.2)を成立させる. unverifiable はここには置かない
+		// 世代ごとの比較(§8.2)を成立させる. ただし `core:_scan` だけは差分キーに version を
+		// 含めない(v0.11.0 項目2. `WPCV_Finding_Key` のクラス docblock 参照. version 列には
+		// 表示用に本体の version を入れる). unverifiable はここには置かない
 		// (target_runs 側の事象。§16-A 参照)。suppression_id は v0.4.0 §Step1で
 		// 追加(ユーザー作成の抑制ルール `wpcv_suppressions.id` への参照。既存の
 		// `suppressed_by`(system suppressionの理由コード文字列)とは別列にし、

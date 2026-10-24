@@ -107,4 +107,62 @@ class FindingKeyTest extends TestCase {
 		$this->assertNotSame( $base, WPCV_Finding_Key::compute( 'plugin:acme', '1.2.0', 'other.php', 'modified', 'sha256', 'x', 'y' ) );
 		$this->assertNotSame( $base, WPCV_Finding_Key::compute( 'plugin:acme', '1.2.0', 'acme.php', 'added', 'sha256', 'x', 'y' ) );
 	}
+
+	/**
+	 * `core:_scan` では version が違っても同じキーになることを確認する(v0.11.0 項目2).
+	 *
+	 * 本体を 7.1.3 から 7.2-beta1 に更新しても、中身の変わっていない未知ファイルは
+	 * 「継続」になる(以前は「解消+新規」になっていた).
+	 *
+	 * @return void
+	 */
+	public function test_compute_ignores_version_for_core_scan() {
+		$before = WPCV_Finding_Key::compute( 'core:_scan', '7.1.3', '.user.ini', 'added', 'sha256', null, 'y' );
+		$after  = WPCV_Finding_Key::compute( 'core:_scan', '7.2-beta1', '.user.ini', 'added', 'sha256', null, 'y' );
+
+		$this->assertSame( $before, $after );
+		// version を空文字列で渡したときと同じ値(移行処理と保存時が同じ式になる).
+		$this->assertSame( WPCV_Finding_Key::compute( 'core:_scan', '', '.user.ini', 'added', 'sha256', null, 'y' ), $before );
+	}
+
+	/**
+	 * `core:_scan` でも、version 以外(path・中身のハッシュ)が違えば別のキーになることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_compute_for_core_scan_still_differs_by_path_and_hash() {
+		$base = WPCV_Finding_Key::compute( 'core:_scan', '7.1.3', '.user.ini', 'added', 'sha256', null, 'y' );
+
+		$this->assertNotSame( $base, WPCV_Finding_Key::compute( 'core:_scan', '7.1.3', 'wordfence-waf.php', 'added', 'sha256', null, 'y' ) );
+		$this->assertNotSame( $base, WPCV_Finding_Key::compute( 'core:_scan', '7.1.3', '.user.ini', 'added', 'sha256', null, 'z' ) );
+	}
+
+	/**
+	 * `core:_scan` 以外の target では、今までどおり version がキーに効くことを確認する
+	 * (素の `core`・本体ごとの走査 `theme:{x}:_scan`・`muplugin:_scan`).
+	 *
+	 * @return void
+	 */
+	public function test_compute_keeps_version_for_other_targets() {
+		foreach ( array( 'core', 'theme:twentytwentyfive:_scan', 'muplugin:_scan', 'plugin:acme' ) as $target_id ) {
+			$this->assertNotSame(
+				WPCV_Finding_Key::compute( $target_id, '1.0', 'a.php', 'added', 'sha256', null, 'y' ),
+				WPCV_Finding_Key::compute( $target_id, '2.0', 'a.php', 'added', 'sha256', null, 'y' ),
+				$target_id
+			);
+		}
+	}
+
+	/**
+	 * `ignores_version()` が `core:_scan` だけを真にすることを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_ignores_version_is_true_only_for_core_scan() {
+		$this->assertTrue( WPCV_Finding_Key::ignores_version( 'core:_scan' ) );
+		$this->assertFalse( WPCV_Finding_Key::ignores_version( 'core' ) );
+		$this->assertFalse( WPCV_Finding_Key::ignores_version( 'muplugin:_scan' ) );
+		$this->assertFalse( WPCV_Finding_Key::ignores_version( 'theme:twentytwentyfive:_scan' ) );
+		$this->assertFalse( WPCV_Finding_Key::ignores_version( '' ) );
+	}
 }
