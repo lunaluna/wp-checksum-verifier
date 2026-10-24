@@ -1,0 +1,14 @@
+# 外部 Actions を SHA で固定したため, 新しい版への追従は Dependabot に任せる.
+# 対象は .github/workflows/ の uses: の外部 Actions(ci.yml / release.yml).
+# l2d-wp-github-update-lib の reusable workflow(plugin-release.yml@X.Y.Z)は除外する.
+# 参照タグは lib/l2d-updater/ のベンダーコピーと必ず同じ版にそろえる必要があり,
+# Dependabot の PR は参照タグだけを上げるため, そのままマージすると版が食い違う.
+# ライブラリの更新は docs/consumer-update.md(ライブラリ側)の手順で行う.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    ignore:
+      - dependency-name: "lunaluna/l2d-wp-github-update-lib*"
