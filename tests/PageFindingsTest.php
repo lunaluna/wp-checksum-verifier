@@ -11,6 +11,9 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-affected-sites.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-run-history.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-finding-key.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-alert-composer.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-previous-core-marker.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-findings.php';
 
 use PHPUnit\Framework\TestCase;
@@ -230,6 +233,45 @@ class PageFindingsTest extends TestCase {
 		$this->assertStringContainsString( 'a.php, b.php', $text );
 		$this->assertSame( '', WPCV_Page_Findings::format_detail( array( 'detail' => null ) ) );
 		$this->assertSame( '', WPCV_Page_Findings::format_detail( array() ) );
+	}
+
+	/**
+	 * `core:_scan` の added の印(前の本体の配布物と同じ内容)を「詳細」列に出すことを確認する(v0.11.0 項目3-3).
+	 *
+	 * @return void
+	 */
+	public function test_format_detail_shows_same_as_core_mark() {
+		$this->assertSame(
+			'Same as the WordPress 7.1.3 package',
+			WPCV_Page_Findings::format_detail( array( 'detail' => '{"same_as_core":"7.1.3"}' ) )
+		);
+	}
+
+	/**
+	 * 開発版の注記は、本体が開発版で、かつ表に `core:_scan` の added の行があるときだけ出すことを確認する
+	 * (v0.11.0 項目3-3. メールの注記と同じ組み合わせの表).
+	 *
+	 * @return void
+	 */
+	public function test_development_note_follows_the_combination_table() {
+		$core_scan_added = array(
+			array(
+				'target_id' => 'core:_scan',
+				'status'    => 'added',
+			),
+		);
+		$other_rows      = array(
+			array(
+				'target_id' => 'plugin:foo',
+				'status'    => 'modified',
+			),
+		);
+
+		$this->assertStringContainsString( 'WordPress 7.2-beta1 is a development version.', WPCV_Page_Findings::development_note( '7.2-beta1', $core_scan_added ) );
+		$this->assertSame( '', WPCV_Page_Findings::development_note( '7.2-beta1', $other_rows ) );
+		$this->assertSame( '', WPCV_Page_Findings::development_note( '7.1.3', $core_scan_added ) );
+		$this->assertSame( '', WPCV_Page_Findings::development_note( '7.1.3', $other_rows ) );
+		$this->assertSame( '', WPCV_Page_Findings::development_note( '', $core_scan_added ) );
 	}
 
 	/**
