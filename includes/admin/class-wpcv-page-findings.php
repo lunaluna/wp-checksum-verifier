@@ -244,7 +244,13 @@ class WPCV_Page_Findings {
 		// 「Active on」は過去の run を開いても今の状態である旨を、表の上に1行で添える(v0.9.1).
 		$active_on_note = self::active_on_note();
 
+		// v0.11.0 項目3-3: この run の本体が開発版で、表に `core:_scan` の added があるときだけ注記を出す.
+		$development_note = self::development_note( self::core_version_of_run( $run_id ), $result['rows'] );
+
 		?>
+		<?php if ( '' !== $development_note ) : ?>
+			<p class="description"><?php echo esc_html( $development_note ); ?></p>
+		<?php endif; ?>
 		<?php if ( '' !== $active_on_note ) : ?>
 			<p class="description"><?php echo esc_html( $active_on_note ); ?></p>
 		<?php endif; ?>
@@ -289,6 +295,51 @@ class WPCV_Page_Findings {
 			</tbody>
 		</table>
 		<?php
+	}
+
+	/**
+	 * 本体が開発版のときに、表の上に出す注記を返す(v0.11.0 項目3-3).
+	 *
+	 * 出す条件はメール(`WPCV_Alert_Composer` の「参考」の注記)と同じ考え方で、本体が開発版で、かつ
+	 * 表に `core:_scan` の added の行があるとき. 表はページ分けと絞り込みのあとの行で判定する
+	 * (いま見えている行に未知ファイルが無ければ、注記は要らない).
+	 *
+	 * @param string $core_version その run の本体の version(分からなければ空文字).
+	 * @param array  $rows         表に出す finding の行.
+	 * @return string 注記(エスケープ前). 出さないときは空文字.
+	 */
+	public static function development_note( $core_version, array $rows ) {
+		if ( ! WPCV_Alert_Composer::is_development_version( (string) $core_version ) ) {
+			return '';
+		}
+
+		foreach ( $rows as $row ) {
+			if ( WPCV_Finding_Key::VERSIONLESS_TARGET_ID === ( $row['target_id'] ?? '' ) && 'added' === ( $row['status'] ?? '' ) ) {
+				return sprintf(
+					/* translators: %s: WordPress version of the run (a development version). */
+					__( 'WordPress %s is a development version. Updating to a development version can leave removed files behind. Unknown files marked "Same as the WordPress ... package" in the Details column are likely such leftovers.', 'wp-checksum-verifier' ),
+					(string) $core_version
+				);
+			}
+		}
+
+		return '';
+	}
+
+	/**
+	 * Run の本体の version(その run の `core` の target_run の version)を返す. 無ければ空文字.
+	 *
+	 * @param int $run_id run の id.
+	 * @return string
+	 */
+	private static function core_version_of_run( $run_id ) {
+		foreach ( WPCV_Plugin::target_run_repository()->find_all_by_run( (int) $run_id ) as $target_run ) {
+			if ( WPCV_Target_Resolver::DIMENSION_CORE === ( $target_run['target_id'] ?? '' ) ) {
+				return (string) ( $target_run['version'] ?? '' );
+			}
+		}
+
+		return '';
 	}
 
 	/**
@@ -386,6 +437,8 @@ class WPCV_Page_Findings {
 	 * Finding の `detail`(stat 差分検知の前回値→今回値. v0.5 §Step8)を
 	 * 一覧の1セルに収まる短い文にする.
 	 *
+	 * 0.11.0 から、`core:_scan` の added の印(`{"same_as_core":"7.1.3"}`)も扱う(項目3-3).
+	 *
 	 * `detail` を持たない finding(チェックサム照合の結果)は空文字を返す。
 	 * 日時は UTC の `Y-m-d H:i:s` で出す(ctime/mtime はファイルシステムの値であり
 	 * 投稿日時ではないため、サイトの日付フォーマット設定は使わない).
@@ -396,6 +449,17 @@ class WPCV_Page_Findings {
 	public static function format_detail( array $finding ) {
 		if ( empty( $finding['detail'] ) ) {
 			return '';
+		}
+
+		// v0.11.0 項目3-3: `core:_scan` の added の印(前の本体の配布物と同じ内容. `WPCV_Previous_Core_Marker`).
+		$same_as_core = WPCV_Previous_Core_Marker::marked_version( (string) $finding['detail'] );
+
+		if ( null !== $same_as_core ) {
+			return sprintf(
+				/* translators: %s: previous WordPress version. */
+				__( 'Same as the WordPress %s package', 'wp-checksum-verifier' ),
+				$same_as_core
+			);
 		}
 
 		$detail = json_decode( (string) $finding['detail'], true );
