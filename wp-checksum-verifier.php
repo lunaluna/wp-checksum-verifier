@@ -291,6 +291,7 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-run-plan
  * Chunk分割実行のdispatcher(v0.4.0 §Step4)。`WPCV_Run_Coordinator`(次で読み込む)
  * がコンストラクタで型宣言するため先に読み込む必要がある.
  */
+require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-previous-core-marker.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/runners/class-wpcv-chunk-dispatcher.php';
 // 無効化時にAction Schedulerの継続アクション(chunk継続・async起動)を
 // キャンセルする(v0.5.1. WPCV_Chunk_Dispatcher::deactivate()のdocblock参照).

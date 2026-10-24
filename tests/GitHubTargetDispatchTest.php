@@ -35,6 +35,7 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-file-state-repository.ph
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-planner.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-current-version-reader.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-update-lock-detector.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-previous-core-marker.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-chunk-dispatcher.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-starter.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-run-coordinator.php';
