@@ -81,5 +81,5 @@ if ( ! function_exists( 'l2dwpghul_updater_register' ) ) {
  * @return callable array $config を受け取り、このコピーを登録する関数.
  */
 return function ( array $config ) {
-	l2dwpghul_updater_register( '1.2.0', __DIR__ . '/class-l2d-github-updater.php', $config );
+	l2dwpghul_updater_register( '1.3.1', __DIR__ . '/class-l2d-github-updater.php', $config );
 };
