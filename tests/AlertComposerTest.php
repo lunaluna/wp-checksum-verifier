@@ -10,6 +10,8 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-error-code.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-resolver.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-finding-key.php';
+require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-generation-differ.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-alert-composer.php';
 
 use PHPUnit\Framework\TestCase;
@@ -258,10 +260,15 @@ class AlertComposerTest extends TestCase {
 			)
 		);
 
+		// v0.11.0 項目4: 「Targets:」行は「参考」の節に移した(この節は「Targets:」行があるので常に出る).
+		// 「要確認」の見出しは、中身が無ければ出さない.
 		$this->assertSame(
 			"Run #12 (2026-09-26 05:45:00 +00:00, cron)\n"
-			. "Targets: 0 verified / 0 change-tracked / 0 unverifiable / 0 failed\n"
-			. "New: 0  Resolved: 0  Continuing: 0 (already reported)\n",
+			. "New: 0  Resolved: 0  Continuing: 0 (already reported)\n"
+			. "\n"
+			. "== For reference ==\n"
+			. "\n"
+			. "Targets: 0 verified / 0 change-tracked / 0 unverifiable / 0 failed\n",
 			$result['body']
 		);
 	}
@@ -597,5 +604,244 @@ class AlertComposerTest extends TestCase {
 		);
 
 		$this->assertStringContainsString( '  #6  failed  2026-09-08 21:00:00 +09:00  cron', $result['body'] );
+	}
+
+	/**
+	 * 本体の version が変わったときだけ、2行目に「WordPress: from -> to」を出し、開発版なら印を付ける
+	 * (v0.11.0 項目4).
+	 *
+	 * @return void
+	 */
+	public function test_core_version_line_is_shown_only_when_version_changed() {
+		$lines_of = static function ( array $core_version ) {
+			$result = WPCV_Alert_Composer::compose(
+				array(
+					'run'          => array( 'id' => 37 ),
+					'core_version' => $core_version,
+				)
+			);
+
+			return explode( "\n", $result['body'] );
+		};
+
+		$this->assertSame( 'WordPress: 7.1.3 -> 7.2-beta1 (development version)', $lines_of( array( 'from' => '7.1.3', 'to' => '7.2-beta1' ) )[1] );
+		$this->assertSame( 'WordPress: 7.1.2 -> 7.1.3', $lines_of( array( 'from' => '7.1.2', 'to' => '7.1.3' ) )[1] );
+		// 変わっていない・基準が無いときは出さない(2行目は件数の行).
+		$this->assertStringStartsWith( 'New: ', $lines_of( array( 'from' => '7.1.3', 'to' => '7.1.3' ) )[1] );
+		$this->assertStringStartsWith( 'New: ', $lines_of( array( 'from' => '', 'to' => '7.1.3' ) )[1] );
+	}
+
+	/**
+	 * 前の本体の配布物と同じ内容の印(`same_as_core`)がある行は、added の後ろにその旨を添える(v0.11.0 項目3-3).
+	 *
+	 * @return void
+	 */
+	public function test_top_item_with_same_as_core_mark_gets_suffix() {
+		$result = WPCV_Alert_Composer::compose(
+			array(
+				'top_items' => array(
+					array(
+						'severity'     => 'high',
+						'target_id'    => 'core:_scan',
+						'path'         => 'wp-includes/css/dist/block-editor/default-editor-styles.css',
+						'status'       => 'added',
+						'same_as_core' => '7.1.3',
+					),
+					array(
+						'severity'     => 'high',
+						'target_id'    => 'core:_scan',
+						'path'         => '.user.ini',
+						'status'       => 'added',
+						'same_as_core' => null,
+					),
+				),
+			)
+		);
+
+		$this->assertSame(
+			array(
+				'  [high] core:_scan  .user.ini  added',
+				'  [high] core:_scan  wp-includes/css/dist/block-editor/default-editor-styles.css  added (same as the WordPress 7.1.3 package)',
+			),
+			$this->section_lines( $result['body'], 'Top 2 by severity:' )
+		);
+	}
+
+	/**
+	 * 開発版の注記は「今の本体が開発版」かつ「本文に `core:_scan` の added が載る」ときだけ出す
+	 * (v0.11.0 項目3-3 の組み合わせ表の4行).
+	 *
+	 * @return void
+	 */
+	public function test_development_note_follows_the_combination_table() {
+		$note_shown = static function ( $core_to, $with_core_scan_added, $diff_state = 'new' ) {
+			$result = WPCV_Alert_Composer::compose(
+				array(
+					'core_version' => array(
+						'from' => '7.1.3',
+						'to'   => $core_to,
+					),
+					'by_target'    => $with_core_scan_added
+						? array(
+							array(
+								'target_id'  => 'core:_scan',
+								'status'     => 'added',
+								'diff_state' => $diff_state,
+								'count'      => 3,
+							),
+						)
+						: array(
+							array(
+								'target_id'  => 'plugin:foo',
+								'status'     => 'modified',
+								'diff_state' => 'new',
+								'count'      => 1,
+							),
+						),
+				)
+			);
+
+			return false !== strpos( $result['body'], 'is a development version.' );
+		};
+
+		$this->assertTrue( $note_shown( '7.2-beta1', true ) );
+		$this->assertTrue( $note_shown( '7.2-beta1', true, 'continuing' ) );
+		$this->assertFalse( $note_shown( '7.2-beta1', false ) );
+		$this->assertFalse( $note_shown( '7.1.4', true ) );
+		$this->assertFalse( $note_shown( '7.1.4', false ) );
+	}
+
+	/**
+	 * 継続(`diff_state = continuing`)の件数は「Continuing (already reported):」に分けて出し、
+	 * 「By target:」には新規(new・event)だけを出す(v0.11.0 項目4).
+	 *
+	 * @return void
+	 */
+	public function test_continuing_counts_are_listed_separately_from_new() {
+		$result = WPCV_Alert_Composer::compose(
+			array(
+				'by_target' => array(
+					array( 'target_id' => 'core:_scan', 'status' => 'added', 'diff_state' => 'new', 'count' => 13 ),
+					array( 'target_id' => 'plugin:oembed-plus', 'status' => 'modified', 'diff_state' => 'continuing', 'count' => 1 ),
+					array( 'target_id' => 'plugin:foo', 'status' => 'modified', 'diff_state' => 'event', 'count' => 2 ),
+				),
+			)
+		);
+
+		$this->assertSame( array( '  core:_scan  added 13', '  plugin:foo  modified 2' ), $this->section_lines( $result['body'], 'By target:' ) );
+		$this->assertSame( array( '  plugin:oembed-plus  modified 1' ), $this->section_lines( $result['body'], 'Continuing (already reported):' ) );
+	}
+
+	/**
+	 * 「参考」に照合できない target の内訳を target_id 順に出し、上限(`max_items`)を超えた分は件数だけ出す
+	 * (v0.11.0 項目4).
+	 *
+	 * @return void
+	 */
+	public function test_unverifiable_targets_are_listed_with_cap() {
+		$result = WPCV_Alert_Composer::compose(
+			array(
+				'max_items'   => 2,
+				'target_runs' => array(
+					array( 'target_id' => 'plugin:zeta', 'status' => 'unverifiable', 'error_code' => WPCV_Error_Code::MANIFEST_NOT_FOUND ),
+					array( 'target_id' => 'core', 'status' => 'success' ),
+					array( 'target_id' => 'plugin:alpha', 'status' => 'unverifiable', 'error_code' => WPCV_Error_Code::HTTP_ERROR ),
+					array( 'target_id' => 'plugin:beta', 'status' => 'unverifiable', 'error_code' => WPCV_Error_Code::MANIFEST_NOT_FOUND ),
+				),
+			)
+		);
+
+		$this->assertSame(
+			array(
+				'  plugin:alpha  http_error',
+				'  plugin:beta  manifest_not_found',
+				'  ... and 1 more',
+			),
+			$this->section_lines( $result['body'], 'Unverifiable (3):' )
+		);
+	}
+
+	/**
+	 * 節が「要確認」→「継続中」→「解消」→「参考」→「Details」の順に並ぶことを確認する(v0.11.0 項目4).
+	 * 対応が要る節(記録なしの version 変更・連続 unverifiable・削除された target)は「要確認」に、
+	 * 基準の作り直しは「参考」に入る.
+	 *
+	 * @return void
+	 */
+	public function test_sections_are_ordered_attention_continuing_resolved_reference() {
+		$body = WPCV_Alert_Composer::compose(
+			array(
+				'core_version'               => array(
+					'from' => '7.1.3',
+					'to'   => '7.2-beta1',
+				),
+				'top_items'                  => array(
+					array( 'severity' => 'high', 'target_id' => 'core:_scan', 'path' => '.user.ini', 'status' => 'added' ),
+				),
+				'by_target'                  => array(
+					array( 'target_id' => 'core:_scan', 'status' => 'added', 'diff_state' => 'new', 'count' => 1 ),
+					array( 'target_id' => 'plugin:foo', 'status' => 'modified', 'diff_state' => 'continuing', 'count' => 1 ),
+				),
+				'resolved_items'             => array(
+					array( 'target_id' => 'core:_scan', 'path' => '.gitignore', 'status' => 'added' ),
+				),
+				'unrecorded_version_changes' => array(
+					array( 'target_id' => 'plugin:bar', 'from_version' => '1.0.0', 'to_version' => '1.1.0' ),
+				),
+				'unverifiable_streaks'       => array(
+					array( 'target_id' => 'plugin:qux', 'error_code' => WPCV_Error_Code::HTTP_ERROR ),
+				),
+				'unverifiable_threshold'     => 3,
+				'removed_targets'            => 1,
+				'baseline_rebuilt'           => array(
+					array( 'target_id' => 'theme:snow-monkey:_stat', 'from_version' => '31.0.2', 'to_version' => '31.0.3' ),
+				),
+				'details_url'                => 'https://example.com/wp-admin/admin.php?page=wpcv-findings',
+			)
+		)['body'];
+
+		$order = array(
+			'WordPress: 7.1.3 -> 7.2-beta1 (development version)',
+			'== Needs attention ==',
+			'Top 1 by severity:',
+			'By target:',
+			'Version changed without a WordPress update:',
+			'Unverifiable 3 times in a row:',
+			'Removed targets: 1',
+			'Continuing (already reported):',
+			// 先頭の件数の行(`New: 1  Resolved: ...`)に当たらないよう、見出しの行として探す.
+			"\nResolved:\n",
+			'== For reference ==',
+			'WordPress 7.2-beta1 is a development version.',
+			'Not verified today (baseline rebuilt after a version change):',
+			'Targets: ',
+			'Details: ',
+		);
+
+		$previous = -1;
+
+		foreach ( $order as $needle ) {
+			$position = strpos( $body, $needle );
+
+			$this->assertNotFalse( $position, $needle );
+			$this->assertGreaterThan( $previous, $position, $needle );
+			$previous = $position;
+		}
+	}
+
+	/**
+	 * `is_development_version()` が alpha・beta・RC・nightly を開発版とし、正式版を開発版としないことを確認する
+	 * (2026-10-24 に WordPress のソースで確認した version 文字列の例).
+	 *
+	 * @return void
+	 */
+	public function test_is_development_version() {
+		foreach ( array( '7.2-alpha-61234', '7.2-beta1', '7.2-RC1', '7.2-beta1-64693', '7.2-beta1-64606-src' ) as $version ) {
+			$this->assertTrue( WPCV_Alert_Composer::is_development_version( $version ), $version );
+		}
+
+		foreach ( array( '7.1.3', '7.1', '' ) as $version ) {
+			$this->assertFalse( WPCV_Alert_Composer::is_development_version( $version ), $version );
+		}
 	}
 }

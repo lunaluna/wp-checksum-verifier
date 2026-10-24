@@ -66,13 +66,20 @@ class WPCV_Alert_Composer {
 	 *     @type string $site_name              サイト名(`get_option( 'blogname' )`の値そのまま.
 	 *                                          エスケープ解除と改行除去はこのメソッドで行う).
 	 *     @type array  $run                    `id`/`finished_at`(GMT)/`run_trigger`.
+	 *     @type array  $core_version           本体の version の `from`(基準)/`to`(今回)(v0.11.0 項目4).
+	 *                                          違えば先頭に「WordPress: from -> to」の行を出す.
+	 *                                          `to` が開発版なら注記を出す(項目3-3).
 	 *     @type array  $target_runs            その run の target_run 行(`target_id`/`status`/
-	 *                                          `error_code`). 「Targets:」行の集計に使う.
+	 *                                          `error_code`). 「Targets:」行の集計と、照合できない
+	 *                                          target の内訳(v0.11.0 項目4)に使う.
 	 *     @type array  $counts                 `new`/`resolved`/`continuing`の件数.
 	 *     @type array  $top_items              本文の上位一覧に載せる候補(`severity`/`target_id`/
-	 *                                          `path`/`status`). 件数が多くても上位N件だけ載せる.
-	 *     @type array  $by_target              target×status の件数(`target_id`/`status`/`count`.
-	 *                                          SQLの GROUP BY の結果).
+	 *                                          `path`/`status`. 任意で `same_as_core` = 前の本体の
+	 *                                          version〔印. v0.11.0 項目3-3〕). 件数が多くても上位N件だけ載せる.
+	 *     @type array  $by_target              target×status×diff_state の件数(`target_id`/`status`/
+	 *                                          `diff_state`/`count`. SQLの GROUP BY の結果).
+	 *                                          `diff_state` が `continuing` の行は「継続中」の節に、
+	 *                                          それ以外(new・event・無し)は「By target」に出す.
 	 *     @type array  $resolved_items         解消した finding(`target_id`/`path`/`status`).
 	 *     @type array  $baseline_rebuilt       version 変更で基準を作り直した target
 	 *                                          (`target_id`/`from_version`/`to_version`. U3).
@@ -97,6 +104,7 @@ class WPCV_Alert_Composer {
 			array(
 				'site_name'                  => '',
 				'run'                        => array(),
+				'core_version'               => array(),
 				'target_runs'                => array(),
 				'counts'                     => array(),
 				'top_items'                  => array(),
@@ -223,15 +231,32 @@ class WPCV_Alert_Composer {
 			self::clean( $run['run_trigger'] ?? '' )
 		);
 
-		$target_counts = self::count_targets( (array) $input['target_runs'] );
-		$lines[]       = sprintf(
-			/* translators: 1: checksum verified targets, 2: change-tracked (stat) targets, 3: unverifiable targets, 4: failed targets. */
-			__( 'Targets: %1$s verified / %2$s change-tracked / %3$s unverifiable / %4$s failed', 'wp-checksum-verifier' ),
-			number_format( $target_counts['verified'] ),
-			number_format( $target_counts['change_tracked'] ),
-			number_format( $target_counts['unverifiable'] ),
-			number_format( $target_counts['failed'] )
+		// v0.11.0 項目4: 本体の version が基準から変わったときだけ、先頭に出す(開発版なら印を付ける).
+		$core_version = array_merge(
+			array(
+				'from' => '',
+				'to'   => '',
+			),
+			(array) $input['core_version']
 		);
+		$core_from    = (string) $core_version['from'];
+		$core_to      = (string) $core_version['to'];
+
+		if ( '' !== $core_from && '' !== $core_to && $core_from !== $core_to ) {
+			$lines[] = self::is_development_version( $core_to )
+				? sprintf(
+					/* translators: 1: previous WordPress version, 2: current WordPress version (a development version). */
+					__( 'WordPress: %1$s -> %2$s (development version)', 'wp-checksum-verifier' ),
+					self::clean( $core_from ),
+					self::clean( $core_to )
+				)
+				: sprintf(
+					/* translators: 1: previous WordPress version, 2: current WordPress version. */
+					__( 'WordPress: %1$s -> %2$s', 'wp-checksum-verifier' ),
+					self::clean( $core_from ),
+					self::clean( $core_to )
+				);
+		}
 
 		$lines[] = sprintf(
 			/* translators: 1: new findings, 2: resolved findings, 3: continuing findings. */
@@ -241,39 +266,16 @@ class WPCV_Alert_Composer {
 			number_format( (int) $counts['continuing'] )
 		);
 
-		$top = self::sort_top_items( (array) $input['top_items'], $max_items );
-
-		if ( ! empty( $top ) ) {
-			$lines[] = '';
-			/* translators: %d: number of findings listed below. */
-			$lines[] = sprintf( __( 'Top %d by severity:', 'wp-checksum-verifier' ), count( $top ) );
-
-			foreach ( $top as $item ) {
-				$lines[] = sprintf(
-					'  [%1$s] %2$s  %3$s  %4$s',
-					self::clean( $item['severity'] ?? '' ),
-					self::clean( $item['target_id'] ?? '' ),
-					self::clean_path( $item['path'] ?? '' ),
-					self::clean( $item['status'] ?? '' )
-				);
-			}
-		}
-
+		// v0.11.0 項目4: 本文を「要確認」→「継続中」→「解消」→「参考」の順に並べる. 今ある節は消さず、
+		// 置き場所だけを決める. 対応が要るもの(新規・記録なしの version 変更・GitHub のトークン・
+		// 連続 unverifiable・削除された target)は「要確認」にまとめる.
 		$by_target = self::group_by_target( (array) $input['by_target'] );
+		$lines     = array_merge( $lines, self::with_heading( __( '== Needs attention ==', 'wp-checksum-verifier' ), self::attention_sections( $input, $by_target['new'], $max_items ) ) );
 
-		if ( ! empty( $by_target ) ) {
+		if ( ! empty( $by_target['continuing'] ) ) {
 			$lines[] = '';
-			$lines[] = __( 'By target:', 'wp-checksum-verifier' );
-
-			foreach ( $by_target as $target_id => $statuses ) {
-				$parts = array();
-
-				foreach ( $statuses as $status => $count ) {
-					$parts[] = $status . ' ' . number_format( $count );
-				}
-
-				$lines[] = '  ' . $target_id . '  ' . implode( ', ', $parts );
-			}
+			$lines[] = __( 'Continuing (already reported):', 'wp-checksum-verifier' );
+			$lines   = array_merge( $lines, self::by_target_lines( $by_target['continuing'] ) );
 		}
 
 		$resolved = self::sort_resolved_items( (array) $input['resolved_items'], $max_items );
@@ -292,64 +294,7 @@ class WPCV_Alert_Composer {
 			}
 		}
 
-		if ( ! empty( $input['unrecorded_version_changes'] ) ) {
-			$lines[] = '';
-			$lines[] = __( 'Version changed without a WordPress update:', 'wp-checksum-verifier' );
-
-			foreach ( (array) $input['unrecorded_version_changes'] as $item ) {
-				$lines[] = sprintf(
-					'  %1$s %2$s -> %3$s',
-					self::clean( $item['target_id'] ?? '' ),
-					self::clean( $item['from_version'] ?? '' ),
-					self::clean( $item['to_version'] ?? '' )
-				);
-			}
-		}
-
-		if ( ! empty( $input['baseline_rebuilt'] ) ) {
-			$lines[] = '';
-			$lines[] = __( 'Not verified today (baseline rebuilt after a version change):', 'wp-checksum-verifier' );
-
-			foreach ( (array) $input['baseline_rebuilt'] as $item ) {
-				$lines[] = sprintf(
-					'  %1$s %2$s -> %3$s',
-					self::clean( $item['target_id'] ?? '' ),
-					self::clean( $item['from_version'] ?? '' ),
-					self::clean( $item['to_version'] ?? '' )
-				);
-			}
-		}
-
-		if ( ! empty( $input['access_denied'] ) ) {
-			$lines[] = '';
-			$lines[] = __( 'Cannot compare with the source (the GitHub token is invalid, expired or lacks permission). These targets are monitored by file-change tracking meanwhile:', 'wp-checksum-verifier' );
-
-			foreach ( (array) $input['access_denied'] as $item ) {
-				$lines[] = '  ' . self::clean( $item['target_id'] ?? '' ) . ( ! empty( $item['is_new'] ) ? '  ' . __( '(new)', 'wp-checksum-verifier' ) : '' );
-			}
-
-			$lines[] = __( 'Check the GitHub token (the WPCV_GITHUB_TOKEN constant or the wpcv_github_token filter).', 'wp-checksum-verifier' );
-		}
-
-		if ( ! empty( $input['unverifiable_streaks'] ) ) {
-			$lines[] = '';
-			/* translators: %d: consecutive unverifiable count threshold. */
-			$lines[] = sprintf( __( 'Unverifiable %d times in a row:', 'wp-checksum-verifier' ), (int) $input['unverifiable_threshold'] );
-
-			foreach ( (array) $input['unverifiable_streaks'] as $item ) {
-				$lines[] = sprintf(
-					'  %1$s  %2$s',
-					self::clean( $item['target_id'] ?? '' ),
-					self::clean( $item['error_code'] ?? '' )
-				);
-			}
-		}
-
-		if ( (int) $input['removed_targets'] > 0 ) {
-			$lines[] = '';
-			/* translators: %s: number of removed targets. */
-			$lines[] = sprintf( __( 'Removed targets: %s', 'wp-checksum-verifier' ), number_format( (int) $input['removed_targets'] ) );
-		}
+		$lines = array_merge( $lines, self::with_heading( __( '== For reference ==', 'wp-checksum-verifier' ), self::reference_sections( $input, $core_to, $by_target, $max_items ) ) );
 
 		if ( '' !== (string) $input['details_url'] ) {
 			$lines[] = '';
@@ -446,34 +391,297 @@ class WPCV_Alert_Composer {
 	}
 
 	/**
-	 * Target×status の件数を target ごとにまとめる(target_id 昇順・status 昇順.
-	 * 同じ組み合わせが複数行あれば合計する). 未知ファイル検出の 1,235 件のような
-	 * 規模を1行にまとめるための節(rev.3 §12.3-(c)).
+	 * 本体の version が開発版(alpha・beta・RC・nightly)かどうかを返す(v0.11.0 項目3-2・D3).
 	 *
-	 * @param array $rows `target_id`/`status`/`count`の行.
-	 * @return array<string, array<string, int>> 安全化済みの target_id => ( status => 件数 ).
+	 * 開発版の version には必ず `-` が入り、正式版には入らない. 2026-10-24 に WordPress のソースで確認した例:
+	 * wordpress-develop の trunk は `7.2-beta1-64606-src`、ビルド済みの nightly(WordPress/WordPress の
+	 * master)は `7.2-beta1-64693`、正式版のタグは `7.1.3`・`7.1`. alpha は `7.2-alpha-61234`、RC は `7.2-RC1` の形.
+	 * 画面(Step 5)からも使う.
+	 *
+	 * @param string $version 本体の version.
+	 * @return bool
+	 */
+	public static function is_development_version( $version ) {
+		return false !== strpos( (string) $version, '-' );
+	}
+
+	/**
+	 * 「要確認」に入れる節を組み立てる(v0.11.0 項目4. 空の節は出さない).
+	 *
+	 * 上位一覧・新規の By target・記録なしの version 変更・GitHub のトークン・連続 unverifiable・
+	 * 削除された target. 各節は空行から始まる.
+	 *
+	 * @param array                             $input         `compose()` の入力(既定値を補ったもの).
+	 * @param array<string, array<string, int>> $new_by_target `group_by_target()` の `new`.
+	 * @param int                               $max_items     上位件数.
+	 * @return string[]
+	 */
+	private static function attention_sections( array $input, array $new_by_target, $max_items ) {
+		$lines = array();
+		$top   = self::sort_top_items( (array) $input['top_items'], $max_items );
+
+		if ( ! empty( $top ) ) {
+			$lines[] = '';
+			/* translators: %d: number of findings listed below. */
+			$lines[] = sprintf( __( 'Top %d by severity:', 'wp-checksum-verifier' ), count( $top ) );
+
+			foreach ( $top as $item ) {
+				$line = sprintf(
+					'  [%1$s] %2$s  %3$s  %4$s',
+					self::clean( $item['severity'] ?? '' ),
+					self::clean( $item['target_id'] ?? '' ),
+					self::clean_path( $item['path'] ?? '' ),
+					self::clean( $item['status'] ?? '' )
+				);
+
+				// v0.11.0 項目3-3: 前の本体の配布物と同じ内容(消し残しの可能性が高い)なら、その旨を添える.
+				if ( ! empty( $item['same_as_core'] ) ) {
+					$line .= ' ' . sprintf(
+						/* translators: %s: previous WordPress version. */
+						__( '(same as the WordPress %s package)', 'wp-checksum-verifier' ),
+						self::clean( $item['same_as_core'] )
+					);
+				}
+
+				$lines[] = $line;
+			}
+		}
+
+		if ( ! empty( $new_by_target ) ) {
+			$lines[] = '';
+			$lines[] = __( 'By target:', 'wp-checksum-verifier' );
+			$lines   = array_merge( $lines, self::by_target_lines( $new_by_target ) );
+		}
+
+		if ( ! empty( $input['unrecorded_version_changes'] ) ) {
+			$lines[] = '';
+			$lines[] = __( 'Version changed without a WordPress update:', 'wp-checksum-verifier' );
+
+			foreach ( (array) $input['unrecorded_version_changes'] as $item ) {
+				$lines[] = sprintf(
+					'  %1$s %2$s -> %3$s',
+					self::clean( $item['target_id'] ?? '' ),
+					self::clean( $item['from_version'] ?? '' ),
+					self::clean( $item['to_version'] ?? '' )
+				);
+			}
+		}
+
+		if ( ! empty( $input['access_denied'] ) ) {
+			$lines[] = '';
+			$lines[] = __( 'Cannot compare with the source (the GitHub token is invalid, expired or lacks permission). These targets are monitored by file-change tracking meanwhile:', 'wp-checksum-verifier' );
+
+			foreach ( (array) $input['access_denied'] as $item ) {
+				$lines[] = '  ' . self::clean( $item['target_id'] ?? '' ) . ( ! empty( $item['is_new'] ) ? '  ' . __( '(new)', 'wp-checksum-verifier' ) : '' );
+			}
+
+			$lines[] = __( 'Check the GitHub token (the WPCV_GITHUB_TOKEN constant or the wpcv_github_token filter).', 'wp-checksum-verifier' );
+		}
+
+		if ( ! empty( $input['unverifiable_streaks'] ) ) {
+			$lines[] = '';
+			/* translators: %d: consecutive unverifiable count threshold. */
+			$lines[] = sprintf( __( 'Unverifiable %d times in a row:', 'wp-checksum-verifier' ), (int) $input['unverifiable_threshold'] );
+
+			foreach ( (array) $input['unverifiable_streaks'] as $item ) {
+				$lines[] = sprintf(
+					'  %1$s  %2$s',
+					self::clean( $item['target_id'] ?? '' ),
+					self::clean( $item['error_code'] ?? '' )
+				);
+			}
+		}
+
+		if ( (int) $input['removed_targets'] > 0 ) {
+			$lines[] = '';
+			/* translators: %s: number of removed targets. */
+			$lines[] = sprintf( __( 'Removed targets: %s', 'wp-checksum-verifier' ), number_format( (int) $input['removed_targets'] ) );
+		}
+
+		return $lines;
+	}
+
+	/**
+	 * 「参考」に入れる節を組み立てる(v0.11.0 項目4. 各節は空行から始まる).
+	 *
+	 * 開発版の注記・version 変更で基準を作り直した target・照合できない target の内訳・「Targets:」行.
+	 * 「Targets:」行は常に出す(以前から本文の先頭にあった行で、置き場所だけを変えた).
+	 *
+	 * 開発版の注記を出す条件(v0.11.0 項目3-3 の表): 今の本体が開発版で、かつ本文に `core:_scan` の
+	 * added が載る(新規か継続の By target にある)とき. 開発版でも未知ファイルが無ければ出さない.
+	 *
+	 * @param array  $input     `compose()` の入力(既定値を補ったもの).
+	 * @param string $core_to   今の本体の version.
+	 * @param array  $by_target `group_by_target()` の戻り値.
+	 * @param int    $max_items 上位件数(照合できない target の内訳の上限にも使う).
+	 * @return string[]
+	 */
+	private static function reference_sections( array $input, $core_to, array $by_target, $max_items ) {
+		$lines    = array();
+		$core_key = self::clean( WPCV_Finding_Key::VERSIONLESS_TARGET_ID );
+
+		if ( self::is_development_version( $core_to ) && ( isset( $by_target['new'][ $core_key ]['added'] ) || isset( $by_target['continuing'][ $core_key ]['added'] ) ) ) {
+			$lines[] = '';
+			$lines[] = sprintf(
+				/* translators: %s: current WordPress version (a development version). */
+				__( 'WordPress %s is a development version. Updating to a development version can leave removed files behind. Files marked "same as the WordPress ... package" are likely such leftovers.', 'wp-checksum-verifier' ),
+				self::clean( $core_to )
+			);
+		}
+
+		if ( ! empty( $input['baseline_rebuilt'] ) ) {
+			$lines[] = '';
+			$lines[] = __( 'Not verified today (baseline rebuilt after a version change):', 'wp-checksum-verifier' );
+
+			foreach ( (array) $input['baseline_rebuilt'] as $item ) {
+				$lines[] = sprintf(
+					'  %1$s %2$s -> %3$s',
+					self::clean( $item['target_id'] ?? '' ),
+					self::clean( $item['from_version'] ?? '' ),
+					self::clean( $item['to_version'] ?? '' )
+				);
+			}
+		}
+
+		$unverifiable = self::unverifiable_items( (array) $input['target_runs'] );
+
+		if ( ! empty( $unverifiable ) ) {
+			$lines[] = '';
+			/* translators: %s: number of unverifiable targets. */
+			$lines[] = sprintf( __( 'Unverifiable (%s):', 'wp-checksum-verifier' ), number_format( count( $unverifiable ) ) );
+
+			foreach ( array_slice( $unverifiable, 0, $max_items ) as $item ) {
+				$lines[] = sprintf( '  %1$s  %2$s', $item['target_id'], $item['error_code'] );
+			}
+
+			if ( count( $unverifiable ) > $max_items ) {
+				/* translators: %s: number of unverifiable targets not listed. */
+				$lines[] = '  ' . sprintf( __( '... and %s more', 'wp-checksum-verifier' ), number_format( count( $unverifiable ) - $max_items ) );
+			}
+		}
+
+		$target_counts = self::count_targets( (array) $input['target_runs'] );
+		$lines[]       = '';
+		$lines[]       = sprintf(
+			/* translators: 1: checksum verified targets, 2: change-tracked (stat) targets, 3: unverifiable targets, 4: failed targets. */
+			__( 'Targets: %1$s verified / %2$s change-tracked / %3$s unverifiable / %4$s failed', 'wp-checksum-verifier' ),
+			number_format( $target_counts['verified'] ),
+			number_format( $target_counts['change_tracked'] ),
+			number_format( $target_counts['unverifiable'] ),
+			number_format( $target_counts['failed'] )
+		);
+
+		return $lines;
+	}
+
+	/**
+	 * 照合できなかった(`unverifiable`)target を target_id 昇順で返す(v0.11.0 項目4. 安全化済み).
+	 *
+	 * 「Targets:」行の unverifiable の数(`count_targets()`)と同じ行を対象にする.
+	 *
+	 * @param array $target_runs target_run 行の一覧.
+	 * @return array<int, array{target_id: string, error_code: string}>
+	 */
+	private static function unverifiable_items( array $target_runs ) {
+		$items = array();
+
+		foreach ( $target_runs as $target_run ) {
+			if ( WPCV_Target_Status::UNVERIFIABLE !== ( $target_run['status'] ?? '' ) ) {
+				continue;
+			}
+
+			$items[] = array(
+				'target_id'  => self::clean( $target_run['target_id'] ?? '' ),
+				'error_code' => self::clean( $target_run['error_code'] ?? '' ),
+			);
+		}
+
+		usort(
+			$items,
+			static function ( $a, $b ) {
+				return array( $a['target_id'], $a['error_code'] ) <=> array( $b['target_id'], $b['error_code'] );
+			}
+		);
+
+		return $items;
+	}
+
+	/**
+	 * 見出しと節をまとめる. 節が空なら見出しも出さない(空の配列を返す).
+	 *
+	 * @param string   $heading 見出しの行.
+	 * @param string[] $lines   節の行(各節は空行から始まる).
+	 * @return string[]
+	 */
+	private static function with_heading( $heading, array $lines ) {
+		if ( empty( $lines ) ) {
+			return array();
+		}
+
+		return array_merge( array( '', $heading ), $lines );
+	}
+
+	/**
+	 * `group_by_target()` の1グループを、1 target 1行の文にする(`  target  status N, status N`).
+	 *
+	 * @param array<string, array<string, int>> $grouped 安全化済みの target_id => ( status => 件数 ).
+	 * @return string[]
+	 */
+	private static function by_target_lines( array $grouped ) {
+		$lines = array();
+
+		foreach ( $grouped as $target_id => $statuses ) {
+			$parts = array();
+
+			foreach ( $statuses as $status => $count ) {
+				$parts[] = $status . ' ' . number_format( $count );
+			}
+
+			$lines[] = '  ' . $target_id . '  ' . implode( ', ', $parts );
+		}
+
+		return $lines;
+	}
+
+	/**
+	 * Target×status の件数を、新規(new・event・diff_state 無し)と継続(continuing)に分けて、
+	 * target ごとにまとめる(target_id 昇順・status 昇順. 同じ組み合わせが複数行あれば合計する).
+	 * 未知ファイル検出の 1,235 件のような規模を1行にまとめるための節(rev.3 §12.3-(c)).
+	 *
+	 * 継続を分けたのは v0.11.0 項目4. `diff_state` の無い行(0.10 までの入力の形)は新規として扱う.
+	 *
+	 * @param array $rows `target_id`/`status`/`diff_state`/`count`の行.
+	 * @return array{new: array<string, array<string, int>>, continuing: array<string, array<string, int>>}
+	 *         それぞれ安全化済みの target_id => ( status => 件数 ).
 	 */
 	private static function group_by_target( array $rows ) {
-		$grouped = array();
+		$grouped = array(
+			'new'        => array(),
+			'continuing' => array(),
+		);
 
 		foreach ( $rows as $row ) {
 			$target_id = self::clean( $row['target_id'] ?? '' );
 			$status    = self::clean( $row['status'] ?? '' );
 			$count     = (int) ( $row['count'] ?? 0 );
+			$group     = WPCV_Generation_Differ::DIFF_STATE_CONTINUING === ( $row['diff_state'] ?? '' ) ? 'continuing' : 'new';
 
 			if ( $count <= 0 ) {
 				continue;
 			}
 
-			$grouped[ $target_id ][ $status ] = ( $grouped[ $target_id ][ $status ] ?? 0 ) + $count;
+			$grouped[ $group ][ $target_id ][ $status ] = ( $grouped[ $group ][ $target_id ][ $status ] ?? 0 ) + $count;
 		}
 
-		ksort( $grouped, SORT_STRING );
+		foreach ( $grouped as &$targets ) {
+			ksort( $targets, SORT_STRING );
 
-		foreach ( $grouped as &$statuses ) {
-			ksort( $statuses, SORT_STRING );
+			foreach ( $targets as &$statuses ) {
+				ksort( $statuses, SORT_STRING );
+			}
+			unset( $statuses );
 		}
-		unset( $statuses );
+		unset( $targets );
 
 		return $grouped;
 	}

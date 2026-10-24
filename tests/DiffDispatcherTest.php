@@ -24,6 +24,7 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-update-event-repository.
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-update-event-matcher.php';
 require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-suppression-type.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-suppression-repository.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-previous-core-marker.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-alert-sender.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-diff-dispatcher.php';
 require_once __DIR__ . '/doubles.php';

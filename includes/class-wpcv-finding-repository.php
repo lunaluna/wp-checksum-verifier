@@ -1025,8 +1025,11 @@ class WPCV_Finding_Repository {
 	 * status ごとに数える(v0.5後半 §Step14・§4.1「By target:」・§3.2「SQLの
 	 * GROUP BY で取る」).
 	 *
+	 * 項目4(v0.11.0): `diff_state` ごとにも分ける. メールで、新規(new・event)は「要確認」、
+	 * 継続は「継続中(報告済み)」と別の節に出すため.
+	 *
 	 * @param int $run_id 対象の run の id.
-	 * @return array<int, array{target_id: string, status: string, count: int}>
+	 * @return array<int, array{target_id: string, status: string, diff_state: string, count: int}>
 	 */
 	public function count_by_target_and_status( $run_id ) {
 		$table  = $this->wpdb->base_prefix . 'wpcv_findings';
@@ -1035,43 +1038,43 @@ class WPCV_Finding_Repository {
 			WPCV_Generation_Differ::DIFF_STATE_CONTINUING,
 			WPCV_Generation_Differ::DIFF_STATE_EVENT,
 		);
-		$sql    = "SELECT target_id, status, COUNT(*) AS count FROM {$table}
+		$sql    = "SELECT target_id, status, diff_state, COUNT(*) AS count FROM {$table}
 			WHERE run_id = %d AND diff_state IN ( %s, %s, %s )
-			GROUP BY target_id, status";
+			GROUP BY target_id, status, diff_state";
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only) built above; all dynamic values are bound via prepare() below.
 		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, array_merge( array( (int) $run_id ), $states ) ), ARRAY_A );
 		$rows = is_array( $rows ) ? $rows : array();
 
 		// テストダブル(`WPCV_Test_Fake_WPDB::get_results()`)は GROUP BY を解釈せず
-		// テーブル全件(`diff_state`列込みの生の行)を返す。本番の集計結果には
-		// `diff_state`列が無く`count`列がある(逆に生の行には`count`列が無い)ため、
-		// この2つを区別してから集計し直す(テストダブルが単純なSELECTを解釈するように
-		// なった後も〔コードレビュー指摘5〕、GROUP BYは解釈しないため、この形の
-		// メソッドだけはPHP側での集計し直しが残る).
+		// テーブル全件(生の行)を返す。本番の集計結果には`count`列があり、生の行には
+		// `count`列が無いため、これで区別してから集計し直す(テストダブルが単純なSELECTを
+		// 解釈するようになった後も〔コードレビュー指摘5〕、GROUP BYは解釈しないため、この形の
+		// メソッドだけはPHP側での集計し直しが残る). v0.11.0 から本番の結果にも`diff_state`列が
+		// あるので、以前の「`diff_state`列が無い」という条件では区別できない.
 		$counted = array();
 
 		foreach ( $rows as $row ) {
-			if ( array_key_exists( 'count', $row ) && ! array_key_exists( 'diff_state', $row ) ) {
-				$target_id = (string) $row['target_id'];
-				$status    = (string) $row['status'];
-				$count     = (int) $row['count'];
+			if ( array_key_exists( 'count', $row ) ) {
+				$count = (int) $row['count'];
 			} else {
 				if ( (int) ( $row['run_id'] ?? 0 ) !== (int) $run_id || ! in_array( $row['diff_state'] ?? null, $states, true ) ) {
 					continue;
 				}
 
-				$target_id = (string) $row['target_id'];
-				$status    = (string) $row['status'];
-				$count     = 1;
+				$count = 1;
 			}
 
-			$key = $target_id . "\0" . $status;
+			$target_id  = (string) $row['target_id'];
+			$status     = (string) $row['status'];
+			$diff_state = (string) ( $row['diff_state'] ?? '' );
+			$key        = $target_id . "\0" . $status . "\0" . $diff_state;
 
 			$counted[ $key ] = array(
-				'target_id' => $target_id,
-				'status'    => $status,
-				'count'     => ( $counted[ $key ]['count'] ?? 0 ) + $count,
+				'target_id'  => $target_id,
+				'status'     => $status,
+				'diff_state' => $diff_state,
+				'count'      => ( $counted[ $key ]['count'] ?? 0 ) + $count,
 			);
 		}
 

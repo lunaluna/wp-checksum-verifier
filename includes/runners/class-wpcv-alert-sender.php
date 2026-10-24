@@ -164,6 +164,7 @@ class WPCV_Alert_Sender {
 			array(
 				'site_name'                  => get_option( 'blogname' ),
 				'run'                        => $run,
+				'core_version'               => $this->gather_core_version( $target_runs, $run_id ),
 				'target_runs'                => $target_runs,
 				'counts'                     => $counts,
 				'top_items'                  => $candidates['top_items'],
@@ -383,10 +384,12 @@ class WPCV_Alert_Sender {
 				++$notify_count;
 
 				$top_items[] = array(
-					'severity'  => $row['severity'] ?? '',
-					'target_id' => $row['target_id'] ?? '',
-					'path'      => $row['path'] ?? '',
-					'status'    => $row['status'] ?? '',
+					'severity'     => $row['severity'] ?? '',
+					'target_id'    => $row['target_id'] ?? '',
+					'path'         => $row['path'] ?? '',
+					'status'       => $row['status'] ?? '',
+					// v0.11.0 項目3-3: 前の本体の配布物と同じ内容なら、その version(印. 無ければ null).
+					'same_as_core' => WPCV_Previous_Core_Marker::marked_version( $row['detail'] ?? null ),
 				);
 			}
 
@@ -402,6 +405,42 @@ class WPCV_Alert_Sender {
 			'notify_count' => $notify_count,
 			'notify_ids'   => $notify_ids,
 			'top_items'    => $top_items,
+		);
+	}
+
+	/**
+	 * 本文の本体の version の行(v0.11.0 項目4)と、開発版の注記(項目3-3)に使う version を集める.
+	 *
+	 * `to` は今回の run の `core` の target_run の version. `from` は `core` の基準の target_run
+	 * (今回より前の直近の success)の version. 差分処理と同じ関数で基準を選ぶ.
+	 * 今回の run に `core` が無い・version が無いときは、どちらも空文字にする.
+	 *
+	 * @param array<int, array> $target_runs 今回のrunのtarget_run行一覧.
+	 * @param int               $run_id      対象のrunのid.
+	 * @return array{from: string, to: string}
+	 */
+	private function gather_core_version( array $target_runs, $run_id ) {
+		$to = '';
+
+		foreach ( $target_runs as $target_run ) {
+			if ( WPCV_Target_Resolver::DIMENSION_CORE === ( $target_run['target_id'] ?? '' ) ) {
+				$to = (string) ( $target_run['version'] ?? '' );
+				break;
+			}
+		}
+
+		if ( '' === $to ) {
+			return array(
+				'from' => '',
+				'to'   => '',
+			);
+		}
+
+		$baseline = $this->target_run_repository->find_baseline_target_run( WPCV_Target_Resolver::DIMENSION_CORE, $run_id );
+
+		return array(
+			'from' => (string) ( $baseline['version'] ?? '' ),
+			'to'   => $to,
 		);
 	}
 
