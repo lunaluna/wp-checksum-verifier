@@ -306,6 +306,14 @@ class WPCV_Chunk_Dispatcher {
 	private $update_lock_detector;
 
 	/**
+	 * `core:_scan` の added に「前の version の配布物と同じ内容」の印を付ける(v0.11.0 項目3-1).
+	 * `null`なら印を付けない(既存呼び出し元との後方互換).
+	 *
+	 * @var WPCV_Previous_Core_Marker|null
+	 */
+	private $previous_core_marker;
+
+	/**
 	 * Stat 差分検知を行う本体 target の `error_code`(rev.3 §3.4).
 	 *
 	 * 「照合元の配布物がそもそも無い」ことを示すものに限る。`http_error`/
@@ -381,6 +389,8 @@ class WPCV_Chunk_Dispatcher {
 	 * @param WPCV_Manifest_Source|null       $github_source        GitHub Releases の照合ソース(v0.8 §Step6).
 	 *                                                                `null`なら対応付けのあるtargetは
 	 *                                                                unknown_sourceになる(後方互換).
+	 * @param WPCV_Previous_Core_Marker|null  $previous_core_marker `core:_scan` の印の判定(v0.11.0 項目3-1).
+	 *                                                                `null`なら印を付けない(後方互換).
 	 */
 	public function __construct(
 		WPCV_Run_Repository $run_repository,
@@ -398,7 +408,8 @@ class WPCV_Chunk_Dispatcher {
 		?WPCV_Update_Event_Matcher $update_event_matcher = null,
 		?WPCV_Update_Lock_Detector $update_lock_detector = null,
 		?WPCV_Manifest_Source $theme_source = null,
-		?WPCV_Manifest_Source $github_source = null
+		?WPCV_Manifest_Source $github_source = null,
+		?WPCV_Previous_Core_Marker $previous_core_marker = null
 	) {
 		$this->run_repository          = $run_repository;
 		$this->target_run_repository   = $target_run_repository;
@@ -424,6 +435,7 @@ class WPCV_Chunk_Dispatcher {
 		$this->update_lock_detector  = $update_lock_detector;
 		$this->theme_source          = $theme_source;
 		$this->github_source         = $github_source;
+		$this->previous_core_marker  = $previous_core_marker;
 	}
 
 	/**
@@ -2302,6 +2314,13 @@ class WPCV_Chunk_Dispatcher {
 				'budget'               => $this->default_budget(),
 			)
 		);
+
+		// v0.11.0 項目3-1: `core:_scan` の added に、保存する前に「前の version の配布物と同じ内容」の
+		// 印を付ける. 前の version のマニフェストが、まだキャッシュに残っているこの段階で判定する
+		// (`WPCV_Previous_Core_Marker` の docblock 参照). `muplugin:_scan` は対象外.
+		if ( null !== $this->previous_core_marker && WPCV_Finding_Key::ignores_version( (string) $target_run['target_id'] ) ) {
+			$chunk_result['findings'] = $this->previous_core_marker->mark( $run_id, $chunk_result['findings'], $version );
+		}
 
 		$this->chunk_result_repository->commit_chunk( $run_id, $target_run['id'], $target_run['target_id'], $chunk_result, $target_run['lease_owner'] );
 	}

@@ -167,7 +167,8 @@ class WPCV_Finding_Repository {
 					'suppressed_by'  => isset( $finding['suppressed_by'] ) ? $finding['suppressed_by'] : null,
 					'suppression_id' => isset( $finding['suppression_id'] ) ? $finding['suppression_id'] : null,
 					// v0.5 §Step6: stat_changed の前回値→今回値(JSON). Step1 で列を
-					// 追加したが保存処理が追従していなかった. 他の status では null.
+					// 追加したが保存処理が追従していなかった. v0.11.0 から、`core:_scan` の
+					// added の印(`WPCV_Previous_Core_Marker`)にも使う. それ以外は null.
 					'detail'         => isset( $finding['detail'] ) ? $finding['detail'] : null,
 					// v0.5後半 §Step10: 差分処理(Step12以降)が使う差分キー. 保存時に
 					// 確定させ、差分処理側では計算し直さず読むだけにする(計算式の
@@ -599,6 +600,49 @@ class WPCV_Finding_Repository {
 		}
 
 		return array_keys( $matched );
+	}
+
+	/**
+	 * `$keys` のうち、指定 target_run に実在する `finding_key` ごとに `detail` 列の値を返す
+	 * (v0.11.0 項目3. `WPCV_Previous_Core_Marker` が、継続になる finding に基準の印を引き継ぐ).
+	 *
+	 * `find_matching_keys()` の `$only_comparable = false` と同じく、キーが一致するかどうかだけを見る
+	 * (抑制・終了の状態は問わない. 印は「同じファイル・同じ中身」に付く情報で、抑制とは関係しない).
+	 *
+	 * @param int      $target_run_id 対象の target_run の id.
+	 * @param string[] $keys          照会する `finding_key` の一覧.
+	 * @return array<string, string|null> `finding_key` => `detail`(列が NULL なら null).
+	 *                                    見つからないキーは含まない.
+	 */
+	public function find_details_by_keys( $target_run_id, array $keys ) {
+		$keys = array_values( array_unique( array_map( 'strval', $keys ) ) );
+
+		if ( empty( $keys ) ) {
+			return array();
+		}
+
+		$table        = $this->wpdb->base_prefix . 'wpcv_findings';
+		$placeholders = implode( ', ', array_fill( 0, count( $keys ), '%s' ) );
+		$sql          = "SELECT finding_key, detail, target_run_id FROM {$table} WHERE target_run_id = %d AND finding_key IN ( {$placeholders} )";
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.PreparedSQL.NotPrepared -- $sql is a fixed literal (table name only, placeholder count matches $args) built above; all dynamic values are bound via prepare() below.
+		$rows = $this->wpdb->get_results( $this->wpdb->prepare( $sql, array_merge( array( (int) $target_run_id ), $keys ) ), ARRAY_A );
+		$rows = is_array( $rows ) ? $rows : array();
+
+		$wanted  = array_flip( $keys );
+		$details = array();
+
+		foreach ( $rows as $row ) {
+			// テストダブルは IN 句を解釈せず全行を返すため、PHP 側でも絞り直す
+			// (`find_matching_keys()` と同じ).
+			if ( (int) $row['target_run_id'] !== (int) $target_run_id || ! isset( $wanted[ (string) $row['finding_key'] ] ) ) {
+				continue;
+			}
+
+			$details[ (string) $row['finding_key'] ] = isset( $row['detail'] ) ? (string) $row['detail'] : null;
+		}
+
+		return $details;
 	}
 
 	/**

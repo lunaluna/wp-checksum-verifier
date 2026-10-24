@@ -543,7 +543,9 @@ class WPCV_Migrator {
 		// detail は rev.3 §3.5 で追加(stat差分検知用)。`stat_changed` status は
 		// expected_hash/actual_hash が空になるため、「何が変わったのか」を
 		// JSON文字列(size/ctime/mtime の old/new と timestomp フラグ)で保持する.
-		// 他の status では NULL のまま(用途は stat_changed に限定. §3.5参照).
+		// 他の status では NULL のまま(§3.5参照). 例外として v0.11.0 から、`core:_scan` の added の
+		// うち前の version の配布物と同じ内容のものに `{"same_as_core":"<前の version>"}` を入れる
+		// (`WPCV_Previous_Core_Marker` 参照. 表示用).
 		// finding_key以下は v0.5後半 §Step10で追加(§1.1・§1.4参照). finding_keyは
 		// `WPCV_Finding_Key::compute()` で保存時に計算する差分キー(v4より前の行は
 		// NULLのまま. 移行処理での一括計算は行わない). diff_state/notified_at/

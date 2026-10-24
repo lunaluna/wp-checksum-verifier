@@ -642,7 +642,9 @@ class WPCV_Plugin {
 			self::update_event_matcher(),
 			self::update_lock_detector(),
 			new WPCV_Source_Wporg_Theme( self::manifest_cache_repository(), null, null, $core_source ),
-			new WPCV_Source_GitHub( self::manifest_cache_repository(), new WPCV_GitHub_Client() )
+			new WPCV_Source_GitHub( self::manifest_cache_repository(), new WPCV_GitHub_Client() ),
+			// v0.11.0 項目3-1: 前の version のマニフェストは、同じキャッシュ付きのコアのソースから引く.
+			new WPCV_Previous_Core_Marker( self::finding_repository(), self::target_run_repository(), $core_source )
 		);
 	}
 
