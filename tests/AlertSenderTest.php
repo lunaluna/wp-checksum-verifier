@@ -18,6 +18,7 @@ require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-finding-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
+require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-previous-core-marker.php';
 require_once dirname( __DIR__ ) . '/includes/runners/class-wpcv-alert-sender.php';
 require_once __DIR__ . '/doubles.php';
 
@@ -1214,5 +1215,60 @@ class AlertSenderTest extends TestCase {
 		$this->assertStringContainsString( 'Cannot compare with the source', $mail['message'] );
 		$this->assertStringContainsString( '  plugin:foo', $mail['message'] );
 		$this->assertStringNotContainsString( '(new)', $mail['message'] );
+	}
+
+	/**
+	 * 本体の version(`core` の基準 → 今回)と、finding の `detail` の印が本文に届くことを確認する
+	 * (v0.11.0 項目3-3・項目4).
+	 *
+	 * @return void
+	 */
+	public function test_body_shows_core_version_change_mark_and_development_note() {
+		$wpdb                                    = new WPCV_Test_Fake_WPDB();
+		$wpdb->rows['wp_wpcv_runs'][1]           = $this->make_run_row( 1, array( 'diff_status' => 'done' ) );
+		$wpdb->rows['wp_wpcv_runs'][2]           = $this->make_run_row( 2, array( 'findings_new' => 1 ) );
+		$wpdb->rows['wp_wpcv_target_runs'][10]   = $this->make_target_run_row(
+			10,
+			array(
+				'run_id'    => 1,
+				'target_id' => 'core',
+				'status'    => 'success',
+				'version'   => '7.1.3',
+			)
+		);
+		$wpdb->rows['wp_wpcv_target_runs'][20]   = $this->make_target_run_row(
+			20,
+			array(
+				'run_id'    => 2,
+				'target_id' => 'core',
+				'status'    => 'success',
+				'version'   => '7.2-beta1',
+			)
+		);
+		$wpdb->rows['wp_wpcv_findings'][100]     = $this->make_finding_row(
+			100,
+			array(
+				'run_id'        => 2,
+				'target_run_id' => 21,
+				'target_id'     => 'core:_scan',
+				'path'          => 'wp-includes/css/dist/block-editor/default-editor-styles.css',
+				'status'        => 'added',
+				'severity'      => 'high',
+				'diff_state'    => 'new',
+				'finding_key'   => str_repeat( 'k', 64 ),
+				'detail'        => '{"same_as_core":"7.1.3"}',
+			)
+		);
+		$env = $this->make_sender_environment( $wpdb );
+
+		WPCV_Settings::update_alert_to( 'ops@example.com' );
+
+		$this->assertSame( array( 'action' => 'sent' ), $env['sender']->send_for_run( 2, self::OWNER ) );
+
+		$body = $GLOBALS['_wpcv_test_wp_mail_calls'][0]['message'];
+
+		$this->assertStringContainsString( "\nWordPress: 7.1.3 -> 7.2-beta1 (development version)\n", $body );
+		$this->assertStringContainsString( 'default-editor-styles.css  added (same as the WordPress 7.1.3 package)', $body );
+		$this->assertStringContainsString( 'WordPress 7.2-beta1 is a development version.', $body );
 	}
 }
