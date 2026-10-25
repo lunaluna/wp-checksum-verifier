@@ -154,7 +154,7 @@ class WPCV_Error_Code {
 			self::TIMEOUT                    => __( 'Time budget exhausted (will resume)', 'wp-checksum-verifier' ),
 			self::TARGET_MISSING             => __( 'Target no longer found locally', 'wp-checksum-verifier' ),
 			self::LEASE_EXPIRED              => __( 'Worker lease expired too many times', 'wp-checksum-verifier' ),
-			self::EXCLUDED                   => __( 'Excluded by an exclude_target suppression rule', 'wp-checksum-verifier' ),
+			self::EXCLUDED                   => __( 'Excluded by an exclude_target ignore rule', 'wp-checksum-verifier' ),
 			self::CHECKSUM_COVERED           => __( 'Skipped: already verified by checksums', 'wp-checksum-verifier' ),
 			self::BASELINE_REBUILT           => __( 'Stat baseline rebuilt after a version change (changes in this run were not compared)', 'wp-checksum-verifier' ),
 			self::VERSION_CHANGED_UNRECORDED => __( 'Version changed without a record of a WordPress update', 'wp-checksum-verifier' ),

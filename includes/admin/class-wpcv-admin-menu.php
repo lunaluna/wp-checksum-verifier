@@ -187,8 +187,8 @@ class WPCV_Admin_Menu {
 	private static function add_suppressions_submenu( $capability ) {
 		return add_submenu_page(
 			'wpcv-settings',
-			__( 'Suppressions', 'wp-checksum-verifier' ),
-			__( 'Suppressions', 'wp-checksum-verifier' ),
+			__( 'Ignore rules', 'wp-checksum-verifier' ),
+			__( 'Ignore rules', 'wp-checksum-verifier' ),
 			$capability,
 			'wpcv-suppressions',
 			array( 'WPCV_Page_Suppressions', 'render' )
