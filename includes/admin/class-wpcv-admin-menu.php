@@ -134,6 +134,41 @@ class WPCV_Admin_Menu {
 		$hook_suffixes[] = self::add_suppressions_submenu( WPCV_Capability::required( WPCV_Capability::SCREEN_SUPPRESSIONS ) );
 
 		WPCV_Admin_Notices::register( $hook_suffixes );
+		self::register_assets( $hook_suffixes );
+	}
+
+	/**
+	 * 管理画面用の CSS を、このプラグインの画面でだけ読み込むように登録する(v0.11.0 項目5).
+	 *
+	 * `admin_enqueue_scripts` の引数は画面の hook_suffix で、`add_menu_page()` /
+	 * `add_submenu_page()` の戻り値と同じ値になる. 他のプラグインの画面には読み込まない.
+	 * バージョンには CSS ファイルの更新時刻を使う(プラグインの版を表す定数が無く、
+	 * 更新時にブラウザのキャッシュを確実に切り替えるため).
+	 *
+	 * @param array $hook_suffixes 各画面の hook_suffix(`false` が混ざっていてもよい).
+	 * @return void
+	 */
+	private static function register_assets( array $hook_suffixes ) {
+		$hook_suffixes = array_values( array_filter( $hook_suffixes, 'is_string' ) );
+
+		add_action(
+			'admin_enqueue_scripts',
+			static function ( $hook_suffix ) use ( $hook_suffixes ) {
+				if ( ! in_array( $hook_suffix, $hook_suffixes, true ) ) {
+					return;
+				}
+
+				$plugin_dir = dirname( __DIR__, 2 );
+				$css_path   = $plugin_dir . '/assets/css/admin.css';
+
+				wp_enqueue_style(
+					'wpcv-admin',
+					plugins_url( 'assets/css/admin.css', $plugin_dir . '/wp-checksum-verifier.php' ),
+					array(),
+					file_exists( $css_path ) ? (string) filemtime( $css_path ) : null
+				);
+			}
+		);
 	}
 
 	/**

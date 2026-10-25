@@ -254,7 +254,7 @@ class WPCV_Page_Findings {
 		<?php if ( '' !== $active_on_note ) : ?>
 			<p class="description"><?php echo esc_html( $active_on_note ); ?></p>
 		<?php endif; ?>
-		<table class="wp-list-table widefat fixed striped">
+		<table class="wp-list-table widefat fixed striped wpcv-findings-table">
 			<thead>
 				<tr>
 					<th><?php echo esc_html__( 'Target', 'wp-checksum-verifier' ); ?></th>
@@ -269,7 +269,7 @@ class WPCV_Page_Findings {
 					<th><?php echo esc_html__( 'Diff', 'wp-checksum-verifier' ); ?></th>
 					<th><?php echo esc_html__( 'Ignored', 'wp-checksum-verifier' ); ?></th>
 					<?php if ( $can_manage ) : ?>
-						<th><?php echo esc_html__( 'Actions', 'wp-checksum-verifier' ); ?></th>
+						<th class="wpcv-col-actions"><?php echo esc_html__( 'Actions', 'wp-checksum-verifier' ); ?></th>
 					<?php endif; ?>
 				</tr>
 			</thead>
@@ -537,38 +537,58 @@ class WPCV_Page_Findings {
 	}
 
 	/**
-	 * 1件のfinding行の操作フォーム(パス除外・hash承認・target除外)を描画する.
+	 * 1件のfinding行の操作フォーム(除外ルールの作成)を描画する.
+	 *
+	 * 項目5(v0.11.0): 入力欄とボタン3つを、`<details>` の「除外する…」1つにまとめた
+	 * (JavaScript は使わない). 開くと、3つの選択肢(ラジオボタン)・理由・送信ボタンが出る.
+	 * 送信の受け口(`maybe_handle_action()`)は、これまでボタンの `name`/`value` で受けていた
+	 * `wpcv_finding_action` を、ラジオボタンの値で受けるだけで同じ名前のまま読める.
+	 * ラジオボタンは既定で選ばない(通知を止める操作なので、利用者に選ばせる).
+	 * 未選択で送ると `required` で止まり、それをすり抜けても `build_suppression_data()` が
+	 * 「Unknown action.」で止める.
 	 *
 	 * @param array $finding `WPCV_Finding_Repository::query()`の1行.
 	 * @return void
 	 */
 	private static function render_finding_actions( array $finding ) {
+		$can_approve_hash = in_array( $finding['status'], self::HASH_APPROVABLE_STATUSES, true ) && ! empty( $finding['actual_hash'] );
 		?>
-		<form method="post">
-			<?php wp_nonce_field( self::NONCE_ACTION, self::NONCE_NAME ); ?>
-			<input type="hidden" name="wpcv_finding_dimension" value="<?php echo esc_attr( $finding['dimension'] ); ?>" />
-			<input type="hidden" name="wpcv_finding_slug" value="<?php echo esc_attr( $finding['slug'] ); ?>" />
-			<input type="hidden" name="wpcv_finding_path" value="<?php echo esc_attr( $finding['path'] ); ?>" />
-			<input type="hidden" name="wpcv_finding_hash_algorithm" value="<?php echo esc_attr( (string) $finding['hash_algorithm'] ); ?>" />
-			<input type="hidden" name="wpcv_finding_actual_hash" value="<?php echo esc_attr( (string) $finding['actual_hash'] ); ?>" />
-			<input type="hidden" name="wpcv_finding_version" value="<?php echo esc_attr( (string) $finding['version'] ); ?>" />
-			<p>
-				<input type="text" name="wpcv_finding_reason" placeholder="<?php echo esc_attr__( 'Reason (required)', 'wp-checksum-verifier' ); ?>" />
-			</p>
-			<p>
-				<button type="submit" class="button" name="wpcv_finding_action" value="<?php echo esc_attr( WPCV_Suppression_Type::EXCLUDE_PATH ); ?>">
-					<?php echo esc_html__( 'Exclude this path', 'wp-checksum-verifier' ); ?>
-				</button>
-				<?php if ( in_array( $finding['status'], self::HASH_APPROVABLE_STATUSES, true ) && ! empty( $finding['actual_hash'] ) ) : ?>
-					<button type="submit" class="button" name="wpcv_finding_action" value="<?php echo esc_attr( WPCV_Suppression_Type::ALLOWLIST_HASH ); ?>">
-						<?php echo esc_html__( 'Approve this hash', 'wp-checksum-verifier' ); ?>
-					</button>
+		<details class="wpcv-exclude">
+			<summary><?php echo esc_html__( 'Exclude…', 'wp-checksum-verifier' ); ?></summary>
+			<form method="post" class="wpcv-exclude__form">
+				<?php wp_nonce_field( self::NONCE_ACTION, self::NONCE_NAME ); ?>
+				<input type="hidden" name="wpcv_finding_dimension" value="<?php echo esc_attr( $finding['dimension'] ); ?>" />
+				<input type="hidden" name="wpcv_finding_slug" value="<?php echo esc_attr( $finding['slug'] ); ?>" />
+				<input type="hidden" name="wpcv_finding_path" value="<?php echo esc_attr( $finding['path'] ); ?>" />
+				<input type="hidden" name="wpcv_finding_hash_algorithm" value="<?php echo esc_attr( (string) $finding['hash_algorithm'] ); ?>" />
+				<input type="hidden" name="wpcv_finding_actual_hash" value="<?php echo esc_attr( (string) $finding['actual_hash'] ); ?>" />
+				<input type="hidden" name="wpcv_finding_version" value="<?php echo esc_attr( (string) $finding['version'] ); ?>" />
+
+				<?php // 選択肢: ラジオボタン1つにつき、見出しと1行の説明. ?>
+				<label class="wpcv-exclude__option">
+					<input type="radio" name="wpcv_finding_action" value="<?php echo esc_attr( WPCV_Suppression_Type::EXCLUDE_PATH ); ?>" required />
+					<strong><?php echo esc_html__( 'Exclude this file only', 'wp-checksum-verifier' ); ?></strong>
+					<span class="description"><?php echo esc_html__( 'This path will not be reported from now on.', 'wp-checksum-verifier' ); ?></span>
+				</label>
+				<?php if ( $can_approve_hash ) : ?>
+					<label class="wpcv-exclude__option">
+						<input type="radio" name="wpcv_finding_action" value="<?php echo esc_attr( WPCV_Suppression_Type::ALLOWLIST_HASH ); ?>" required />
+						<strong><?php echo esc_html__( 'Approve the current content only', 'wp-checksum-verifier' ); ?></strong>
+						<span class="description"><?php echo esc_html__( 'It will be reported again if the content changes.', 'wp-checksum-verifier' ); ?></span>
+					</label>
 				<?php endif; ?>
-				<button type="submit" class="button" name="wpcv_finding_action" value="<?php echo esc_attr( WPCV_Suppression_Type::EXCLUDE_TARGET ); ?>">
-					<?php echo esc_html__( 'Exclude entire target', 'wp-checksum-verifier' ); ?>
-				</button>
-			</p>
-		</form>
+				<label class="wpcv-exclude__option">
+					<input type="radio" name="wpcv_finding_action" value="<?php echo esc_attr( WPCV_Suppression_Type::EXCLUDE_TARGET ); ?>" required />
+					<strong><?php echo esc_html__( 'Exclude this entire target', 'wp-checksum-verifier' ); ?></strong>
+					<span class="description"><?php echo esc_html__( 'None of the files under it will be reported.', 'wp-checksum-verifier' ); ?></span>
+				</label>
+
+				<?php // 理由(必須). placeholder に例を入れる. ?>
+				<input type="text" class="wpcv-exclude__reason" name="wpcv_finding_reason" required placeholder="<?php echo esc_attr__( 'Reason (required), e.g. a file added by our own deploy script', 'wp-checksum-verifier' ); ?>" />
+
+				<button type="submit" class="button"><?php echo esc_html__( 'Create ignore rule', 'wp-checksum-verifier' ); ?></button>
+			</form>
+		</details>
 		<?php
 	}
 

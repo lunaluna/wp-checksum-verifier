@@ -1,0 +1,41 @@
+/*
+ * WP Checksum Verifier 管理画面用のスタイル(v0.11.0 項目5).
+ *
+ * SCSS のビルドの仕組みがこのリポジトリに無いため、CSS を直接書いている.
+ * プラグインの画面でだけ読み込む(WPCV_Admin_Menu::register_assets()).
+ */
+
+/* 検出結果の表の「操作」列: fixed の表では均等割りになるため、幅を指定する. */
+.wpcv-findings-table th.wpcv-col-actions {
+	width: 22em;
+}
+
+/* 「除外する…」の開閉(details). 閉じているときは1行だけにする. */
+.wpcv-exclude summary {
+	cursor: pointer;
+	color: #2271b1;
+}
+
+/* 開いたときのフォーム全体. 選択肢・理由・ボタンの間に余白を取る. */
+.wpcv-exclude__form {
+	margin-top: 8px;
+}
+
+/* 選択肢1つ分(ラジオボタン+見出し+説明). */
+.wpcv-exclude__option {
+	display: block;
+	margin-bottom: 8px;
+}
+
+/* 選択肢の説明は見出しの下の行に出す. */
+.wpcv-exclude__option .description {
+	display: block;
+	margin-left: 24px;
+}
+
+/* 理由の入力欄: 列の幅いっぱいに広げる(はみ出さないよう box-sizing を指定). */
+.wpcv-exclude__reason {
+	width: 100%;
+	box-sizing: border-box;
+	margin-bottom: 8px;
+}
