@@ -6,7 +6,7 @@ msgstr ""
 "Project-Id-Version: WP Checksum Verifier 0.10.0\n"
 "Report-Msgid-Bugs-To: https://wordpress.org/support/plugin/wp-checksum-"
 "verifier\n"
-"POT-Creation-Date: 2026-10-06T00:08:48+00:00\n"
+"POT-Creation-Date: 2026-10-25T23:34:27+00:00\n"
 "PO-Revision-Date: 2026-10-03 00:00+0000\n"
 "Last-Translator: lunaluna_dev\n"
 "Language-Team: Japanese\n"
@@ -55,13 +55,13 @@ msgstr "設定"
 msgid "Checksum Verifier"
 msgstr "Checksum Verifier"
 
-#: includes/admin/class-wpcv-admin-menu.php:154
-#: includes/admin/class-wpcv-admin-menu.php:155
+#: includes/admin/class-wpcv-admin-menu.php:189
+#: includes/admin/class-wpcv-admin-menu.php:190
 msgid "Run History"
 msgstr "実行履歴"
 
-#: includes/admin/class-wpcv-admin-menu.php:172
-#: includes/admin/class-wpcv-admin-menu.php:173
+#: includes/admin/class-wpcv-admin-menu.php:207
+#: includes/admin/class-wpcv-admin-menu.php:208
 #: includes/admin/class-wpcv-page-findings.php:101
 #: includes/admin/class-wpcv-page-run-history.php:91
 #: includes/admin/class-wpcv-page-run-history.php:249
@@ -70,12 +70,12 @@ msgstr "実行履歴"
 msgid "Findings"
 msgstr "検出結果"
 
-#: includes/admin/class-wpcv-admin-menu.php:190
-#: includes/admin/class-wpcv-admin-menu.php:191
+#: includes/admin/class-wpcv-admin-menu.php:225
+#: includes/admin/class-wpcv-admin-menu.php:226
 #: includes/admin/class-wpcv-page-settings.php:670
 #: includes/admin/class-wpcv-page-suppressions.php:64
-msgid "Suppressions"
-msgstr "抑制"
+msgid "Ignore rules"
+msgstr "除外ルール"
 
 #: includes/admin/class-wpcv-admin-notices.php:107
 msgid ""
@@ -127,9 +127,8 @@ msgstr "ネットワーク管理のプラグイン一覧を開く"
 
 #: includes/admin/class-wpcv-page-findings.php:107
 msgid ""
-"The suppression rule has been created. It will apply starting with the next "
-"run."
-msgstr "抑制ルールを作成しました。次の実行から適用されます。"
+"The ignore rule has been created. It will apply starting with the next run."
+msgstr "除外ルールを作成しました。次の実行から適用されます。"
 
 #: includes/admin/class-wpcv-page-findings.php:116
 #: includes/admin/class-wpcv-page-run-history.php:80
@@ -148,30 +147,30 @@ msgid "All"
 msgstr "すべて"
 
 #: includes/admin/class-wpcv-page-findings.php:151
-#: includes/admin/class-wpcv-page-findings.php:259
+#: includes/admin/class-wpcv-page-findings.php:265
 #: includes/admin/class-wpcv-page-run-history.php:86
 #: includes/admin/class-wpcv-page-run-history.php:183
 #: includes/admin/class-wpcv-page-run-history.php:268
 #: includes/admin/class-wpcv-page-run-history.php:414
 #: includes/admin/class-wpcv-page-settings.php:1241
-#: includes/admin/class-wpcv-page-suppressions.php:89
+#: includes/admin/class-wpcv-page-suppressions.php:92
 msgid "Status"
 msgstr "ステータス"
 
 #: includes/admin/class-wpcv-page-findings.php:162
-#: includes/admin/class-wpcv-page-findings.php:261
+#: includes/admin/class-wpcv-page-findings.php:267
 msgid "Severity"
 msgstr "重大度"
 
 #: includes/admin/class-wpcv-page-findings.php:173
-#: includes/admin/class-wpcv-page-findings.php:263
+#: includes/admin/class-wpcv-page-findings.php:269
 #: includes/admin/class-wpcv-page-run-history.php:203
 msgid "Diff"
 msgstr "差分"
 
 #: includes/admin/class-wpcv-page-findings.php:185
-msgid "Show suppressed"
-msgstr "抑制済みを表示"
+msgid "Show ignored"
+msgstr "除外済みも表示"
 
 #: includes/admin/class-wpcv-page-findings.php:189
 msgid "Show closed"
@@ -185,43 +184,55 @@ msgstr "絞り込み"
 msgid "No findings match the current filters."
 msgstr "条件に一致する検出結果はありません。"
 
-#: includes/admin/class-wpcv-page-findings.php:254
+#: includes/admin/class-wpcv-page-findings.php:260
 #: includes/admin/class-wpcv-page-run-history.php:266
 #: includes/admin/class-wpcv-page-run-history.php:347
 #: includes/admin/class-wpcv-page-run-history.php:412
-#: includes/admin/class-wpcv-page-suppressions.php:85
+#: includes/admin/class-wpcv-page-suppressions.php:88
 msgid "Target"
 msgstr "照合対象"
 
-#: includes/admin/class-wpcv-page-findings.php:256
+#: includes/admin/class-wpcv-page-findings.php:262
 msgid "Active on"
 msgstr "有効なサイト"
 
-#: includes/admin/class-wpcv-page-findings.php:258
+#: includes/admin/class-wpcv-page-findings.php:264
 #: includes/admin/class-wpcv-page-run-history.php:413
 msgid "Path"
 msgstr "パス"
 
-#: includes/admin/class-wpcv-page-findings.php:260
+#: includes/admin/class-wpcv-page-findings.php:266
 msgid "Details"
 msgstr "詳細"
 
-#: includes/admin/class-wpcv-page-findings.php:262
+#: includes/admin/class-wpcv-page-findings.php:268
 #: includes/admin/class-wpcv-page-run-history.php:267
 #: includes/admin/class-wpcv-page-run-history.php:348
 msgid "Version"
 msgstr "バージョン"
 
-#: includes/admin/class-wpcv-page-findings.php:264
-msgid "Suppressed"
-msgstr "抑制済み"
+#: includes/admin/class-wpcv-page-findings.php:270
+msgid "Ignored"
+msgstr "除外済み"
 
-#: includes/admin/class-wpcv-page-findings.php:266
-#: includes/admin/class-wpcv-page-suppressions.php:91
+#: includes/admin/class-wpcv-page-findings.php:272
+#: includes/admin/class-wpcv-page-suppressions.php:94
 msgid "Actions"
 msgstr "操作"
 
-#: includes/admin/class-wpcv-page-findings.php:308
+#. translators: %s: WordPress version of the run (a development version).
+#: includes/admin/class-wpcv-page-findings.php:320
+#, php-format
+msgid ""
+"WordPress %s is a development version. Updating to a development version can "
+"leave removed files behind. Unknown files marked \"Same as the WordPress ... "
+"package\" in the Details column are likely such leftovers."
+msgstr ""
+"WordPress %s は開発版です。開発版に更新すると、削除されたはずのファイルが残る"
+"ことがあります。「詳細」列に「WordPress ... の配布物と同じ内容」と表示された"
+"不明なファイルは、そうした消し残しの可能性が高いです。"
+
+#: includes/admin/class-wpcv-page-findings.php:359
 msgid ""
 "Active on shows where each plugin or theme is active now, not when the run "
 "took place."
@@ -229,85 +240,111 @@ msgstr ""
 "「有効なサイト」列は、各プラグイン・テーマを今どこで有効にしているかを示しま"
 "す(run を実行した時点の状態ではありません)。"
 
-#: includes/admin/class-wpcv-page-findings.php:327
+#: includes/admin/class-wpcv-page-findings.php:378
 msgid "Network-wide (all sites)"
 msgstr "ネットワーク全体(すべてのサイト)"
 
-#: includes/admin/class-wpcv-page-findings.php:334
+#: includes/admin/class-wpcv-page-findings.php:385
 msgid "Network-enabled, but not active on any site"
 msgstr "ネットワークで有効化済みですが、どのサイトでも使われていません"
 
-#: includes/admin/class-wpcv-page-findings.php:335
+#: includes/admin/class-wpcv-page-findings.php:386
 msgid "Not active on any site"
 msgstr "どのサイトでも有効ではありません"
 
 #. translators: %d: number of sites in the network.
-#: includes/admin/class-wpcv-page-findings.php:340
+#: includes/admin/class-wpcv-page-findings.php:391
 #, php-format
 msgid "Not shown (the network has %d sites)"
 msgstr "表示していません(ネットワークのサイト数が %d 件あります)"
 
 #. translators: %s: site name. The theme is the parent theme of the site's active child theme.
-#: includes/admin/class-wpcv-page-findings.php:364
+#: includes/admin/class-wpcv-page-findings.php:415
 #, php-format
 msgid "%s (parent theme)"
 msgstr "%s(親テーマ)"
 
 #. translators: %d: number of sites not listed.
-#: includes/admin/class-wpcv-page-findings.php:377
+#: includes/admin/class-wpcv-page-findings.php:428
 #, php-format
 msgid "and %d more"
 msgstr "ほか %d 件"
 
+#. translators: %s: previous WordPress version.
+#: includes/admin/class-wpcv-page-findings.php:460
+#, php-format
+msgid "Same as the WordPress %s package"
+msgstr "WordPress %s の配布物と同じ内容"
+
 #. translators: 1: number of changed files, 2: number of files compared, 3: sample paths.
-#: includes/admin/class-wpcv-page-findings.php:410
+#: includes/admin/class-wpcv-page-findings.php:474
 #, php-format
 msgid "%1$d of %2$d files changed (rolled up). Examples: %3$s"
 msgstr "%2$d 件中 %1$d 件のファイルが変更されました(まとめて表示)。例: %3$s"
 
-#: includes/admin/class-wpcv-page-findings.php:433
+#: includes/admin/class-wpcv-page-findings.php:497
 msgid "possible timestamp forgery (size changed but mtime did not)"
 msgstr ""
 "タイムスタンプの偽装の可能性(サイズは変わったが mtime は変わっていません)"
 
 #. translators: 1: diff state (new/continuing/event), 2: notified_at timestamp.
-#: includes/admin/class-wpcv-page-findings.php:469
+#: includes/admin/class-wpcv-page-findings.php:533
 #, php-format
 msgid "%1$s (emailed %2$s)"
 msgstr "%1$s(メール送信済み: %2$s)"
 
-#: includes/admin/class-wpcv-page-findings.php:492
-msgid "Reason (required)"
-msgstr "理由(必須)"
+#: includes/admin/class-wpcv-page-findings.php:557
+msgid "Exclude…"
+msgstr "除外する…"
 
-#: includes/admin/class-wpcv-page-findings.php:496
-msgid "Exclude this path"
-msgstr "このパスを除外"
+#: includes/admin/class-wpcv-page-findings.php:570
+msgid "Exclude this file only"
+msgstr "このファイルだけ除外する"
 
-#: includes/admin/class-wpcv-page-findings.php:500
-msgid "Approve this hash"
-msgstr "このハッシュを承認"
+#: includes/admin/class-wpcv-page-findings.php:571
+msgid "This path will not be reported from now on."
+msgstr "今後、このパスは通知しません。"
 
-#: includes/admin/class-wpcv-page-findings.php:504
-msgid "Exclude entire target"
-msgstr "照合対象全体を除外"
+#: includes/admin/class-wpcv-page-findings.php:576
+msgid "Approve the current content only"
+msgstr "今の内容だけ承認する"
+
+#: includes/admin/class-wpcv-page-findings.php:577
+msgid "It will be reported again if the content changes."
+msgstr "中身が変わったら、また通知します。"
+
+#: includes/admin/class-wpcv-page-findings.php:582
+msgid "Exclude this entire target"
+msgstr "この照合対象を丸ごと除外する"
+
+#: includes/admin/class-wpcv-page-findings.php:583
+msgid "None of the files under it will be reported."
+msgstr "配下のすべてのファイルを通知しません。"
+
+#: includes/admin/class-wpcv-page-findings.php:587
+msgid "Reason (required), e.g. a file added by our own deploy script"
+msgstr "理由(必須)。例: 自社のデプロイスクリプトが置いたファイル"
+
+#: includes/admin/class-wpcv-page-findings.php:589
+msgid "Create ignore rule"
+msgstr "除外ルールを作る"
 
 #. translators: %d: suppression rule id.
-#: includes/admin/class-wpcv-page-findings.php:521
+#: includes/admin/class-wpcv-page-findings.php:605
 #, php-format
 msgid "Rule #%d"
 msgstr "ルール #%d"
 
-#: includes/admin/class-wpcv-page-findings.php:611
+#: includes/admin/class-wpcv-page-findings.php:695
 msgid "This finding has no hash to approve."
 msgstr "この検出結果には承認できるハッシュがありません。"
 
-#: includes/admin/class-wpcv-page-findings.php:630
+#: includes/admin/class-wpcv-page-findings.php:714
 msgid "Unknown action."
 msgstr "不明な操作です。"
 
-#: includes/admin/class-wpcv-page-findings.php:658
-#: includes/admin/class-wpcv-page-suppressions.php:274
+#: includes/admin/class-wpcv-page-findings.php:742
+#: includes/admin/class-wpcv-page-suppressions.php:303
 msgid "A reason is required."
 msgstr "理由は必須です。"
 
@@ -419,7 +456,7 @@ msgstr "この実行では照合対象が記録されていません。"
 
 #: includes/admin/class-wpcv-page-run-history.php:269
 #: includes/admin/class-wpcv-page-run-history.php:416
-#: includes/admin/class-wpcv-page-suppressions.php:86
+#: includes/admin/class-wpcv-page-suppressions.php:89
 msgid "Reason"
 msgstr "理由"
 
@@ -898,15 +935,15 @@ msgstr "失敗"
 msgid "Interrupted"
 msgstr "中断"
 
-#. translators: 1: state (e.g. Completed), 2: start time, 3: end time or a dash, 4: runs deleted, 5: per-target results deleted, 6: findings deleted, 7: suppressions deleted.
+#. translators: 1: state (e.g. Completed), 2: start time, 3: end time or a dash, 4: runs deleted, 5: per-target results deleted, 6: findings deleted, 7: ignore rules deleted.
 #: includes/admin/class-wpcv-page-settings.php:641
 #, php-format
 msgid ""
 "%1$s — started: %2$s, finished: %3$s — deleted: %4$d runs, %5$d per-target "
-"results, %6$d findings, %7$d suppressions"
+"results, %6$d findings, %7$d ignore rules"
 msgstr ""
 "%1$s — 開始: %2$s、終了: %3$s — 削除: 実行履歴 %4$d 件、対象ごとの結果 %5$d "
-"件、検出結果 %6$d 件、抑制 %7$d 件"
+"件、検出結果 %6$d 件、除外ルール %7$d 件"
 
 #: includes/admin/class-wpcv-page-settings.php:668
 msgid "Per-target results"
@@ -1122,58 +1159,68 @@ msgstr ""
 "分: %7$s, アラート: %8$s"
 
 #: includes/admin/class-wpcv-page-suppressions.php:70
-msgid "The suppression rule has been revoked."
-msgstr "抑制ルールを取り消しました。"
+msgid "The ignore rule has been revoked."
+msgstr "除外ルールを取り消しました。"
 
-#: includes/admin/class-wpcv-page-suppressions.php:79
-msgid "No suppression rules have been created yet."
-msgstr "まだ抑制ルールが作成されていません。"
+#: includes/admin/class-wpcv-page-suppressions.php:82
+msgid "No ignore rules have been created yet."
+msgstr "まだ除外ルールが作成されていません。"
 
-#: includes/admin/class-wpcv-page-suppressions.php:84
+#: includes/admin/class-wpcv-page-suppressions.php:87
 msgid "Type"
 msgstr "種類"
 
-#: includes/admin/class-wpcv-page-suppressions.php:87
+#: includes/admin/class-wpcv-page-suppressions.php:90
 msgid "Created by"
 msgstr "作成者"
 
-#: includes/admin/class-wpcv-page-suppressions.php:88
+#: includes/admin/class-wpcv-page-suppressions.php:91
 msgid "Created at"
 msgstr "作成日時"
 
-#: includes/admin/class-wpcv-page-suppressions.php:168
+#: includes/admin/class-wpcv-page-suppressions.php:136
+msgid "Findings screen"
+msgstr "検出結果の画面"
+
+#. translators: %s: link to the Findings screen.
+#: includes/admin/class-wpcv-page-suppressions.php:142
+#, php-format
+msgid "Ignore rules are created from the actions on each row of the %s."
+msgstr "除外ルールは、%s の各行の操作から作れます。"
+
+#: includes/admin/class-wpcv-page-suppressions.php:197
 msgid "Active"
 msgstr "有効"
 
 #. translators: 1: revoked timestamp, 2: revoke reason.
-#: includes/admin/class-wpcv-page-suppressions.php:173
+#: includes/admin/class-wpcv-page-suppressions.php:202
 #, php-format
 msgid "Revoked at %1$s (%2$s)"
 msgstr "%1$s に取り消し(%2$s)"
 
-#: includes/admin/class-wpcv-page-suppressions.php:193
+#: includes/admin/class-wpcv-page-suppressions.php:222
 msgid "version changed"
 msgstr "バージョンの変更"
 
 #. translators: %d: user id.
-#: includes/admin/class-wpcv-page-suppressions.php:219
+#: includes/admin/class-wpcv-page-suppressions.php:248
 #, php-format
 msgid "User #%d"
 msgstr "ユーザー #%d"
 
-#: includes/admin/class-wpcv-page-suppressions.php:242
+#: includes/admin/class-wpcv-page-suppressions.php:271
 msgid "Revoke reason (required, max 24 chars)"
 msgstr "取り消しの理由(必須、24文字まで)"
 
-#: includes/admin/class-wpcv-page-suppressions.php:245
+#: includes/admin/class-wpcv-page-suppressions.php:274
 msgid "Revoke"
 msgstr "取り消す"
 
-#: includes/admin/class-wpcv-page-suppressions.php:280
-msgid "Invalid suppression rule id."
-msgstr "抑制ルールの ID が不正です。"
+#: includes/admin/class-wpcv-page-suppressions.php:309
+msgid "Invalid ignore rule id."
+msgstr "除外ルールの ID が不正です。"
 
-#: includes/admin/class-wpcv-page-suppressions.php:286
+#: includes/admin/class-wpcv-page-suppressions.php:315
 msgid ""
 "This rule could not be revoked (it may already be revoked, or no longer "
 "exists)."
@@ -1188,69 +1235,91 @@ msgid "Dates and times are shown in the site time zone (%s)."
 msgstr "日時はサイトのタイムゾーン(%s)で表示しています。"
 
 #. translators: 1: site name, 2: number of targets that can no longer be compared with their source.
-#: includes/engine/class-wpcv-alert-composer.php:173
+#: includes/engine/class-wpcv-alert-composer.php:181
 #, php-format
 msgid "[WPCV] %1$s: %2$s target(s) cannot be compared with the source"
 msgstr "[WPCV] %1$s: %2$s 件の照合対象を照合元と比較できません"
 
 #. translators: 1: site name, 2: number of version changes without a recorded WordPress update.
-#: includes/engine/class-wpcv-alert-composer.php:184
+#: includes/engine/class-wpcv-alert-composer.php:192
 #, php-format
 msgid "[WPCV] %1$s: %2$s version change(s) without a WordPress update"
 msgstr "[WPCV] %1$s: WordPress の更新を経ないバージョン変更 %2$s 件"
 
 #. translators: 1: site name, 2: number of new findings, 3: number of resolved findings.
-#: includes/engine/class-wpcv-alert-composer.php:194
+#: includes/engine/class-wpcv-alert-composer.php:202
 #, php-format
 msgid "[WPCV] %1$s: %2$s new findings, %3$s resolved"
 msgstr "[WPCV] %1$s: 新規の検出結果 %2$s 件、解消 %3$s 件"
 
 #. translators: 1: run id, 2: finished time in the site time zone, 3: site time zone name (e.g. Asia/Tokyo or +09:00), 4: run trigger.
-#: includes/engine/class-wpcv-alert-composer.php:219
+#: includes/engine/class-wpcv-alert-composer.php:227
 #, php-format
 msgid "Run #%1$s (%2$s %3$s, %4$s)"
 msgstr "実行 #%1$s(%2$s %3$s、%4$s)"
 
-#. translators: 1: checksum verified targets, 2: change-tracked (stat) targets, 3: unverifiable targets, 4: failed targets.
-#: includes/engine/class-wpcv-alert-composer.php:229
+#. translators: 1: previous WordPress version, 2: current WordPress version (a development version).
+#: includes/engine/class-wpcv-alert-composer.php:249
 #, php-format
-msgid ""
-"Targets: %1$s verified / %2$s change-tracked / %3$s unverifiable / %4$s "
-"failed"
-msgstr ""
-"照合対象: チェックサム照合済み %1$s / 変更を追跡 %2$s / 照合できない %3$s / "
-"失敗 %4$s"
+msgid "WordPress: %1$s -> %2$s (development version)"
+msgstr "WordPress: %1$s → %2$s(開発版)"
+
+#. translators: 1: previous WordPress version, 2: current WordPress version.
+#: includes/engine/class-wpcv-alert-composer.php:255
+#, php-format
+msgid "WordPress: %1$s -> %2$s"
+msgstr "WordPress: %1$s → %2$s"
 
 #. translators: 1: new findings, 2: resolved findings, 3: continuing findings.
-#: includes/engine/class-wpcv-alert-composer.php:238
+#: includes/engine/class-wpcv-alert-composer.php:263
 #, php-format
 msgid "New: %1$s  Resolved: %2$s  Continuing: %3$s (already reported)"
 msgstr "新規: %1$s  解消: %2$s  継続: %3$s(報告済み)"
 
-#. translators: %d: number of findings listed below.
-#: includes/engine/class-wpcv-alert-composer.php:249
-#, php-format
-msgid "Top %d by severity:"
-msgstr "重大度の高い順に上位 %d 件:"
+#: includes/engine/class-wpcv-alert-composer.php:273
+msgid "== Needs attention =="
+msgstr "== 要確認 =="
 
-#: includes/engine/class-wpcv-alert-composer.php:266
-msgid "By target:"
-msgstr "照合対象別:"
+#: includes/engine/class-wpcv-alert-composer.php:277
+msgid "Continuing (already reported):"
+msgstr "継続中(通知済み):"
 
-#: includes/engine/class-wpcv-alert-composer.php:283
+#: includes/engine/class-wpcv-alert-composer.php:285
 msgid "Resolved:"
 msgstr "解消:"
 
 #: includes/engine/class-wpcv-alert-composer.php:297
+msgid "== For reference =="
+msgstr "== 参考 =="
+
+#. translators: %s: URL of the detail screen (findings or run history).
+#: includes/engine/class-wpcv-alert-composer.php:302
+#: includes/engine/class-wpcv-alert-composer.php:755
+#, php-format
+msgid "Details: %s"
+msgstr "詳細: %s"
+
+#. translators: %d: number of findings listed below.
+#: includes/engine/class-wpcv-alert-composer.php:426
+#, php-format
+msgid "Top %d by severity:"
+msgstr "重大度の高い順に上位 %d 件:"
+
+#. translators: %s: previous WordPress version.
+#: includes/engine/class-wpcv-alert-composer.php:441
+#, php-format
+msgid "(same as the WordPress %s package)"
+msgstr "(WordPress %s の配布物と同じ内容)"
+
+#: includes/engine/class-wpcv-alert-composer.php:452
+msgid "By target:"
+msgstr "照合対象別:"
+
+#: includes/engine/class-wpcv-alert-composer.php:458
 msgid "Version changed without a WordPress update:"
 msgstr "WordPress の更新を経ずにバージョンが変わりました:"
 
-#: includes/engine/class-wpcv-alert-composer.php:311
-msgid "Not verified today (baseline rebuilt after a version change):"
-msgstr ""
-"本日は照合していません(バージョン変更後にベースラインを作り直しました):"
-
-#: includes/engine/class-wpcv-alert-composer.php:325
+#: includes/engine/class-wpcv-alert-composer.php:472
 msgid ""
 "Cannot compare with the source (the GitHub token is invalid, expired or "
 "lacks permission). These targets are monitored by file-change tracking "
@@ -1260,11 +1329,11 @@ msgstr ""
 "りません)。次の照合対象は、その間ファイルの変化(stat 差分検知)で監視していま"
 "す:"
 
-#: includes/engine/class-wpcv-alert-composer.php:328
+#: includes/engine/class-wpcv-alert-composer.php:475
 msgid "(new)"
 msgstr "(新規)"
 
-#: includes/engine/class-wpcv-alert-composer.php:331
+#: includes/engine/class-wpcv-alert-composer.php:478
 msgid ""
 "Check the GitHub token (the WPCV_GITHUB_TOKEN constant or the "
 "wpcv_github_token filter)."
@@ -1273,32 +1342,64 @@ msgstr ""
 "を確認してください。"
 
 #. translators: %d: consecutive unverifiable count threshold.
-#: includes/engine/class-wpcv-alert-composer.php:337
+#: includes/engine/class-wpcv-alert-composer.php:484
 #, php-format
 msgid "Unverifiable %d times in a row:"
 msgstr "%d 回連続で照合できませんでした:"
 
 #. translators: %s: number of removed targets.
-#: includes/engine/class-wpcv-alert-composer.php:351
+#: includes/engine/class-wpcv-alert-composer.php:498
 #, php-format
 msgid "Removed targets: %s"
 msgstr "削除された照合対象: %s"
 
-#. translators: %s: URL of the detail screen (findings or run history).
-#: includes/engine/class-wpcv-alert-composer.php:357
-#: includes/engine/class-wpcv-alert-composer.php:547
+#. translators: %s: current WordPress version (a development version).
+#: includes/engine/class-wpcv-alert-composer.php:527
 #, php-format
-msgid "Details: %s"
-msgstr "詳細: %s"
+msgid ""
+"WordPress %s is a development version. Updating to a development version can "
+"leave removed files behind. Files marked \"same as the WordPress ... "
+"package\" are likely such leftovers."
+msgstr ""
+"WordPress %s は開発版です。開発版に更新すると、削除されたはずのファイルが残る"
+"ことがあります。「WordPress ... の配布物と同じ内容」と付いたファイルは、そう"
+"した消し残しの可能性が高いです。"
+
+#: includes/engine/class-wpcv-alert-composer.php:534
+msgid "Not verified today (baseline rebuilt after a version change):"
+msgstr ""
+"本日は照合していません(バージョン変更後にベースラインを作り直しました):"
+
+#. translators: %s: number of unverifiable targets.
+#: includes/engine/class-wpcv-alert-composer.php:551
+#, php-format
+msgid "Unverifiable (%s):"
+msgstr "照合できないもの(%s 件):"
+
+#. translators: %s: number of unverifiable targets not listed.
+#: includes/engine/class-wpcv-alert-composer.php:559
+#, php-format
+msgid "... and %s more"
+msgstr "…ほか %s 件"
+
+#. translators: 1: checksum verified targets, 2: change-tracked (stat) targets, 3: unverifiable targets, 4: failed targets.
+#: includes/engine/class-wpcv-alert-composer.php:567
+#, php-format
+msgid ""
+"Targets: %1$s verified / %2$s change-tracked / %3$s unverifiable / %4$s "
+"failed"
+msgstr ""
+"照合対象: チェックサム照合済み %1$s / 変更を追跡 %2$s / 照合できない %3$s / "
+"失敗 %4$s"
 
 #. translators: 1: site name, 2: number of consecutive failed runs.
-#: includes/engine/class-wpcv-alert-composer.php:520
+#: includes/engine/class-wpcv-alert-composer.php:728
 #, php-format
 msgid "[WPCV] %1$s: %2$s runs failed in a row"
 msgstr "[WPCV] %1$s: 実行が %2$s 回連続で失敗しました"
 
 #. translators: %d: number of consecutive failed runs.
-#: includes/engine/class-wpcv-alert-composer.php:529
+#: includes/engine/class-wpcv-alert-composer.php:737
 #, php-format
 msgid "%d runs failed in a row:"
 msgstr "実行が %d 回連続で失敗しました:"
@@ -1376,8 +1477,8 @@ msgid "Worker lease expired too many times"
 msgstr "ワーカーのリースが何度も期限切れになりました"
 
 #: includes/engine/class-wpcv-error-code.php:157
-msgid "Excluded by an exclude_target suppression rule"
-msgstr "exclude_target の抑制ルールで除外されています"
+msgid "Excluded by an exclude_target ignore rule"
+msgstr "exclude_target の除外ルールで除外されています"
 
 #: includes/engine/class-wpcv-error-code.php:158
 msgid "Skipped: already verified by checksums"
@@ -1432,12 +1533,12 @@ msgid "Invalid or missing REST token."
 msgstr "REST トークンが無効、または指定されていません。"
 
 #. translators: %s: site name.
-#: includes/runners/class-wpcv-alert-sender.php:228
+#: includes/runners/class-wpcv-alert-sender.php:229
 #, php-format
 msgid "[WPCV] Test alert from %s"
 msgstr "[WPCV] %s からのテストアラート"
 
-#: includes/runners/class-wpcv-alert-sender.php:232
+#: includes/runners/class-wpcv-alert-sender.php:233
 msgid ""
 "This is a test alert from WP Checksum Verifier. If you received this "
 "message, your alert recipient setting is working correctly."
@@ -1445,6 +1546,6 @@ msgstr ""
 "これは WP Checksum Verifier からのテストアラートです。このメッセージが届いて"
 "いれば、アラートの宛先の設定は正しく動作しています。"
 
-#: wp-checksum-verifier.php:477
+#: wp-checksum-verifier.php:482
 msgid "GitHub"
 msgstr "GitHub"
