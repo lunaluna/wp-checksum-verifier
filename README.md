@@ -716,14 +716,16 @@ so changing the time zone changes how old records are shown as well. Before
   suppressed/closed filters as `GET /findings`. A **Diff** column shows
   `new`/`continuing`/`event` (with the emailed timestamp when notified, e.g.
   `new (emailed 2026-09-11 05:46:13)`), or a dash for findings the diff
-  pipeline has not touched yet. Each row offers three one-click actions,
-  each requiring a reason: **Exclude this path** (creates an `exclude_path`
-  ignore rule scoped to that target and path), **Approve this hash**
-  (creates an `allowlist_hash` rule for the exact hash/version shown — only
-  offered for `added`/`modified` findings, which are the ones that actually
-  have a hash to approve), and **Exclude entire target** (creates an
-  `exclude_target` rule, skipping verification of that plugin/core/MU-plugin
-  entirely from the next run onward). None of these retroactively change
+  pipeline has not touched yet. Each row has an **Exclude…**
+  disclosure that opens a small form: choose one of three options, enter a
+  reason (required), and press **Create ignore rule**. **Exclude this file
+  only** creates an `exclude_path` rule scoped to that target and path;
+  **Approve the current content only** creates an `allowlist_hash` rule for
+  the exact hash/version shown (only offered for `added`/`modified`
+  findings, which are the ones that actually have a hash to approve); and
+  **Exclude this entire target** creates an `exclude_target` rule, skipping
+  verification of that plugin/core/MU-plugin entirely from the next run
+  onward. None of these retroactively change
   the findings currently on screen — the rule takes effect starting with
   the next run. A **Details** column shows what changed for stat-based
   findings (old → new size and timestamps, or the rolled-up count). On
