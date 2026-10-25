@@ -104,7 +104,7 @@ class WPCV_Page_Findings {
 
 			<?php if ( true === $action_result ) : ?>
 				<div class="notice notice-success is-dismissible">
-					<p><?php echo esc_html__( 'The suppression rule has been created. It will apply starting with the next run.', 'wp-checksum-verifier' ); ?></p>
+					<p><?php echo esc_html__( 'The ignore rule has been created. It will apply starting with the next run.', 'wp-checksum-verifier' ); ?></p>
 				</div>
 			<?php elseif ( is_wp_error( $action_result ) ) : ?>
 				<div class="notice notice-error is-dismissible">
@@ -182,7 +182,7 @@ class WPCV_Page_Findings {
 				</label>
 				<label>
 					<input type="checkbox" name="include_suppressed" value="1" <?php checked( $filters['include_suppressed'] ); ?> />
-					<?php echo esc_html__( 'Show suppressed', 'wp-checksum-verifier' ); ?>
+					<?php echo esc_html__( 'Show ignored', 'wp-checksum-verifier' ); ?>
 				</label>
 				<label>
 					<input type="checkbox" name="include_closed" value="1" <?php checked( $filters['include_closed'] ); ?> />
@@ -267,7 +267,7 @@ class WPCV_Page_Findings {
 					<th><?php echo esc_html__( 'Severity', 'wp-checksum-verifier' ); ?></th>
 					<th><?php echo esc_html__( 'Version', 'wp-checksum-verifier' ); ?></th>
 					<th><?php echo esc_html__( 'Diff', 'wp-checksum-verifier' ); ?></th>
-					<th><?php echo esc_html__( 'Suppressed', 'wp-checksum-verifier' ); ?></th>
+					<th><?php echo esc_html__( 'Ignored', 'wp-checksum-verifier' ); ?></th>
 					<?php if ( $can_manage ) : ?>
 						<th><?php echo esc_html__( 'Actions', 'wp-checksum-verifier' ); ?></th>
 					<?php endif; ?>

@@ -61,13 +61,13 @@ class WPCV_Page_Suppressions {
 		);
 		?>
 		<div class="wrap">
-			<h1><?php echo esc_html__( 'Suppressions', 'wp-checksum-verifier' ); ?></h1>
+			<h1><?php echo esc_html__( 'Ignore rules', 'wp-checksum-verifier' ); ?></h1>
 			<?php // 日時はサイトのタイムゾーンで表示する(v0.10.0). ?>
 			<p class="description"><?php echo esc_html( WPCV_Settings::datetime_notice() ); ?></p>
 
 			<?php if ( true === $action_result ) : ?>
 				<div class="notice notice-success is-dismissible">
-					<p><?php echo esc_html__( 'The suppression rule has been revoked.', 'wp-checksum-verifier' ); ?></p>
+					<p><?php echo esc_html__( 'The ignore rule has been revoked.', 'wp-checksum-verifier' ); ?></p>
 				</div>
 			<?php elseif ( is_wp_error( $action_result ) ) : ?>
 				<div class="notice notice-error is-dismissible">
@@ -75,8 +75,11 @@ class WPCV_Page_Suppressions {
 				</div>
 			<?php endif; ?>
 
+			<?php // 作成の入口の案内。ルールが有る時も無い時も出す(0.11.0). ?>
+			<p class="description"><?php self::render_how_to_create(); ?></p>
+
 			<?php if ( empty( $rows ) ) : ?>
-				<p><?php echo esc_html__( 'No suppression rules have been created yet.', 'wp-checksum-verifier' ); ?></p>
+				<p><?php echo esc_html__( 'No ignore rules have been created yet.', 'wp-checksum-verifier' ); ?></p>
 			<?php else : ?>
 				<table class="wp-list-table widefat fixed striped">
 					<thead>
@@ -115,6 +118,32 @@ class WPCV_Page_Suppressions {
 			<?php endif; ?>
 		</div>
 		<?php
+	}
+
+	/**
+	 * 除外ルールの作り方の案内を出力する(0.11.0).
+	 *
+	 * この画面にはルールを作る入口が無く、検出結果の画面の各行から作る。
+	 * 空の一覧だけでは入口が分からないため、検出結果の画面へのリンクを添える.
+	 * 操作列の文言は Step 7 で変わるため、ここでは「各行の操作」と一般的に書く.
+	 *
+	 * @return void
+	 */
+	private static function render_how_to_create() {
+		$findings_link = sprintf(
+			'<a href="%s">%s</a>',
+			esc_url( menu_page_url( 'wpcv-findings', false ) ),
+			esc_html__( 'Findings screen', 'wp-checksum-verifier' )
+		);
+
+		echo wp_kses(
+			sprintf(
+				/* translators: %s: link to the Findings screen. */
+				__( 'Ignore rules are created from the actions on each row of the %s.', 'wp-checksum-verifier' ),
+				$findings_link
+			),
+			array( 'a' => array( 'href' => array() ) )
+		);
 	}
 
 	/**
@@ -277,7 +306,7 @@ class WPCV_Page_Suppressions {
 		$id = isset( $_POST['wpcv_suppression_id'] ) ? absint( wp_unslash( $_POST['wpcv_suppression_id'] ) ) : 0;
 
 		if ( $id <= 0 ) {
-			return new WP_Error( 'wpcv_invalid_id', __( 'Invalid suppression rule id.', 'wp-checksum-verifier' ) );
+			return new WP_Error( 'wpcv_invalid_id', __( 'Invalid ignore rule id.', 'wp-checksum-verifier' ) );
 		}
 
 		$revoked = WPCV_Plugin::suppression_repository()->expire( $id, $reason );

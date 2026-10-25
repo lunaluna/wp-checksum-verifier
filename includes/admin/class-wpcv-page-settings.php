@@ -637,8 +637,8 @@ class WPCV_Page_Settings {
 		}
 
 		return sprintf(
-			/* translators: 1: state (e.g. Completed), 2: start time, 3: end time or a dash, 4: runs deleted, 5: per-target results deleted, 6: findings deleted, 7: suppressions deleted. */
-			__( '%1$s — started: %2$s, finished: %3$s — deleted: %4$d runs, %5$d per-target results, %6$d findings, %7$d suppressions', 'wp-checksum-verifier' ),
+			/* translators: 1: state (e.g. Completed), 2: start time, 3: end time or a dash, 4: runs deleted, 5: per-target results deleted, 6: findings deleted, 7: ignore rules deleted. */
+			__( '%1$s — started: %2$s, finished: %3$s — deleted: %4$d runs, %5$d per-target results, %6$d findings, %7$d ignore rules', 'wp-checksum-verifier' ),
 			$label,
 			WPCV_Settings::format_datetime( $status['started_at'] ),
 			WPCV_Settings::format_datetime( $status['finished_at'] ),
@@ -667,7 +667,7 @@ class WPCV_Page_Settings {
 			'wpcv_runs'           => __( 'Run history', 'wp-checksum-verifier' ),
 			'wpcv_target_runs'    => __( 'Per-target results', 'wp-checksum-verifier' ),
 			'wpcv_findings'       => __( 'Findings', 'wp-checksum-verifier' ),
-			'wpcv_suppressions'   => __( 'Suppressions', 'wp-checksum-verifier' ),
+			'wpcv_suppressions'   => __( 'Ignore rules', 'wp-checksum-verifier' ),
 			'wpcv_file_states'    => __( 'File state baseline', 'wp-checksum-verifier' ),
 			'wpcv_update_events'  => __( 'Update events', 'wp-checksum-verifier' ),
 			'wpcv_manifest_cache' => __( 'Manifest cache', 'wp-checksum-verifier' ),

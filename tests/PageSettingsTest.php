@@ -388,7 +388,7 @@ class PageSettingsTest extends TestCase {
 		$this->assertStringContainsString( 'Completed', $text );
 		$this->assertStringContainsString( 'started: 2026-10-06 03:00:00', $text );
 		$this->assertStringContainsString( 'finished: 2026-10-06 03:00:30', $text );
-		$this->assertStringContainsString( '3 runs, 40 per-target results, 7 findings, 1 suppressions', $text );
+		$this->assertStringContainsString( '3 runs, 40 per-target results, 7 findings, 1 ignore rules', $text );
 	}
 
 	/**

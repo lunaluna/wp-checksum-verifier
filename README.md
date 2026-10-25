@@ -12,7 +12,7 @@ and reports unknown files not present in any manifest.
 > stat-based change detection for plugins without official checksums
 > (with optional content-hash comparison), configuration-file and drop-in
 > monitoring, update-event tracking, diff-based email alerts (see Alerts
-> below), official theme verification, and the Findings/Suppressions/Run
+> below), official theme verification, and the Findings/Ignore rules/Run
 > History admin screens are implemented, as is verification of plugins and
 > themes mapped to a GitHub repository (see "GitHub Releases verification"
 > below). v0.9 adds a history retention setting, an "Active on" column for
@@ -70,7 +70,7 @@ was not published yet).
   `theme:{stylesheet}:_stat` (stat-based change detection, used only when the
   theme could not be compared against wp.org), and `theme:{stylesheet}:_scan`
   (unknown files, used only when it could). All three share the theme's
-  suppression rules. Themes with errors (e.g. a child theme whose parent is
+  ignore rules. Themes with errors (e.g. a child theme whose parent is
   missing) are included.
 - **Not compared against wp.org** (no download; the theme goes to stat-based
   change detection instead): the theme is not on wp.org (the zip returns 404:
@@ -253,7 +253,7 @@ whether a change is malicious.
   for that run so an outage on wordpress.org never creates baselines by
   accident. Each such plugin gets an extra target named `plugin:{slug}:_stat`
   (`theme:{stylesheet}:_stat` for themes, `muplugin:{file}:_stat` for
-  loaders) that shares its suppression rules.
+  loaders) that shares its ignore rules.
 - **First run**: only records a baseline; nothing is reported.
 - **Findings**: `stat_changed` (size, ctime, or mtime differ — the `detail`
   field holds the old and new values), `added` (a new file), and `missing`
@@ -718,7 +718,7 @@ so changing the time zone changes how old records are shown as well. Before
   `new (emailed 2026-09-11 05:46:13)`), or a dash for findings the diff
   pipeline has not touched yet. Each row offers three one-click actions,
   each requiring a reason: **Exclude this path** (creates an `exclude_path`
-  suppression rule scoped to that target and path), **Approve this hash**
+  ignore rule scoped to that target and path), **Approve this hash**
   (creates an `allowlist_hash` rule for the exact hash/version shown — only
   offered for `added`/`modified` findings, which are the ones that actually
   have a hash to approve), and **Exclude entire target** (creates an
@@ -729,7 +729,7 @@ so changing the time zone changes how old records are shown as well. Before
   findings (old → new size and timestamps, or the rolled-up count). On
   multisite an **Active on** column shows where a plugin or theme is in use
   (see "Multisite" below).
-- **Suppressions** — every suppression rule ever created (all three types),
+- **Ignore rules** (formerly "Suppressions"; the menu slug `wpcv-suppressions` is unchanged) — every ignore rule ever created (all three types),
   with its target, reason, creator, creation time, and (for `allowlist_hash`
   rules) the approved version and hash prefix. Active rules can be revoked
   (also requiring a reason), which is recorded and shown alongside the rule
@@ -845,7 +845,7 @@ Always kept, whatever their age:
   them would email the same finding again. Only the newest emailed row of each
   finding is kept: the suppression reads just the latest email time, so older
   rows of the same finding change nothing;
-- active suppression rules (revoked or expired rules are deleted once they have
+- active ignore rules (revoked or expired rules are deleted once they have
   been expired for longer than the period).
 
 Not affected: update events (90 days, `wpcv_update_events_retention_days`), the
@@ -951,7 +951,7 @@ add_filter( 'wpcv_affected_sites_scan_limit', function () {
 ## Permissions
 
 Who can use the screens (and issue tokens, run now, create and revoke
-suppression rules) is decided in one place. By default it is the same as
+ignore rules) is decided in one place. By default it is the same as
 before: administrators (`manage_options`) on a single site, and super
 administrators (`manage_network_options`) on multisite. The REST API uses its
 own bearer tokens and WP-CLI is run by someone with access to the server, so
@@ -959,8 +959,8 @@ neither is affected.
 
 The `wpcv_required_capability` filter receives the capability and the name of
 the screen (`settings`, `runs`, `findings`, `suppressions` or `notices` — the
-alert notices) or the action `manage_suppressions` (creating a suppression rule
-on the Findings screen and revoking one on the Suppressions screen), and returns
+alert notices) or the action `manage_suppressions` (creating an ignore rule
+on the Findings screen and revoking one on the Ignore rules screen), and returns
 the capability to require. The menu, the screen itself, every form it posts and
 the notice use the same value for a given name. A return value that is not a
 non-empty string is ignored.
@@ -973,14 +973,14 @@ add_filter( 'wpcv_required_capability', function ( $capability, $screen ) {
 ```
 
 The example above gives editors read-only access: `manage_suppressions` stays at
-the default, so they cannot create or revoke suppression rules (the buttons are
+the default, so they cannot create or revoke ignore rules (the buttons are
 hidden and the request is refused). Be careful when you loosen
-`manage_suppressions`: suppression rules silence future alerts, so only give it
+`manage_suppressions`: ignore rules silence future alerts, so only give it
 to roles you trust with that, and note that it also needs the screen's own
 capability to be usable. Before 0.9.1 the screen's capability alone allowed
 creating and revoking rules; if you loosened `findings` or `suppressions` and
 want that back, loosen `manage_suppressions` as well. Loosening only one screen
-also leaves the rest of the workflow (for example the Suppressions list) at the
+also leaves the rest of the workflow (for example the Ignore rules list) at the
 default. The filter was
 tested on a single site; on multisite the screens live in the Network Admin and
 the default is a super-administrator capability, and loosening it has not been
@@ -990,7 +990,7 @@ tested there.
 
 Deleting the plugin (after deactivating it) removes what it created:
 
-- the seven tables (runs, per-target results, findings, suppression rules, the
+- the seven tables (runs, per-target results, findings, ignore rules, the
   stat baselines, update events and the manifest cache);
 - the options `wpcv_db_version`, `wpcv_settings`, `wpcv_rest_token_hash`,
   `wpcv_rest_token_hash_read`, `wpcv_update_events_since` and
