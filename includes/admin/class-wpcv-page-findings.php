@@ -545,7 +545,7 @@ class WPCV_Page_Findings {
 	 * `wpcv_finding_action` を、ラジオボタンの値で受けるだけで同じ名前のまま読める.
 	 * ラジオボタンは既定で選ばない(通知を止める操作なので、利用者に選ばせる).
 	 * 未選択で送ると `required` で止まり、それをすり抜けても `build_suppression_data()` が
-	 * 「Unknown action.」で止める.
+	 * 「No option has been selected.」(未選択です)で止める.
 	 *
 	 * @param array $finding `WPCV_Finding_Repository::query()`の1行.
 	 * @return void
@@ -706,6 +706,13 @@ class WPCV_Page_Findings {
 					'version'        => $finding['version'],
 					'reason'         => $reason,
 					'created_by'     => $created_by,
+				);
+
+			case '':
+				// ラジオボタンが選ばれていない(ブラウザの `required` をすり抜けた場合).
+				return new WP_Error(
+					'wpcv_action_not_selected',
+					__( 'No option has been selected.', 'wp-checksum-verifier' )
 				);
 
 			default:

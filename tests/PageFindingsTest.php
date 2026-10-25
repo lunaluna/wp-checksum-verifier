@@ -50,6 +50,18 @@ class PageFindingsTest extends TestCase {
 	}
 
 	/**
+	 * `build_suppression_data()` が action 未選択(空文字)のとき、未知の action とは別のエラーを返すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_build_suppression_data_returns_not_selected_error_for_empty_action() {
+		$result = WPCV_Page_Findings::build_suppression_data( '', array(), 'reason', 1 );
+
+		$this->assertInstanceOf( WP_Error::class, $result );
+		$this->assertSame( 'wpcv_action_not_selected', $result->get_error_code() );
+	}
+
+	/**
 	 * `build_suppression_data()` が `exclude_target` action から
 	 * dimension/slugのみのデータを組み立てることを確認する.
 	 *
