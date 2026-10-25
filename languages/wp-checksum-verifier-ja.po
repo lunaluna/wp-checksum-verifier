@@ -6,7 +6,7 @@ msgstr ""
 "Project-Id-Version: WP Checksum Verifier 0.10.0\n"
 "Report-Msgid-Bugs-To: https://wordpress.org/support/plugin/wp-checksum-"
 "verifier\n"
-"POT-Creation-Date: 2026-10-25T23:34:27+00:00\n"
+"POT-Creation-Date: 2026-10-25T23:56:42+00:00\n"
 "PO-Revision-Date: 2026-10-03 00:00+0000\n"
 "Last-Translator: lunaluna_dev\n"
 "Language-Team: Japanese\n"
@@ -339,11 +339,15 @@ msgstr "ルール #%d"
 msgid "This finding has no hash to approve."
 msgstr "この検出結果には承認できるハッシュがありません。"
 
-#: includes/admin/class-wpcv-page-findings.php:714
+#: includes/admin/class-wpcv-page-findings.php:715
+msgid "No option has been selected."
+msgstr "未選択です"
+
+#: includes/admin/class-wpcv-page-findings.php:721
 msgid "Unknown action."
 msgstr "不明な操作です。"
 
-#: includes/admin/class-wpcv-page-findings.php:742
+#: includes/admin/class-wpcv-page-findings.php:749
 #: includes/admin/class-wpcv-page-suppressions.php:303
 msgid "A reason is required."
 msgstr "理由は必須です。"
