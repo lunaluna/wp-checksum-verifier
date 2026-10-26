@@ -2,6 +2,64 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.0] - 2026-10-26
+
+### Changed
+
+- **A WordPress core update no longer turns unchanged unknown core files into
+  "new + resolved" findings.** The difference key of `core:_scan` findings no
+  longer includes the WordPress version, so a file that stays the same across
+  an update is "continuing" instead of being reported as new again (with the
+  old copy resolved). A file whose content changes is still reported as new.
+  An `allowlist_hash` rule on a core file keeps working after a core update
+  until the file's content changes (it used to stop working at every update).
+  The database version moves from 7 to 8: the update recalculates the stored
+  keys of existing `core:_scan` findings (about 100 ms for 328 rows on a test
+  site), so nothing is reported twice right after updating.
+- **Alert emails are reordered.** After a line with the WordPress version
+  change (marked as a development version when it is one), a "Needs attention"
+  section holds what needs a decision (new findings and the existing warning
+  sections); "Continuing (already reported)" lists the findings that were
+  reported before, per target; "For reference" holds the development-version
+  note, the targets not verified today, the unverifiable targets (listed by
+  target and reason, up to the same limit as other lists) and the totals. The
+  subject is unchanged. Anyone parsing the body by machine should check it.
+- **"Suppressions" is now "Ignore rules" on screen** (English "Ignore rules",
+  Japanese 除外ルール), including the menu, headings, notices and the "Show
+  ignored" filter. Internal names (table, rule types, menu slug, capability
+  names, REST parameters) are unchanged, so URLs and integrations keep working.
+  The screen explains where rules are created and links to Findings.
+- **The Actions column on Findings is a single "Exclude…" disclosure** instead
+  of an input and three buttons per row. It opens a small form: choose one of
+  three options (exclude this file only, approve the current content only,
+  exclude the entire target), enter a reason and press "Create ignore rule".
+  Nothing is preselected; sending without a choice says "No option has been
+  selected." A small stylesheet (`assets/css/admin.css`) is loaded on the
+  plugin's screens only.
+- **The self-update library `lib/l2d-updater` is 1.3.1**, and the release
+  workflow uses `plugin-release.yml@1.3.1`. The CI workflows pin their actions
+  to commit SHAs and use `ubuntu-24.04`; a Dependabot configuration keeps them
+  up to date. A release is now created as a draft and published by hand.
+
+### Added
+
+- **Unknown core files identical to the previous WordPress package are marked.**
+  When a core update leaves removed files behind (this happened with an update
+  to 7.2-beta1), a new `core:_scan` "added" finding whose content matches the
+  same path in the previous version's official checksums is marked "Same as the
+  WordPress X package" in the alert email and in the Details column of
+  Findings. The mark is for display only: severity and whether an email is sent
+  do not change. It is decided once, when the finding is first created, and
+  carried over while it continues; findings that already existed before this
+  version are not marked. It costs one extra read of the files concerned
+  (about 0.4% of a full core scan in a measurement) and, only when the previous
+  version's checksums are not cached, one request to WordPress.org.
+- **A development-version note.** When WordPress is a development version
+  (alpha, beta, RC or nightly: the version contains `-`) and `core:_scan`
+  findings are shown, the email and the Findings screen say that updating to a
+  development version can leave removed files behind. Differences are not
+  hidden.
+
 ## [0.10.0] - 2026-10-06
 
 ### Changed

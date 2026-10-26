@@ -11,5 +11,9 @@
 # リポジトリには含めない方針(ユーザー確認済み).
 /.claude/
 
+# Playwright MCP の出力(スナップショット・コンソールのログ). 検証のたびにリポジトリ直下へ作られるため、
+# 誤ってコミット・配布 ZIP に入らないようにする(0.11.0 で一度コミットしてしまった).
+/.playwright-mcp/
+
 # Action Scheduler bundled into lib/ by bin/build-zip.pre.sh ahead of staging
 /lib/action-scheduler/
