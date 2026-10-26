@@ -5,7 +5,7 @@ tampering by comparing installed files against official checksum manifests
 (wp.org core/plugin checksums, and manifests built from wp.org theme zips)
 and reports unknown files not present in any manifest.
 
-> **Status**: v0.10.0. The verification engine, all planned execution model
+> **Status**: v0.11.0. The verification engine, all planned execution model
 > entry points (WP-CLI, WP-Cron, admin "Run now" button, REST API),
 > file-level chunked execution with resume, the suppression engine
 > (`exclude_target`/`exclude_path`/`allowlist_hash` plus strict mode),
@@ -23,7 +23,13 @@ and reports unknown files not present in any manifest.
 > admin screens and alert emails in the site's time zone, keeps 12 months of
 > history by default, and adds a stored-data overview, `wp wpcv prune` and a
 > "Delete old history now" button (see "Settings" and "History retention"
-> below). See `CHANGELOG.md` for details.
+> below). v0.11 makes alert emails easier to read (a "needs attention" section
+> first, with continuing and reference information separated), stops a core
+> update from turning unchanged unknown core files into "new + resolved"
+> findings, marks unknown files that are identical to the previous WordPress
+> package (typical leftovers of a development-version update), and renames the
+> "Suppressions" screen to "Ignore rules" with a simpler "Exclude…" action on
+> each finding. See `CHANGELOG.md` for details.
 
 ## Verification targets
 
