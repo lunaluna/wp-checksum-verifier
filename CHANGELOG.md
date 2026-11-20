@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **The "no alert recipients are set" warning now goes away as soon as a
+  recipient is saved.** It used to depend on the alert result recorded on the
+  last finished run, so it stayed until the next run finished, and never went
+  away on sites where WP-Cron does not run. The warning now checks the current
+  setting: it shows whenever the recipient list is empty, including right
+  after activation before any run, and disappears once an address is saved.
+  The "alert email failed to send" error still follows the last run, and both
+  are shown when both apply.
+
 ## [0.11.0] - 2026-10-26
 
 ### Changed

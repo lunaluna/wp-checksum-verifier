@@ -12,6 +12,7 @@ require_once dirname( __DIR__ ) . '/includes/engine/class-wpcv-target-status.php
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-target-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-run-repository.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-capability.php';
+require_once dirname( __DIR__ ) . '/includes/class-wpcv-settings.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-page-settings.php';
 require_once dirname( __DIR__ ) . '/includes/admin/class-wpcv-admin-notices.php';
 require_once dirname( __DIR__ ) . '/includes/class-wpcv-plugin.php';
@@ -41,6 +42,10 @@ class AdminNoticesTest extends TestCase {
 	protected function setUp(): void {
 		parent::setUp();
 		$this->resetGlobals();
+
+		// 宛先は既定で設定済みにしておく. 宛先なしの警告を確かめるテストだけ
+		// `clear_alert_to()` で空にする(警告は今の設定で判定するため).
+		WPCV_Settings::update_alert_to( 'ops@example.com' );
 	}
 
 	/**
@@ -65,7 +70,21 @@ class AdminNoticesTest extends TestCase {
 			$GLOBALS['_wpcv_test_do_action_calls']['admin_notices'],
 			$GLOBALS['_wpcv_test_do_action_calls']['network_admin_notices'],
 			$GLOBALS['_wpcv_test_added_actions']['admin_notices'],
-			$GLOBALS['_wpcv_test_added_actions']['network_admin_notices']
+			$GLOBALS['_wpcv_test_added_actions']['network_admin_notices'],
+			$GLOBALS['_wpcv_test_options'][ WPCV_Settings::OPTION_NAME ],
+			$GLOBALS['_wpcv_test_site_options'][ WPCV_Settings::OPTION_NAME ]
+		);
+	}
+
+	/**
+	 * アラートの宛先を空にする(単一サイト・マルチサイトの両方の option を消す).
+	 *
+	 * @return void
+	 */
+	private function clear_alert_to() {
+		unset(
+			$GLOBALS['_wpcv_test_options'][ WPCV_Settings::OPTION_NAME ],
+			$GLOBALS['_wpcv_test_site_options'][ WPCV_Settings::OPTION_NAME ]
 		);
 	}
 
@@ -99,13 +118,14 @@ class AdminNoticesTest extends TestCase {
 	}
 
 	/**
-	 * 対象画面・権限ありで`alert_status = no_recipient`のとき、警告を出すことを
-	 * 確認する.
+	 * 対象画面・権限ありで宛先が空のとき、警告を出すことを確認する
+	 * (直近の run も `no_recipient` の場合).
 	 *
 	 * @return void
 	 */
 	public function test_shows_warning_when_no_recipient() {
 		$this->seed_terminal_run( array( 'alert_status' => 'no_recipient' ) );
+		$this->clear_alert_to();
 
 		$GLOBALS['_wpcv_test_current_screen_id'] = 'toplevel_page_wpcv-settings';
 		$GLOBALS['_wpcv_test_user_capabilities'] = array( 'manage_options' );
@@ -118,6 +138,98 @@ class AdminNoticesTest extends TestCase {
 
 		$this->assertStringContainsString( 'notice-warning', $output );
 		$this->assertStringContainsString( 'no alert recipients', $output );
+	}
+
+	/**
+	 * 宛先を保存したあとは、直近の run が `no_recipient` のままでも警告を出さないことを
+	 * 確認する(0.11.0 の次のリリースで修正した不具合. 以前は次の run が終わるまで警告が残り、
+	 * WP-Cron が動かないサイトでは消えなかった).
+	 *
+	 * @return void
+	 */
+	public function test_hides_warning_once_alert_to_is_saved_even_if_last_run_was_no_recipient() {
+		$this->seed_terminal_run( array( 'alert_status' => 'no_recipient' ) );
+
+		$GLOBALS['_wpcv_test_current_screen_id'] = 'toplevel_page_wpcv-settings';
+		$GLOBALS['_wpcv_test_user_capabilities'] = array( 'manage_options' );
+
+		WPCV_Admin_Notices::register( array( 'toplevel_page_wpcv-settings' ) );
+
+		ob_start();
+		do_action( 'admin_notices' );
+
+		$this->assertSame( '', ob_get_clean() );
+	}
+
+	/**
+	 * 宛先が空なら、run が1件も無くても(有効化した直後でも)警告を出すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_shows_warning_when_alert_to_empty_without_any_run() {
+		wpcv_test_inject_run_repository( new WPCV_Run_Repository( new WPCV_Test_Fake_WPDB() ) );
+		$this->clear_alert_to();
+
+		$GLOBALS['_wpcv_test_current_screen_id'] = 'toplevel_page_wpcv-settings';
+		$GLOBALS['_wpcv_test_user_capabilities'] = array( 'manage_options' );
+
+		WPCV_Admin_Notices::register( array( 'toplevel_page_wpcv-settings' ) );
+
+		ob_start();
+		do_action( 'admin_notices' );
+		$output = ob_get_clean();
+
+		$this->assertStringContainsString( 'notice-warning', $output );
+		$this->assertStringContainsString( 'no alert recipients', $output );
+	}
+
+	/**
+	 * 宛先が空なら、直近の run が `not_needed`(送るものが無かった)でも警告を出すことを確認する.
+	 *
+	 * @return void
+	 */
+	public function test_shows_warning_when_alert_to_empty_and_last_run_not_needed() {
+		$this->seed_terminal_run( array( 'alert_status' => 'not_needed' ) );
+		$this->clear_alert_to();
+
+		$GLOBALS['_wpcv_test_current_screen_id'] = 'toplevel_page_wpcv-settings';
+		$GLOBALS['_wpcv_test_user_capabilities'] = array( 'manage_options' );
+
+		WPCV_Admin_Notices::register( array( 'toplevel_page_wpcv-settings' ) );
+
+		ob_start();
+		do_action( 'admin_notices' );
+
+		$this->assertStringContainsString( 'no alert recipients', ob_get_clean() );
+	}
+
+	/**
+	 * 宛先が空で、直近の run の送信が `failed` なら、宛先の警告と送信失敗のエラーを両方出すことを
+	 * 確認する(片方が他方を隠さない).
+	 *
+	 * @return void
+	 */
+	public function test_shows_both_no_recipient_warning_and_failed_error() {
+		$this->seed_terminal_run(
+			array(
+				'alert_status' => 'failed',
+				'alert_error'  => 'SMTP connect() failed',
+			)
+		);
+		$this->clear_alert_to();
+
+		$GLOBALS['_wpcv_test_current_screen_id'] = 'toplevel_page_wpcv-settings';
+		$GLOBALS['_wpcv_test_user_capabilities'] = array( 'manage_options' );
+
+		WPCV_Admin_Notices::register( array( 'toplevel_page_wpcv-settings' ) );
+
+		ob_start();
+		do_action( 'admin_notices' );
+		$output = ob_get_clean();
+
+		$this->assertStringContainsString( 'no alert recipients', $output );
+		$this->assertStringContainsString( 'notice-error', $output );
+		$this->assertStringContainsString( 'SMTP connect() failed', $output );
 	}
 
 	/**
@@ -218,6 +330,7 @@ class AdminNoticesTest extends TestCase {
 	 */
 	public function test_shows_nothing_on_unrelated_screen() {
 		$this->seed_terminal_run( array( 'alert_status' => 'no_recipient' ) );
+		$this->clear_alert_to();
 
 		$GLOBALS['_wpcv_test_current_screen_id'] = 'edit-post';
 		$GLOBALS['_wpcv_test_user_capabilities'] = array( 'manage_options' );
@@ -238,6 +351,7 @@ class AdminNoticesTest extends TestCase {
 	 */
 	public function test_shows_notice_on_dashboard_and_plugins_screen() {
 		$this->seed_terminal_run( array( 'alert_status' => 'no_recipient' ) );
+		$this->clear_alert_to();
 		$GLOBALS['_wpcv_test_user_capabilities'] = array( 'manage_options' );
 
 		WPCV_Admin_Notices::register( array( 'toplevel_page_wpcv-settings' ) );
@@ -262,6 +376,7 @@ class AdminNoticesTest extends TestCase {
 	 */
 	public function test_shows_nothing_without_capability() {
 		$this->seed_terminal_run( array( 'alert_status' => 'no_recipient' ) );
+		$this->clear_alert_to();
 
 		$GLOBALS['_wpcv_test_current_screen_id'] = 'toplevel_page_wpcv-settings';
 		$GLOBALS['_wpcv_test_user_capabilities'] = array();
@@ -284,6 +399,7 @@ class AdminNoticesTest extends TestCase {
 	 */
 	public function test_registers_network_admin_notices_on_multisite() {
 		$this->seed_terminal_run( array( 'alert_status' => 'no_recipient' ) );
+		$this->clear_alert_to();
 
 		$GLOBALS['_wpcv_test_is_multisite']      = true;
 		$GLOBALS['_wpcv_test_user_capabilities'] = array( 'manage_network_options' );
@@ -312,6 +428,7 @@ class AdminNoticesTest extends TestCase {
 	 */
 	public function test_notice_follows_the_required_capability_filter() {
 		$this->seed_terminal_run( array( 'alert_status' => 'no_recipient' ) );
+		$this->clear_alert_to();
 
 		$GLOBALS['_wpcv_test_filters']['wpcv_required_capability'][] = static function ( $capability, $screen ) {
 			return 'notices' === $screen ? 'wpcv_custom_cap' : $capability;
@@ -379,6 +496,7 @@ class AdminNoticesTest extends TestCase {
 	 */
 	public function test_shows_both_no_recipient_and_access_denied_notices() {
 		$wpdb = $this->seed_terminal_run( array( 'alert_status' => 'no_recipient' ) );
+		$this->clear_alert_to();
 
 		$wpdb->insert( 'wp_wpcv_target_runs', array( 'run_id' => 1, 'target_id' => 'plugin:a', 'status' => 'unverifiable', 'error_code' => 'source_access_denied' ) );
 
