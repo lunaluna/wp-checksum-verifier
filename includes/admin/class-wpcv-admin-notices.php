@@ -10,12 +10,19 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * アラート送信結果の管理画面通知(v0.5後半 §Step14d・§2.5).
+ * アラートの宛先・送信結果の管理画面通知(v0.5後半 §Step14d・§2.5).
  *
- * 直近の終端run(`WPCV_Run_Repository::find_most_recent_terminal_run()`)の
- * `alert_status`が`no_recipient`なら警告、`failed`ならエラーを表示する
- * (`sent`/`not_needed`/未設定のときは何も表示しない ―― §2.5「メール成功→
- * 通知を消す」に対応する).
+ * - 宛先が空の警告は、今の設定(`WPCV_Settings::get_alert_to()`)で判定する.
+ *   run の有無や、run に記録された `alert_status` は見ない.
+ * - メール送信の失敗のエラーは、直近の終端run
+ *   (`WPCV_Run_Repository::find_most_recent_terminal_run()`)の
+ *   `alert_status` が `failed` のときに出す(`sent`/`not_needed`/`no_recipient`/
+ *   未設定のときは出さない ―― §2.5「メール成功→通知を消す」に対応する).
+ *
+ * 以前は宛先が空の警告も、直近の終端runの `alert_status = no_recipient` で
+ * 判定していた. そのため、設定画面で宛先を保存しても、次の run が終わるまで
+ * 警告が消えなかった. WP-Cron が動かないサイトでは次の run が来ないため、
+ * 警告が消えないままになっていた(0.12.0 で修正).
  *
  * 表示対象はWPCVの各画面(設定・実行履歴・検出結果・抑制一覧。
  * `WPCV_Admin_Menu::register()`が渡すhook_suffix)・ダッシュボード・
@@ -82,33 +89,50 @@ class WPCV_Admin_Notices {
 			return;
 		}
 
+		// 宛先の警告は今の設定だけで決まるので、run が無くても(有効化した直後でも)出す.
+		self::render_no_recipient_notice();
+
 		$run = WPCV_Plugin::run_repository()->find_most_recent_terminal_run();
 
 		if ( null === $run ) {
 			return;
 		}
 
-		self::render_alert_status_notice( $run );
+		self::render_alert_failed_notice( $run );
 		self::render_access_denied_notice( $run );
 	}
 
 	/**
-	 * アラートの送信結果(宛先未設定・メールの失敗)の通知を出す.
+	 * 今の設定でアラートの宛先が空なら、警告を出す.
+	 *
+	 * 宛先を保存した時点で消えるよう、run の `alert_status` ではなく設定を見る.
+	 * 宛先が空のあいだは、検出結果があってもメールを送らない
+	 * (`WPCV_Alert_Sender::send_for_run()` が `no_recipient` を記録して終わる).
+	 *
+	 * @return void
+	 */
+	private static function render_no_recipient_notice() {
+		if ( ! empty( WPCV_Settings::get_alert_to() ) ) {
+			return;
+		}
+
+		self::render_notice(
+			'notice-warning',
+			__( 'WP Checksum Verifier: no alert recipients are set. Findings are not being emailed to anyone. Set at least one address on the WP Checksum Verifier settings screen.', 'wp-checksum-verifier' )
+		);
+	}
+
+	/**
+	 * 直近の終端 run でアラートメールの送信に失敗していれば、エラーを出す.
+	 *
+	 * 宛先の警告(`render_no_recipient_notice()`)とは別に判定するので、
+	 * 宛先が空で、かつ前回の送信に失敗していた場合は両方出る.
 	 *
 	 * @param array $run 直近の終端 run の行.
 	 * @return void
 	 */
-	private static function render_alert_status_notice( array $run ) {
+	private static function render_alert_failed_notice( array $run ) {
 		$alert_status = $run['alert_status'] ?? null;
-
-		if ( 'no_recipient' === $alert_status ) {
-			self::render_notice(
-				'notice-warning',
-				__( 'WP Checksum Verifier: no alert recipients are set. Findings are not being emailed to anyone. Set at least one address on the WP Checksum Verifier settings screen.', 'wp-checksum-verifier' )
-			);
-
-			return;
-		}
 
 		if ( 'failed' === $alert_status ) {
 			$error = (string) ( $run['alert_error'] ?? '' );
