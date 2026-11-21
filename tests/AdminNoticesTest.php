@@ -142,7 +142,7 @@ class AdminNoticesTest extends TestCase {
 
 	/**
 	 * 宛先を保存したあとは、直近の run が `no_recipient` のままでも警告を出さないことを
-	 * 確認する(0.11.0 の次のリリースで修正した不具合. 以前は次の run が終わるまで警告が残り、
+	 * 確認する(0.12.0 で修正した不具合. 以前は次の run が終わるまで警告が残り、
 	 * WP-Cron が動かないサイトでは消えなかった).
 	 *
 	 * @return void
